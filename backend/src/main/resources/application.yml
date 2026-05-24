@@ -1,0 +1,76 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: visioncart
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/visioncart?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${MYSQL_USERNAME:visioncart}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: ${MYSQL_DRIVER:com.mysql.cj.jdbc.Driver}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 1500ms
+  ai:
+    openai:
+      api-key: ${ARK_API_KEY:}
+      base-url: ${ARK_BASE_URL:https://ark.cn-beijing.volces.com/api/v3}
+      chat:
+        options:
+          model: ${ARK_LLM_MODEL:}
+          temperature: 0
+  mail:
+    host: ${MAIL_HOST:smtp.qq.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:noreply@example.com}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+
+visioncart:
+  public-base-url: ${PUBLIC_BASE_URL:http://localhost:8080}
+  jwt:
+    secret: ${JWT_SECRET:VisionCartLocalDevelopmentJwtSecretChangeMe1234567890}
+    expiration: ${JWT_EXPIRATION:604800000}
+  ai:
+    llm-model: ${ARK_LLM_MODEL:}
+    vision-model: ${ARK_VISION_MODEL:}
+    vision-api-key: ${ARK_VISION_API_KEY:}
+  pdd:
+    api-url: ${PDD_API_URL:https://gw-api.pinduoduo.com/api/router}
+    client-id: ${PDD_CLIENT_ID:}
+    client-secret: ${PDD_CLIENT_SECRET:}
+    pid: ${PDD_PID:}
+  taobao:
+    api-url: ${TAOBAO_API_URL:https://eco.taobao.com/router/rest}
+    app-key: ${TAOBAO_APP_KEY:}
+    app-secret: ${TAOBAO_APP_SECRET:}
+    adzone-id: ${TAOBAO_ADZONE_ID:}
+  ebay:
+    app-id: ${EBAY_APP_ID:}
+    cert-id: ${EBAY_CERT_ID:}
+    dev-id: ${EBAY_DEV_ID:}
+    marketplace-id: ${EBAY_MARKETPLACE_ID:EBAY_US}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
