@@ -1,18 +1,19 @@
 package com.visioncart.api.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class LoginResponse {
     private String token;
+    @JsonProperty("user_id")
     private Long userId;
     private String email;
-    private String nickname;
 
     public LoginResponse() {}
 
-    public LoginResponse(String token, Long userId, String email, String nickname) {
+    public LoginResponse(String token, Long userId, String email) {
         this.token = token;
         this.userId = userId;
         this.email = email;
-        this.nickname = nickname;
     }
 
     public String getToken() { return token; }
@@ -23,7 +24,4 @@ public class LoginResponse {
 
     public String getEmail() { return email; }
     public void setEmail(String email) { this.email = email; }
-
-    public String getNickname() { return nickname; }
-    public void setNickname(String nickname) { this.nickname = nickname; }
 }

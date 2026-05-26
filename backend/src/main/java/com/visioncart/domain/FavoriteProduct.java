@@ -1,99 +1,81 @@
 package com.visioncart.domain;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 
 @Entity
-@Table(name = "favorite")
+@Table(name = "favorite",
+    uniqueConstraints = @UniqueConstraint(columnNames = {"product_id", "user_id"}),
+    indexes = @Index(name = "idx_favorite_user", columnList = "user_id"))
 public class FavoriteProduct {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "product_id")
     private String productId;
-    private String sessionId;
+
+    @Column(name = "user_id")
+    private Long userId;
+
     private String platform;
     private String title;
+
+    @Column(name = "image_url")
     private String imageUrl;
+
     private BigDecimal price;
+
+    @Column(name = "detail_url")
     private String detailUrl;
+
+    @Column(name = "created_at")
     private Instant createdAt = Instant.now();
 
-    public Long getId() {
-        return id;
+    @Column(name = "updated_at")
+    private Instant updatedAt = Instant.now();
+
+    @PrePersist
+    protected void onCreate() {
+        Instant now = Instant.now();
+        createdAt = now;
+        updatedAt = now;
     }
 
-    public void setId(Long id) {
-        this.id = id;
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = Instant.now();
     }
 
-    public String getProductId() {
-        return productId;
-    }
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
 
-    public void setProductId(String productId) {
-        this.productId = productId;
-    }
+    public String getProductId() { return productId; }
+    public void setProductId(String productId) { this.productId = productId; }
 
-    public String getSessionId() {
-        return sessionId;
-    }
+    public Long getUserId() { return userId; }
+    public void setUserId(Long userId) { this.userId = userId; }
 
-    public void setSessionId(String sessionId) {
-        this.sessionId = sessionId;
-    }
+    public String getPlatform() { return platform; }
+    public void setPlatform(String platform) { this.platform = platform; }
 
-    public String getPlatform() {
-        return platform;
-    }
+    public String getTitle() { return title; }
+    public void setTitle(String title) { this.title = title; }
 
-    public void setPlatform(String platform) {
-        this.platform = platform;
-    }
+    public String getImageUrl() { return imageUrl; }
+    public void setImageUrl(String imageUrl) { this.imageUrl = imageUrl; }
 
-    public String getTitle() {
-        return title;
-    }
+    public BigDecimal getPrice() { return price; }
+    public void setPrice(BigDecimal price) { this.price = price; }
 
-    public void setTitle(String title) {
-        this.title = title;
-    }
+    public String getDetailUrl() { return detailUrl; }
+    public void setDetailUrl(String detailUrl) { this.detailUrl = detailUrl; }
 
-    public String getImageUrl() {
-        return imageUrl;
-    }
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 
-    public void setImageUrl(String imageUrl) {
-        this.imageUrl = imageUrl;
-    }
-
-    public BigDecimal getPrice() {
-        return price;
-    }
-
-    public void setPrice(BigDecimal price) {
-        this.price = price;
-    }
-
-    public String getDetailUrl() {
-        return detailUrl;
-    }
-
-    public void setDetailUrl(String detailUrl) {
-        this.detailUrl = detailUrl;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setCreatedAt(Instant createdAt) {
-        this.createdAt = createdAt;
-    }
+    public Instant getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
 }

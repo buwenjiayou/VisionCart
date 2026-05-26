@@ -7,6 +7,7 @@ import com.visioncart.api.dto.CategoryDto;
 import com.visioncart.api.dto.RecognitionResult;
 import com.visioncart.config.VisionCartProperties;
 import com.visioncart.service.ai.AiTraceService;
+import com.visioncart.service.ai.PromptLoader;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -15,7 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -30,25 +31,57 @@ public class DoubaoVisionClient implements VisionModelService {
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
     private final String arkBaseUrl;
+    private final PromptLoader promptLoader;
 
     public DoubaoVisionClient(VisionCartProperties properties,
                               AiTraceService traceService,
                               ObjectMapper objectMapper,
+                              PromptLoader promptLoader,
                               @Value("${spring.ai.openai.base-url:https://ark.cn-beijing.volces.com/api/v3}") String arkBaseUrl) {
+        this(properties, traceService, objectMapper, promptLoader, arkBaseUrl,
+                RestClient.builder()
+                        .requestFactory(new org.springframework.http.client.SimpleClientHttpRequestFactory() {{
+                            setConnectTimeout(Duration.ofMillis(5000));
+                            setReadTimeout(Duration.ofMillis(properties.getRecognition().getTimeoutMs()));
+                        }})
+                        .build());
+    }
+
+    // Package-private constructor for testing
+    DoubaoVisionClient(VisionCartProperties properties,
+                       AiTraceService traceService,
+                       ObjectMapper objectMapper,
+                       PromptLoader promptLoader,
+                       String arkBaseUrl,
+                       RestClient restClient) {
         this.properties = properties;
         this.traceService = traceService;
         this.objectMapper = objectMapper;
-        this.restClient = RestClient.create();
+        this.promptLoader = promptLoader;
         this.arkBaseUrl = arkBaseUrl;
+        this.restClient = restClient;
     }
 
     @Override
     public RecognitionResult analyze(MultipartFile image, String region) {
+        try {
+            return doAnalyze(image.getBytes(), normalizedContentType(image.getContentType(), image.getBytes()), region);
+        } catch (Exception e) {
+            throw new IllegalStateException("豆包视觉识别失败: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public RecognitionResult analyze(byte[] imageBytes, String contentType, String region) {
+        return doAnalyze(imageBytes, contentType, region);
+    }
+
+    private RecognitionResult doAnalyze(byte[] imageBytes, String contentType, String region) {
         String apiKey = properties.getAi().getVisionApiKey();
         String model = properties.getAi().getVisionModel();
-        Instant started = traceService.start("vision.recognition", Map.of(
+        String traceId = traceService.start("vision.recognition", Map.of(
                 "model", StringUtils.defaultString(model, "unknown"),
-                "filename", StringUtils.defaultString(image.getOriginalFilename(), "upload")
+                "filename", "upload"
         ));
 
         if (isPlaceholder(apiKey) || StringUtils.isBlank(model)) {
@@ -60,48 +93,43 @@ public class DoubaoVisionClient implements VisionModelService {
                     .uri(StringUtils.removeEnd(arkBaseUrl, "/") + "/chat/completions")
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(requestBody(image, region, model))
+                    .body(requestBody(imageBytes, contentType, region, model))
                     .retrieve()
                     .body(String.class);
             RecognitionResult result = parseResponse(body);
-            traceService.finish("vision.recognition", started, "doubao_vision");
+            traceService.finish("vision.recognition", traceId, "doubao_vision");
             return result;
         } catch (Exception error) {
-            traceService.fail("vision.recognition", started, error, "none");
+            traceService.fail("vision.recognition", traceId, error, "none");
             throw new IllegalStateException("豆包视觉识别失败: " + error.getMessage(), error);
         }
     }
 
-    private Map<String, Object> requestBody(MultipartFile image, String region, String model) throws Exception {
-        byte[] imageBytes = image.getBytes();
-        String contentType = normalizedContentType(image.getContentType(), imageBytes);
+    private Map<String, Object> requestBody(byte[] imageBytes, String contentType, String region, String model) {
         String base64 = Base64.getEncoder().encodeToString(imageBytes);
         String imageUrl = "data:" + contentType + ";base64," + base64;
-        return Map.of(
-                "model", model,
-                "temperature", 0,
-                "messages", List.of(Map.of(
-                        "role", "user",
-                        "content", List.of(
-                                Map.of("type", "text", "text", prompt(region)),
-                                Map.of("type", "image_url", "image_url", Map.of("url", imageUrl))
-                        )
-                ))
-        );
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("model", model);
+        body.put("temperature", properties.getAi().getTemperature());
+        if (properties.getAi().getMaxTokens() != null) {
+            body.put("max_tokens", properties.getAi().getMaxTokens());
+        }
+        if (properties.getAi().getTopP() != null) {
+            body.put("top_p", properties.getAi().getTopP());
+        }
+        body.put("messages", List.of(Map.of(
+                "role", "user",
+                "content", List.of(
+                        Map.of("type", "text", "text", prompt(region)),
+                        Map.of("type", "image_url", "image_url", Map.of("url", imageUrl))
+                )
+        )));
+        return body;
     }
 
     private String prompt(String region) {
-        return """
-                你是电商商品识别模型。请识别图片中的主要可购买商品，输出严格 JSON，不要 markdown。
-                JSON 格式：
-                {
-                  "category":{"level1":"一级类目","level2":"二级类目","level3":"三级类目","confidence":0.0},
-                  "attributes":{"品牌":{"value":"品牌或未知","confidence":0.0,"verified":false},"颜色":{"value":"颜色","confidence":0.0,"verified":false},"款式":{"value":"款式","confidence":0.0,"verified":false},"材质":{"value":"材质","confidence":0.0,"verified":false},"适用人群":{"value":"适用人群","confidence":0.0,"verified":false}},
-                  "keywords":["适合搜索商品的关键词"],
-                  "overall_confidence":0.0
-                }
-                如果品牌看不清，品牌值写“未知”。区域提示：%s
-                """.formatted(StringUtils.defaultIfBlank(region, "整张图"));
+        return promptLoader.getPrompt("vision-recognition")
+                .formatted(StringUtils.defaultIfBlank(region, "整张图"));
     }
 
     private String normalizedContentType(String contentType, byte[] imageBytes) {

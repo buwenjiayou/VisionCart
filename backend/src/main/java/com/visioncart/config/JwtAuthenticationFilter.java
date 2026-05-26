@@ -1,6 +1,7 @@
 package com.visioncart.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.visioncart.api.dto.ApiResponse;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -13,10 +14,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.Collections;
-import java.util.Map;
 
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final JwtUtil jwtUtil;
 
@@ -31,8 +33,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         String path = request.getRequestURI();
 
-        // Skip auth endpoints, swagger, static resources, and actuator
-        if (path.startsWith("/api/v1/auth/") ||
+        // Skip public auth endpoints, swagger, static resources, and actuator
+        if (path.equals("/api/v1/auth/send-code") ||
+            path.equals("/api/v1/auth/login") ||
             path.startsWith("/swagger") ||
             path.startsWith("/v3/api-docs") ||
             path.startsWith("/webjars") ||
@@ -61,8 +64,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (SecurityContextHolder.getContext().getAuthentication() == null) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-            new ObjectMapper().writeValue(response.getOutputStream(),
-                    Map.of("code", 401, "message", "未登录或登录已过期"));
+            OBJECT_MAPPER.writeValue(response.getOutputStream(),
+                    new ApiResponse<>(401, "未登录或登录已过期", null, null));
             return;
         }
 

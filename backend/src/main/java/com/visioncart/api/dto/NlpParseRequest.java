@@ -1,12 +1,13 @@
 package com.visioncart.api.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 import java.util.List;
 
 public record NlpParseRequest(
-        String sessionId,
-        @NotBlank String userInput,
+        @Size(max = 64) String sessionId,
+        @NotBlank @Size(max = 500) String userInput,
         NlpContext context
 ) {
     public record NlpContext(String productName, String category, List<NlpTurn> history) {

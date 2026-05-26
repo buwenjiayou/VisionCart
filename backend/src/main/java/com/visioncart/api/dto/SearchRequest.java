@@ -2,12 +2,13 @@ package com.visioncart.api.dto;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Size;
 
 import java.util.Map;
 
 public record SearchRequest(
-        String sessionId,
-        Map<String, String> attributes,
+        @Size(max = 64) String sessionId,
+        @Size(max = 20) Map<@Size(max = 50) String, @Size(max = 200) String> attributes,
         SearchFilter filter,
         @Min(1) Integer page,
         @Min(1) @Max(100) Integer pageSize,

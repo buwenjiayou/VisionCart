@@ -8,6 +8,11 @@ public record RecognitionResult(
         CategoryDto category,
         Map<String, AttributeValue> attributes,
         List<String> keywords,
-        double overallConfidence
+        double overallConfidence,
+        List<PlatformPriceStat> platformStats
 ) {
+    public RecognitionResult(String sessionId, CategoryDto category, Map<String, AttributeValue> attributes,
+                             List<String> keywords, double overallConfidence) {
+        this(sessionId, category, attributes, keywords, overallConfidence, null);
+    }
 }

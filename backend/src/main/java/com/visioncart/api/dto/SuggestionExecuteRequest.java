@@ -7,6 +7,7 @@ import java.util.List;
 public record SuggestionExecuteRequest(
         String sessionId,
         @NotBlank String action,
-        List<ProductCard> currentProducts
+        List<ProductCard> currentProducts,
+        SearchFilter currentFilter
 ) {
 }

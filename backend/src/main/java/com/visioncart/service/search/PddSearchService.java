@@ -77,21 +77,11 @@ public class PddSearchService implements PlatformSearchService {
             return filter.keyword();
         }
         return String.join(" ",
-                useful(attributes.get("品牌")),
-                useful(attributes.get("颜色")),
-                useful(attributes.get("款式")),
-                StringUtils.defaultIfBlank(useful(attributes.get("类目")), "运动鞋")
+                SearchTextUtils.useful(attributes.get("品牌")),
+                SearchTextUtils.useful(attributes.get("颜色")),
+                SearchTextUtils.useful(attributes.get("款式")),
+                StringUtils.defaultIfBlank(SearchTextUtils.useful(attributes.get("类目")), "运动鞋")
         ).trim();
-    }
-
-    private String useful(String value) {
-        String trimmed = StringUtils.defaultString(value).trim();
-        return trimmed.isBlank()
-                || "未知".equals(trimmed)
-                || "未识别".equals(trimmed)
-                || "unknown".equalsIgnoreCase(trimmed)
-                ? ""
-                : trimmed;
     }
 
     private String sign(Map<String, Object> params) throws Exception {
@@ -119,6 +109,14 @@ public class PddSearchService implements PlatformSearchService {
         for (JsonNode item : list) {
             long goodsId = item.path("goods_id").asLong();
             BigDecimal price = BigDecimal.valueOf(item.path("min_group_price").asLong(0)).movePointLeft(2);
+
+            // Parse rating: prefer goods_eval_score, fallback to avg_serv/avg_desc/avg_lgst
+            double rating = parseRating(
+                    item.path("goods_eval_score"),
+                    item.path("avg_serv"),
+                    item.path("avg_desc"),
+                    item.path("avg_lgst"));
+
             products.add(new ProductCard(
                     "pdd_" + goodsId,
                     item.path("goods_name").asText("拼多多商品"),
@@ -128,7 +126,7 @@ public class PddSearchService implements PlatformSearchService {
                     "拼多多",
                     item.path("mall_coupon_discount_pct").asInt(0) > 0,
                     item.path("mall_name").asText("拼多多店铺"),
-                    4.7,
+                    rating,
                     item.path("sales_tip").asText("0").replaceAll("\\D", "").isBlank()
                             ? 0
                             : Long.parseLong(item.path("sales_tip").asText("0").replaceAll("\\D", "")),
@@ -138,5 +136,23 @@ public class PddSearchService implements PlatformSearchService {
             ));
         }
         return products;
+    }
+
+    private double parseRating(JsonNode... nodes) {
+        for (JsonNode node : nodes) {
+            if (node != null && !node.isMissingNode() && !node.isNull()) {
+                double value = node.asDouble(0);
+                if (value > 0) {
+                    // PDD scores may be in 1-5 range or 0-100 percentage
+                    if (value > 5.0 && value <= 100.0) {
+                        return Math.round(value / 20.0 * 10.0) / 10.0;
+                    }
+                    if (value >= 1.0 && value <= 5.0) {
+                        return Math.round(value * 10.0) / 10.0;
+                    }
+                }
+            }
+        }
+        return 0.0;
     }
 }

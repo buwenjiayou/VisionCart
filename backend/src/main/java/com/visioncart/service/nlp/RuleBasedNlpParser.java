@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 public class RuleBasedNlpParser {
     private static final Pattern PRICE_RANGE = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:到|至|-|~)\\s*(\\d+(?:\\.\\d+)?)");
     private static final Pattern PRICE_MAX = Pattern.compile("(?:不超过|不超|最高|最多|以内|以下|低于)\\s*(\\d+(?:\\.\\d+)?)");
+    private static final Pattern PRICE_MAX_REVERSE = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:以内|以下|不超过|不超|内)");
     private static final Pattern RATING_MIN = Pattern.compile("(\\d(?:\\.\\d)?)\\s*(?:分|星|评分|好评)?\\s*(?:以上|及以上|>=|≥)");
 
     public ParsedFilter parse(String input) {
@@ -33,6 +34,11 @@ public class RuleBasedNlpParser {
             Matcher maxMatcher = PRICE_MAX.matcher(normalized);
             if (maxMatcher.find()) {
                 max = Double.parseDouble(maxMatcher.group(1));
+            } else {
+                Matcher reverseMatcher = PRICE_MAX_REVERSE.matcher(normalized);
+                if (reverseMatcher.find()) {
+                    max = Double.parseDouble(reverseMatcher.group(1));
+                }
             }
         }
 
@@ -95,8 +101,11 @@ public class RuleBasedNlpParser {
                 sortOrder,
                 null
         );
-        boolean complete = min != null || max != null || !platforms.isEmpty() || selfOperated != null
-                || !colors.isEmpty() || ratingMin != null || sortBy != null;
+        // 关键字段: 价格、平台、排序 — 只有命中这些才算完整，颜色/自营/评分不够
+        boolean hasPrice = min != null || max != null;
+        boolean hasPlatform = !platforms.isEmpty();
+        boolean hasSort = sortBy != null;
+        boolean complete = hasPrice || hasPlatform || hasSort;
         return new ParsedFilter(filter, complete);
     }
 

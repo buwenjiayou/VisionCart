@@ -31,6 +31,10 @@ tmp/
 .local/
 tmp-*
 *.log
+data/
+
+# CodeGraph local index
+.codegraph/
 
 # OS/editor noise
 .DS_Store

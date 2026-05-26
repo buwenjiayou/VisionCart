@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProductDeduplicatorTest {
 
     @Test
-    void removesDuplicateProductsByNormalizedTitleAndPlatform() {
+    void removesDuplicateProductsByNormalizedTitleAndShop() {
         ProductDeduplicator deduplicator = new ProductDeduplicator();
 
         List<ProductCard> products = List.of(
@@ -20,9 +20,10 @@ class ProductDeduplicatorTest {
                 product("3", "Nike Pegasus 41", "拼多多")
         );
 
+        // Products with same title + shop ("官方旗舰店") are deduplicated regardless of platform
         assertThat(deduplicator.deduplicate(products))
                 .extracting(ProductCard::id)
-                .containsExactly("1", "3");
+                .containsExactly("1");
     }
 
     private ProductCard product(String id, String title, String platform) {

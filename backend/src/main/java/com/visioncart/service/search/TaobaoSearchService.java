@@ -130,9 +130,9 @@ public class TaobaoSearchService implements PlatformSearchService {
         if (filter.keyword() != null && !filter.keyword().isBlank()) {
             return filter.keyword();
         }
-        String brand = useful(attributes.get("品牌"));
-        String style = useful(attributes.get("款式"));
-        String category = useful(attributes.get("类目"));
+        String brand = SearchTextUtils.useful(attributes.get("品牌"));
+        String style = SearchTextUtils.useful(attributes.get("款式"));
+        String category = SearchTextUtils.useful(attributes.get("类目"));
         if (StringUtils.isNotBlank(brand)) {
             return brand;
         }
@@ -143,16 +143,6 @@ public class TaobaoSearchService implements PlatformSearchService {
             return category;
         }
         return "商品";
-    }
-
-    private String useful(String value) {
-        String trimmed = StringUtils.defaultString(value).trim();
-        return trimmed.isBlank()
-                || "未知".equals(trimmed)
-                || "未识别".equals(trimmed)
-                || "unknown".equalsIgnoreCase(trimmed)
-                ? ""
-                : trimmed;
     }
 
     private String sign(Map<String, String> params, String secret) throws Exception {
@@ -248,6 +238,10 @@ public class TaobaoSearchService implements PlatformSearchService {
             String userType = firstLong(item, "user_type") == 1 || firstLong(basicInfo, "user_type") == 1 ? "天猫" : "淘宝";
             boolean selfOperated = "天猫".equals(userType);
 
+            double rating = parseRating(
+                    firstText(item, "shop_dsr", "item_score"),
+                    firstText(basicInfo, "shop_dsr", "item_score"));
+
             List<String> tags = new ArrayList<>();
             tags.add(userType);
             if (item.path("free_shipment").asBoolean()) tags.add("包邮");
@@ -262,7 +256,7 @@ public class TaobaoSearchService implements PlatformSearchService {
                     "淘宝",
                     selfOperated,
                     shopName,
-                    4.7,
+                    rating,
                     sales,
                     0.85,
                     tags,
@@ -318,5 +312,24 @@ public class TaobaoSearchService implements PlatformSearchService {
         if (volume >= 10000) return volume;
         // taobao sometimes returns values like "1.5万+" — but API returns long, so just use as-is
         return volume;
+    }
+
+    private double parseRating(String... values) {
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) {
+                try {
+                    double rating = Double.parseDouble(value.trim());
+                    // shop_dsr is typically 1.0-5.0 range, or may be in 0-100 percentage format
+                    if (rating > 5.0 && rating <= 100.0) {
+                        return rating / 20.0; // convert percentage to 5-star scale
+                    }
+                    if (rating >= 1.0 && rating <= 5.0) {
+                        return Math.round(rating * 10.0) / 10.0;
+                    }
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return 0.0;
     }
 }

@@ -4,29 +4,34 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class JwtUtil {
 
+    private static final String BLACKLIST_PREFIX = "jwt:blacklist:";
+
     private final SecretKey key;
     private final long expirationMs;
-
-    // Simple in-memory token blacklist (for logout). For production, use Redis.
-    private final Set<String> blacklist = ConcurrentHashMap.newKeySet();
+    private final StringRedisTemplate redisTemplate;
 
     public JwtUtil(
             @Value("${visioncart.jwt.secret}") String secret,
-            @Value("${visioncart.jwt.expiration:86400000}") long expirationMs
+            @Value("${visioncart.jwt.expiration:86400000}") long expirationMs,
+            StringRedisTemplate redisTemplate
     ) {
+        if (secret.length() < 32) {
+            throw new IllegalStateException("JWT secret must be at least 32 characters, got " + secret.length());
+        }
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.expirationMs = expirationMs;
+        this.redisTemplate = redisTemplate;
     }
 
     public String generateToken(Long userId, String email) {
@@ -60,7 +65,7 @@ public class JwtUtil {
 
     public boolean validateToken(String token) {
         try {
-            if (blacklist.contains(token)) return false;
+            if (isBlacklisted(token)) return false;
             parseToken(token);
             return true;
         } catch (Exception e) {
@@ -69,6 +74,22 @@ public class JwtUtil {
     }
 
     public void invalidateToken(String token) {
-        blacklist.add(token);
+        try {
+            Claims claims = parseToken(token);
+            long ttlMs = claims.getExpiration().getTime() - System.currentTimeMillis();
+            if (ttlMs > 0) {
+                redisTemplate.opsForValue().set(BLACKLIST_PREFIX + token, "1", ttlMs, TimeUnit.MILLISECONDS);
+            }
+        } catch (Exception e) {
+            // Token already expired or invalid, no need to blacklist
+        }
+    }
+
+    private boolean isBlacklisted(String token) {
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(BLACKLIST_PREFIX + token));
+        } catch (Exception e) {
+            return false; // Redis unavailable, fail open
+        }
     }
 }

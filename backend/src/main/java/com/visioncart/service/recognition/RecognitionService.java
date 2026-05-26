@@ -8,6 +8,7 @@ import com.visioncart.api.dto.AttributeValue;
 import com.visioncart.api.dto.RecognitionResult;
 import com.visioncart.api.dto.SearchRequest;
 import com.visioncart.api.dto.SearchResult;
+import com.visioncart.service.ai.HashUtils;
 import com.visioncart.domain.RecognitionFeedback;
 import com.visioncart.domain.RecognitionHistory;
 import com.visioncart.repository.RecognitionFeedbackRepository;
@@ -17,23 +18,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 @Service
 public class RecognitionService {
-    private final DoubaoVisionClient visionClient;
+    private final VisionModelService visionClient;
     private final RecognitionHistoryRepository historyRepository;
     private final RecognitionFeedbackRepository feedbackRepository;
     private final SearchOrchestrator searchOrchestrator;
     private final ObjectMapper objectMapper;
 
-    public RecognitionService(DoubaoVisionClient visionClient,
+    public RecognitionService(VisionModelService visionClient,
                               RecognitionHistoryRepository historyRepository,
                               RecognitionFeedbackRepository feedbackRepository,
                               SearchOrchestrator searchOrchestrator,
@@ -51,7 +49,7 @@ public class RecognitionService {
         RecognitionHistory history = new RecognitionHistory();
         history.setSessionId(result.sessionId());
         history.setImageUrl("upload://" + result.sessionId());
-        history.setImageHash(hash(image.getOriginalFilename() + ":" + image.getSize()));
+        history.setImageHash(HashUtils.sha256Hex(image.getOriginalFilename() + ":" + image.getSize()));
         history.setCategoryJson(toJson(result.category()));
         history.setAttributesJson(toJson(result.attributes()));
         history.setKeywords(String.join(",", result.keywords()));
@@ -113,15 +111,6 @@ public class RecognitionService {
             return objectMapper.writeValueAsString(value);
         } catch (JsonProcessingException error) {
             return "{}";
-        }
-    }
-
-    private String hash(String raw) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(raw.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception error) {
-            return Integer.toHexString(raw.hashCode());
         }
     }
 }

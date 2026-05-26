@@ -7,102 +7,156 @@ import com.visioncart.api.dto.NlpParseResult;
 import com.visioncart.api.dto.PriceRange;
 import com.visioncart.api.dto.SearchFilter;
 import com.visioncart.service.ai.AiTraceService;
+import com.visioncart.service.ai.PromptLoader;
+import com.visioncart.service.ai.RetryPolicy;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.ObjectProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 @Service
-public class SpringAiNlpService {
+public class SpringAiNlpService implements NlpModelService {
+    private static final Logger log = LoggerFactory.getLogger(SpringAiNlpService.class);
     private final RuleBasedNlpParser ruleParser;
-    private final CacheKeyGenerator cacheKeyGenerator;
-    private final NlpCacheManager cacheManager;
+    private final NlpConversationManager conversationManager;
     private final ObjectProvider<ChatClient.Builder> chatClientBuilder;
     private final ObjectMapper objectMapper;
     private final AiTraceService traceService;
+    private final PromptLoader promptLoader;
 
     public SpringAiNlpService(RuleBasedNlpParser ruleParser,
-                              CacheKeyGenerator cacheKeyGenerator,
-                              NlpCacheManager cacheManager,
+                              NlpConversationManager conversationManager,
                               ObjectProvider<ChatClient.Builder> chatClientBuilder,
                               ObjectMapper objectMapper,
-                              AiTraceService traceService) {
+                              AiTraceService traceService,
+                              PromptLoader promptLoader) {
         this.ruleParser = ruleParser;
-        this.cacheKeyGenerator = cacheKeyGenerator;
-        this.cacheManager = cacheManager;
+        this.conversationManager = conversationManager;
         this.chatClientBuilder = chatClientBuilder;
         this.objectMapper = objectMapper;
         this.traceService = traceService;
+        this.promptLoader = promptLoader;
     }
 
+    @Override
     public NlpParseResult parse(NlpParseRequest request) {
-        RuleBasedNlpParser.ParsedFilter parsed = ruleParser.parse(request.userInput());
-        String semanticKey = parsed.complete() ? cacheKeyGenerator.key(parsed.filter()) : cacheKeyGenerator.textKey(request.userInput());
-        var cached = cacheManager.get(semanticKey);
-        if (cached.isPresent()) {
-            return new NlpParseResult(cached.get(), 0.99, true, "cache_hit");
+        // Prompt injection protection
+        String sanitizedInput = PromptSanitizer.sanitize(request.userInput());
+        if (sanitizedInput.isBlank()) {
+            return new NlpParseResult(SearchFilter.empty(), 0.0, false, "input_rejected",
+                    "输入无法识别，请重新描述您的需求");
+        }
+        if (PromptSanitizer.containsInjection(request.userInput())) {
+            log.warn("Potential prompt injection detected, sessionId={}, originalLength={}",
+                    request.sessionId(), request.userInput().length());
+            return new NlpParseResult(SearchFilter.empty(), 0.0, false, "input_rejected",
+                    "输入包含不允许的内容，请重新描述您的需求");
         }
 
+        // 检查追加上限
+        if (conversationManager.isLimitReached(request.sessionId())) {
+            return new NlpParseResult(
+                    ruleParser.parse(sanitizedInput).filter(), 0.50, false, "limit_reached",
+                    "筛选已达上限（3轮），请开始新的搜索以继续追加筛选条件");
+        }
+
+        RuleBasedNlpParser.ParsedFilter parsed = ruleParser.parse(sanitizedInput);
+
+        // 从 Redis 获取服务端存储的历史
+        List<NlpParseRequest.NlpTurn> history = conversationManager.getHistory(request.sessionId());
+
+        // 规则解析完整 → 直接返回
         if (parsed.complete()) {
-            cacheManager.put(cacheKeyGenerator.key(parsed.filter()), parsed.filter());
-            return new NlpParseResult(parsed.filter(), 0.92, false, "rule_primary");
+            conversationManager.addTurn(request.sessionId(), sanitizedInput, parsed.filter());
+            return new NlpParseResult(parsed.filter(), 0.92, false, "rule_primary", null);
         }
 
-        Instant started = traceService.start("nlp.parse", Map.of("input", request.userInput()));
+        // 规则不完整 → 调 LLM 补全
+        String traceId = traceService.start("nlp.parse", Map.of("input", sanitizedInput));
         try {
             ChatClient.Builder builder = chatClientBuilder.getIfAvailable();
             if (builder == null) {
                 throw new IllegalStateException("Spring AI ChatClient.Builder is unavailable");
             }
-            String json = builder.build()
-                    .prompt()
-                    .system(systemPrompt())
-                    .user(userPrompt(request, parsed.filter()))
-                    .call()
-                    .content();
+            String system = systemPrompt();
+            String user = userPrompt(sanitizedInput, request.context(), parsed.filter(), history);
+            String json = RetryPolicy.executeWithRetry(() ->
+                    builder.build()
+                            .prompt()
+                            .system(system)
+                            .user(user)
+                            .call()
+                            .content(),
+                    2, 1000L);
             SearchFilter filter = merge(parsed.filter(), parseAiJson(json));
-            cacheManager.put(cacheKeyGenerator.key(filter), filter);
-            traceService.finish("nlp.parse", started, "spring_ai_llm");
-            return new NlpParseResult(filter, 0.95, false, "spring_ai_llm");
+            conversationManager.addTurn(request.sessionId(), sanitizedInput, filter);
+            traceService.finish("nlp.parse", traceId, "spring_ai_llm");
+            return new NlpParseResult(filter, 0.95, false, "spring_ai_llm", null);
         } catch (Exception error) {
-            traceService.fail("nlp.parse", started, error, "none");
-            throw new IllegalStateException("LLM 语义解析失败: " + error.getMessage(), error);
+            traceService.fail("nlp.parse", traceId, error, "none");
+            log.warn("LLM unavailable, building best-effort fallback: {}", error.getMessage());
+            NlpParseResult fallback = buildFallback(parsed.filter(), history);
+            conversationManager.addTurn(request.sessionId(), sanitizedInput, fallback.filter());
+            return fallback;
         }
     }
 
-    private String systemPrompt() {
-        return """
-                你是电商筛选意图解析器。将用户自然语言转为严格 JSON。
-                只提取用户明确提到的筛选条件，不要编造品牌或价格。
-                sort_by 只能是 price、sales、rating、reviews 或 null。
-                平台只能是 京东、淘宝、天猫、拼多多。
-                输出字段必须是 filter、confidence，不要输出 markdown。
-                """;
+    private NlpParseResult buildFallback(SearchFilter ruleResult, List<NlpParseRequest.NlpTurn> history) {
+        if (history == null || history.isEmpty()) {
+            return new NlpParseResult(ruleResult, 0.60, false, "rule_fallback",
+                    "智能解析暂不可用，已按基础规则筛选");
+        }
+
+        NlpParseRequest.NlpTurn lastTurn = history.get(history.size() - 1);
+        SearchFilter lastFilter = lastTurn.filter();
+        if (lastFilter == null) {
+            return new NlpParseResult(ruleResult, 0.60, false, "rule_fallback",
+                    "智能解析暂不可用，已按基础规则筛选");
+        }
+
+        SearchFilter merged = merge(ruleResult, lastFilter);
+        return new NlpParseResult(merged, 0.70, false, "rule_history_fallback",
+                "智能解析暂不可用，已结合上次筛选条件");
     }
 
-    private String userPrompt(NlpParseRequest request, SearchFilter preExtracted) {
-        String productName = request.context() == null ? "" : StringUtils.defaultString(request.context().productName());
-        String category = request.context() == null ? "" : StringUtils.defaultString(request.context().category());
-        return """
-                当前商品：%s
-                类目：%s
-                规则已提取：%s
-                用户输入：%s
-                输出格式：
-                {"filter":{"price_range":{"min":null,"max":null},"platforms":[],"self_operated":null,"colors":[],"brands":[],"rating_min":null,"sort_by":null,"sort_order":"desc","keyword":null},"confidence":0.95}
-                """.formatted(productName, category, cacheKeyGenerator.toJson(preExtracted), request.userInput());
+    private String systemPrompt() {
+        return promptLoader.getPrompt("nlp-system");
+    }
+
+    private String userPrompt(String sanitizedInput, NlpParseRequest.NlpContext context,
+                              SearchFilter preExtracted, List<NlpParseRequest.NlpTurn> history) {
+        String productName = context == null ? "" : StringUtils.defaultString(context.productName());
+        String category = context == null ? "" : StringUtils.defaultString(context.category());
+
+        StringBuilder historyText = new StringBuilder();
+        if (history != null && !history.isEmpty()) {
+            int start = Math.max(0, history.size() - 3);
+            for (int i = start; i < history.size(); i++) {
+                NlpParseRequest.NlpTurn turn = history.get(i);
+                historyText.append("用户: ").append(turn.userInput());
+                if (turn.filter() != null) {
+                    historyText.append(" → 解析: ").append(toJson(turn.filter()));
+                }
+                historyText.append("\n");
+            }
+        }
+
+        return promptLoader.getPrompt("nlp-user").formatted(productName, category,
+                historyText.length() > 0 ? historyText.toString() : "（无）",
+                toJson(preExtracted), sanitizedInput);
     }
 
     private SearchFilter parseAiJson(String json) throws Exception {
         JsonNode root = objectMapper.readTree(json);
         JsonNode filter = root.path("filter");
         JsonNode price = filter.path("price_range");
-        return new SearchFilter(
+        SearchFilter raw = new SearchFilter(
                 new PriceRange(doubleOrNull(price.path("min")), doubleOrNull(price.path("max"))),
                 list(filter.path("platforms")),
                 filter.path("self_operated").isMissingNode() || filter.path("self_operated").isNull() ? null : filter.path("self_operated").asBoolean(),
@@ -113,6 +167,7 @@ public class SpringAiNlpService {
                 StringUtils.defaultIfBlank(textOrNull(filter.path("sort_order")), "desc"),
                 textOrNull(filter.path("keyword"))
         );
+        return AiOutputValidator.validate(raw);
     }
 
     private SearchFilter merge(SearchFilter rule, SearchFilter ai) {
@@ -134,14 +189,10 @@ public class SpringAiNlpService {
 
     private List<String> mergeLists(List<String> left, List<String> right) {
         List<String> merged = new ArrayList<>();
-        if (left != null) {
-            merged.addAll(left);
-        }
+        if (left != null) merged.addAll(left);
         if (right != null) {
             for (String item : right) {
-                if (!merged.contains(item)) {
-                    merged.add(item);
-                }
+                if (!merged.contains(item)) merged.add(item);
             }
         }
         return merged;
@@ -151,9 +202,7 @@ public class SpringAiNlpService {
         List<String> values = new ArrayList<>();
         if (node != null && node.isArray()) {
             node.forEach(item -> {
-                if (!item.isNull() && !item.asText().isBlank()) {
-                    values.add(item.asText());
-                }
+                if (!item.isNull() && !item.asText().isBlank()) values.add(item.asText());
             });
         }
         return values;
@@ -165,5 +214,13 @@ public class SpringAiNlpService {
 
     private String textOrNull(JsonNode node) {
         return node == null || node.isMissingNode() || node.isNull() || node.asText().isBlank() ? null : node.asText();
+    }
+
+    private String toJson(SearchFilter filter) {
+        try {
+            return objectMapper.writeValueAsString(filter);
+        } catch (Exception e) {
+            return "{}";
+        }
     }
 }

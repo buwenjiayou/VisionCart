@@ -7,12 +7,6 @@ plugins {
 group = "com.visioncart"
 version = "0.1.0"
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
-    }
-}
-
 ext {
     springAiVersion = "1.1.6"
 }
@@ -34,8 +28,12 @@ dependencies {
     implementation "org.apache.commons:commons-lang3:3.17.0"
     implementation "org.springframework.boot:spring-boot-starter-security"
     implementation "org.springframework.boot:spring-boot-starter-mail"
+    implementation "org.springframework.boot:spring-boot-starter-websocket"
+    implementation "org.springframework.boot:spring-boot-starter-actuator"
     implementation "io.jsonwebtoken:jjwt-api:0.12.6"
+    implementation "com.maxmind.geoip2:geoip2:4.2.1"
     runtimeOnly "com.mysql:mysql-connector-j"
+    runtimeOnly "io.micrometer:micrometer-registry-prometheus"
     runtimeOnly "io.jsonwebtoken:jjwt-impl:0.12.6"
     runtimeOnly "io.jsonwebtoken:jjwt-jackson:0.12.6"
 

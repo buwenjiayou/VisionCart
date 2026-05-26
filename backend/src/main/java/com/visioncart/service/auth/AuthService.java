@@ -14,9 +14,12 @@ import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
+import org.springframework.scheduling.annotation.Scheduled;
+
+import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.Iterator;
 import java.util.Map;
-import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -27,11 +30,11 @@ public class AuthService {
     private static final String CODE_PREFIX = "verify:code:";
     private static final int CODE_LENGTH = 6;
     private static final int CODE_EXPIRE_MINUTES = 5;
-
     private final UserRepository userRepository;
     private final JwtUtil jwtUtil;
     private final StringRedisTemplate redisTemplate;
     private final JavaMailSender mailSender;
+    private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, ExpiringValue> memoryVerificationStore = new ConcurrentHashMap<>();
 
     @Value("${spring.mail.username:noreply@example.com}")
@@ -79,18 +82,14 @@ public class AuthService {
      * If user exists -> login. If not -> auto register then login.
      */
     public LoginResponse loginWithCode(String email, String code) {
-        // Validate code
         String codeKey = CODE_PREFIX + email;
         String storedCode = getValue(codeKey);
-
         if (storedCode == null) {
             throw new IllegalArgumentException("验证码已过期，请重新获取");
         }
         if (!storedCode.equals(code)) {
             throw new IllegalArgumentException("验证码错误");
         }
-
-        // Remove used code
         deleteValue(codeKey);
 
         // Find or create user
@@ -98,16 +97,13 @@ public class AuthService {
                 .orElseGet(() -> {
                     User newUser = new User();
                     newUser.setEmail(email);
-                    // Generate nickname from email prefix
-                    String prefix = email.split("@")[0];
-                    newUser.setNickname(prefix);
                     return userRepository.save(newUser);
                 });
 
         // Generate JWT token
         String token = jwtUtil.generateToken(user.getId(), user.getEmail());
 
-        return new LoginResponse(token, user.getId(), user.getEmail(), user.getNickname());
+        return new LoginResponse(token, user.getId(), user.getEmail());
     }
 
     /**
@@ -120,17 +116,6 @@ public class AuthService {
     }
 
     /**
-     * Update user nickname.
-     */
-    public UserProfile updateNickname(Long userId, String nickname) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new IllegalArgumentException("用户不存在"));
-        user.setNickname(nickname);
-        userRepository.save(user);
-        return UserProfile.fromEntity(user);
-    }
-
-    /**
      * Logout - invalidate JWT token.
      */
     public void logout(String token) {
@@ -138,10 +123,9 @@ public class AuthService {
     }
 
     private String generateCode() {
-        Random random = new Random();
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < CODE_LENGTH; i++) {
-            sb.append(random.nextInt(10));
+            sb.append(secureRandom.nextInt(10));
         }
         return sb.toString();
     }
@@ -195,6 +179,17 @@ public class AuthService {
             redisTemplate.delete(key);
         } catch (Exception error) {
             log.warn("Redis unavailable for auth value deletion: {}", error.getMessage());
+        }
+    }
+
+    @Scheduled(fixedRate = 300_000) // every 5 minutes
+    void cleanupExpiredCodes() {
+        Instant now = Instant.now();
+        Iterator<Map.Entry<String, ExpiringValue>> it = memoryVerificationStore.entrySet().iterator();
+        while (it.hasNext()) {
+            if (it.next().getValue().expiresAt().isBefore(now)) {
+                it.remove();
+            }
         }
     }
 

@@ -14,12 +14,6 @@ public class User {
     @Column(unique = true, nullable = false, length = 128)
     private String email;
 
-    @Column(length = 64)
-    private String nickname;
-
-    @Column(length = 512)
-    private String avatarUrl;
-
     @Column(length = 32)
     private String settings;
 
@@ -49,12 +43,6 @@ public class User {
 
     public String getEmail() { return email; }
     public void setEmail(String email) { this.email = email; }
-
-    public String getNickname() { return nickname; }
-    public void setNickname(String nickname) { this.nickname = nickname; }
-
-    public String getAvatarUrl() { return avatarUrl; }
-    public void setAvatarUrl(String avatarUrl) { this.avatarUrl = avatarUrl; }
 
     public String getSettings() { return settings; }
     public void setSettings(String settings) { this.settings = settings; }

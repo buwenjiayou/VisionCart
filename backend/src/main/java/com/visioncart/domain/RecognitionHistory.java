@@ -3,13 +3,18 @@ package com.visioncart.domain;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Lob;
+import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
 
 @Entity
-@Table(name = "recognition_history")
+@Table(name = "recognition_history", indexes = {
+    @Index(name = "idx_history_user", columnList = "user_id"),
+    @Index(name = "idx_history_created", columnList = "created_at DESC")
+})
 public class RecognitionHistory {
     @Id
     @Column(length = 64)
@@ -30,9 +35,17 @@ public class RecognitionHistory {
     @Column(length = 512)
     private String keywords;
 
-    private double confidence;
+    private Double confidence;
+
+    @Column(name = "user_id")
+    private Long userId;
 
     private Instant createdAt = Instant.now();
+
+    @PrePersist
+    protected void onCreate() {
+        if (createdAt == null) createdAt = Instant.now();
+    }
 
     public String getSessionId() {
         return sessionId;
@@ -89,6 +102,9 @@ public class RecognitionHistory {
     public void setConfidence(double confidence) {
         this.confidence = confidence;
     }
+
+    public Long getUserId() { return userId; }
+    public void setUserId(Long userId) { this.userId = userId; }
 
     public Instant getCreatedAt() {
         return createdAt;

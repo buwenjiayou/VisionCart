@@ -27,6 +27,7 @@ public class EbaySearchService implements PlatformSearchService {
     // Cache eBay app token (valid ~2 hours)
     private volatile String cachedToken;
     private volatile long tokenExpiresAt = 0;
+    private final java.util.concurrent.locks.ReentrantLock tokenLock = new java.util.concurrent.locks.ReentrantLock();
 
     public EbaySearchService(VisionCartProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
@@ -37,6 +38,11 @@ public class EbaySearchService implements PlatformSearchService {
     @Override
     public String platform() {
         return "eBay";
+    }
+
+    @Override
+    public boolean domesticOnly() {
+        return false;
     }
 
     @Override
@@ -109,7 +115,13 @@ public class EbaySearchService implements PlatformSearchService {
             return cachedToken;
         }
 
+        tokenLock.lock();
         try {
+            // Double-check after acquiring lock
+            if (cachedToken != null && System.currentTimeMillis() < tokenExpiresAt) {
+                return cachedToken;
+            }
+
             String credentials = Base64.getEncoder().encodeToString(
                     (ebay.getAppId() + ":" + ebay.getCertId()).getBytes(StandardCharsets.UTF_8));
 
@@ -133,6 +145,8 @@ public class EbaySearchService implements PlatformSearchService {
         } catch (Exception e) {
             log.warn("eBay token request failed: {}", e.toString());
             return null;
+        } finally {
+            tokenLock.unlock();
         }
     }
 
@@ -141,21 +155,11 @@ public class EbaySearchService implements PlatformSearchService {
             return filter.keyword();
         }
         return String.join(" ",
-                useful(attributes.get("品牌")),
-                useful(attributes.get("颜色")),
-                useful(attributes.get("款式")),
-                useful(attributes.get("类目"))
+                SearchTextUtils.useful(attributes.get("品牌")),
+                SearchTextUtils.useful(attributes.get("颜色")),
+                SearchTextUtils.useful(attributes.get("款式")),
+                SearchTextUtils.useful(attributes.get("类目"))
         ).trim();
-    }
-
-    private String useful(String value) {
-        String trimmed = StringUtils.defaultString(value).trim();
-        return trimmed.isBlank()
-                || "未知".equals(trimmed)
-                || "未识别".equals(trimmed)
-                || "unknown".equalsIgnoreCase(trimmed)
-                ? ""
-                : trimmed;
     }
 
     private List<ProductCard> mapResponse(String body) throws Exception {
@@ -186,6 +190,11 @@ public class EbaySearchService implements PlatformSearchService {
 
             String condition = item.path("condition").asText("");
             String shopName = item.path("seller").path("username").asText("eBay Seller");
+            double rating = 0.0;
+            JsonNode sellerNode = item.path("seller");
+            if (sellerNode.has("feedbackPercentage")) {
+                rating = sellerNode.path("feedbackPercentage").asDouble(0) / 20.0;
+            }
 
             List<String> tags = new ArrayList<>();
             tags.add("eBay");
@@ -200,7 +209,7 @@ public class EbaySearchService implements PlatformSearchService {
                     "eBay",
                     false,
                     shopName,
-                    4.5,
+                    rating,
                     0,
                     0.75,
                     tags,
