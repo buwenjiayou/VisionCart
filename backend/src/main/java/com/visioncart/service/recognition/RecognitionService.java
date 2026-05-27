@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.visioncart.api.dto.AttributeCorrectionRequest;
 import com.visioncart.api.dto.AttributeCorrectionResult;
 import com.visioncart.api.dto.AttributeValue;
+import com.visioncart.api.dto.ProductCard;
 import com.visioncart.api.dto.RecognitionResult;
 import com.visioncart.api.dto.SearchRequest;
 import com.visioncart.api.dto.SearchResult;
@@ -14,14 +15,17 @@ import com.visioncart.domain.RecognitionHistory;
 import com.visioncart.repository.RecognitionFeedbackRepository;
 import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.search.SearchOrchestrator;
+import com.visioncart.service.search.SearchTextUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class RecognitionService {
@@ -45,7 +49,7 @@ public class RecognitionService {
 
     @Transactional
     public RecognitionResult analyze(MultipartFile image, String region) {
-        RecognitionResult result = visionClient.analyze(image, region);
+        RecognitionResult result = withSessionId(visionClient.analyze(image, region), UUID.randomUUID().toString());
         RecognitionHistory history = new RecognitionHistory();
         history.setSessionId(result.sessionId());
         history.setImageUrl("upload://" + result.sessionId());
@@ -94,6 +98,35 @@ public class RecognitionService {
         return historyRepository.findTop20ByOrderByCreatedAtDesc();
     }
 
+    public List<String> attributeOptions(String category, String attribute, String sessionId, List<String> defaults) {
+        LinkedHashSet<String> options = new LinkedHashSet<>();
+        if (SearchTextUtils.ATTR_BRAND.equals(attribute) && sessionId != null && !sessionId.isBlank()) {
+            historyRepository.findById(sessionId).ifPresent(history -> {
+                Map<String, AttributeValue> attributes = readAttributes(history.getAttributesJson());
+                Map<String, String> flatAttributes = new LinkedHashMap<>();
+                attributes.forEach((key, value) -> flatAttributes.put(key, value.value()));
+                try {
+                    SearchResult searchResult = searchOrchestrator.search(new SearchRequest(
+                            sessionId, flatAttributes, null, 1, 20, "attribute_options"));
+                    searchResult.products().stream()
+                            .map(this::brandCandidate)
+                            .map(SearchTextUtils::useful)
+                            .filter(value -> !value.isBlank())
+                            .forEach(options::add);
+                } catch (Exception ignored) {
+                    // Fallback to static options below.
+                }
+            });
+        }
+        if (defaults != null) {
+            defaults.stream()
+                    .map(SearchTextUtils::useful)
+                    .filter(value -> !value.isBlank())
+                    .forEach(options::add);
+        }
+        return List.copyOf(options);
+    }
+
     private Map<String, AttributeValue> readAttributes(String json) {
         if (json == null || json.isBlank()) {
             return new LinkedHashMap<>();
@@ -112,5 +145,24 @@ public class RecognitionService {
         } catch (JsonProcessingException error) {
             return "{}";
         }
+    }
+
+    private String brandCandidate(ProductCard product) {
+        String brand = SearchTextUtils.useful(product.brand());
+        if (!brand.isBlank()) {
+            return brand;
+        }
+        return SearchTextUtils.inferBrand(product.title(), product.shopName());
+    }
+
+    private RecognitionResult withSessionId(RecognitionResult result, String sessionId) {
+        return new RecognitionResult(
+                sessionId,
+                result.category(),
+                result.attributes(),
+                result.keywords(),
+                result.overallConfidence(),
+                result.platformStats()
+        );
     }
 }

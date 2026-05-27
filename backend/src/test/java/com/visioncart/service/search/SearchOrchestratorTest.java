@@ -3,6 +3,8 @@ package com.visioncart.service.search;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.visioncart.api.dto.*;
 import com.visioncart.config.VisionCartProperties;
+import com.visioncart.domain.RecognitionHistory;
+import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.suggestion.SuggestionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,7 @@ import org.springframework.data.redis.core.ValueOperations;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -26,6 +29,7 @@ class SearchOrchestratorTest {
     private ProductDeduplicator deduplicator;
     private RelevanceRanker ranker;
     private SuggestionService suggestionService;
+    private RecognitionHistoryRepository recognitionHistoryRepository;
     private ExecutorService executor;
     private VisionCartProperties properties;
     private SearchOrchestrator orchestrator;
@@ -57,10 +61,13 @@ class SearchOrchestratorTest {
         PlatformCircuitBreaker circuitBreaker = new PlatformCircuitBreaker(properties);
         RegionResolver regionResolver = mock(RegionResolver.class);
         when(regionResolver.isDomestic()).thenReturn(true);
+        recognitionHistoryRepository = mock(RecognitionHistoryRepository.class);
+        when(recognitionHistoryRepository.findById(anyString())).thenReturn(Optional.empty());
 
         orchestrator = new SearchOrchestrator(
                 List.of(taobao, pdd), deduplicator, ranker, suggestionService,
-                executor, properties, redisTemplate, objectMapper, circuitBreaker, regionResolver);
+                executor, properties, redisTemplate, objectMapper, circuitBreaker, regionResolver,
+                recognitionHistoryRepository);
     }
 
     @Test
@@ -219,6 +226,60 @@ class SearchOrchestratorTest {
 
         verify(suggestionService).cards(eq("app"), anyList());
         assertThat(result.suggestionCards()).hasSize(1);
+    }
+
+    @Test
+    void enrichesAttributesFromRecognitionHistoryWhenClientOnlySendsSessionId() {
+        RecognitionHistory history = new RecognitionHistory();
+        history.setSessionId("s1");
+        history.setCategoryJson("{\"level1\":\"电脑配件\",\"level2\":\"鼠标\",\"level3\":\"无线鼠标\"}");
+        history.setKeywords("白色无线鼠标");
+        when(recognitionHistoryRepository.findById("s1")).thenReturn(Optional.of(history));
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "白色无线鼠标", "淘宝", BigDecimal.valueOf(99))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of("颜色", "白色", "款式", "常规款式"),
+                null,
+                1,
+                20,
+                "app"
+        );
+        orchestrator.search(request);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, String>> attributesCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(taobao).search(attributesCaptor.capture(), any(), anyInt(), anyInt());
+        assertThat(attributesCaptor.getValue())
+                .containsEntry("类目", "无线鼠标")
+                .containsEntry("关键词", "白色无线鼠标");
+    }
+
+    @Test
+    void filtersIrrelevantProductsWhenCoreCategoryIsKnown() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "肩颈按摩仪", "淘宝", BigDecimal.valueOf(99)),
+                product("2", "白色无线办公鼠标", "淘宝", BigDecimal.valueOf(39))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of("类目", "无线鼠标", "关键词", "白色无线鼠标"),
+                null,
+                1,
+                20,
+                "app"
+        );
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products())
+                .extracting(ProductCard::title)
+                .containsExactly("白色无线办公鼠标");
     }
 
     private SearchRequest defaultRequest() {

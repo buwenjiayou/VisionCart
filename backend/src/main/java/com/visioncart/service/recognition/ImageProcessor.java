@@ -10,7 +10,6 @@ import javax.imageio.ImageReader;
 import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
 import javax.imageio.plugins.jpeg.JPEGImageWriteParam;
-import javax.imageio.metadata.IIOMetadata;
 import javax.imageio.stream.ImageInputStream;
 import javax.imageio.stream.ImageOutputStream;
 import java.awt.*;
@@ -41,18 +40,25 @@ public class ImageProcessor {
 
     public byte[] compress(byte[] original, int maxDimension, float jpegQuality) {
         try (ImageInputStream iis = ImageIO.createImageInputStream(new ByteArrayInputStream(original))) {
+            if (iis == null) {
+                throw new ImageQualityException("unsupported_format");
+            }
             Iterator<ImageReader> readers = ImageIO.getImageReaders(iis);
             if (!readers.hasNext()) {
-                throw new IOException("Unsupported image format");
+                throw new ImageQualityException("unsupported_format");
             }
             ImageReader reader = readers.next();
             try {
                 reader.setInput(iis);
                 ImageReadParam param = reader.getDefaultReadParam();
                 BufferedImage image = reader.read(0, param);
+                if (image == null) {
+                    throw new ImageQualityException("decode_failed");
+                }
 
                 int orientation = getExifOrientation(reader);
                 image = applyExifRotation(image, orientation);
+                image = toRgb(image);
 
                 int origW = image.getWidth();
                 int origH = image.getHeight();
@@ -77,8 +83,10 @@ public class ImageProcessor {
             } finally {
                 reader.dispose();
             }
+        } catch (ImageQualityException e) {
+            throw e;
         } catch (IOException e) {
-            throw new RuntimeException("Image compression failed", e);
+            throw new ImageQualityException("decode_failed");
         }
     }
 
@@ -86,7 +94,7 @@ public class ImageProcessor {
         try {
             BufferedImage image = ImageIO.read(new ByteArrayInputStream(imageBytes));
             if (image == null) {
-                return new QualityCheckResult(false, "blurry");
+                return new QualityCheckResult(false, "decode_failed");
             }
 
             double laplacianVariance = computeLaplacianVariance(image);
@@ -104,7 +112,7 @@ public class ImageProcessor {
 
             return new QualityCheckResult(true, null);
         } catch (IOException e) {
-            return new QualityCheckResult(false, "blurry");
+            return new QualityCheckResult(false, "decode_failed");
         }
     }
 
@@ -172,6 +180,19 @@ public class ImageProcessor {
         return baos.toByteArray();
     }
 
+    private BufferedImage toRgb(BufferedImage image) {
+        if (image.getType() == BufferedImage.TYPE_INT_RGB) {
+            return image;
+        }
+        BufferedImage rgb = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = rgb.createGraphics();
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, rgb.getWidth(), rgb.getHeight());
+        g.drawImage(image, 0, 0, null);
+        g.dispose();
+        return rgb;
+    }
+
     private int getExifOrientation(ImageReader reader) {
         try {
             var metadata = reader.getImageMetadata(0);
@@ -196,22 +217,22 @@ public class ImageProcessor {
         int w = image.getWidth();
         int h = image.getHeight();
         AffineTransform transform = new AffineTransform();
+        boolean swap = orientation == 5 || orientation == 6 || orientation == 7 || orientation == 8;
+        int newW = swap ? h : w;
+        int newH = swap ? w : h;
 
         switch (orientation) {
-            case 2 -> transform.scale(-1, 1); // flip horizontal
-            case 3 -> transform.rotate(Math.PI, w / 2.0, h / 2.0); // 180
-            case 4 -> { transform.scale(1, -1); transform.translate(0, -h); } // flip vertical
-            case 5 -> { transform.rotate(Math.PI / 2, w / 2.0, h / 2.0); transform.scale(-1, 1); }
-            case 6 -> transform.rotate(Math.PI / 2, w / 2.0, h / 2.0); // 90 CW
-            case 7 -> { transform.rotate(-Math.PI / 2, w / 2.0, h / 2.0); transform.scale(-1, 1); }
-            case 8 -> transform.rotate(-Math.PI / 2, w / 2.0, h / 2.0); // 90 CCW
+            case 2 -> { transform.translate(w, 0); transform.scale(-1, 1); }
+            case 3 -> { transform.translate(w, h); transform.rotate(Math.PI); }
+            case 4 -> { transform.translate(0, h); transform.scale(1, -1); }
+            case 5 -> { transform.rotate(Math.PI / 2); transform.scale(1, -1); }
+            case 6 -> { transform.translate(h, 0); transform.rotate(Math.PI / 2); }
+            case 7 -> { transform.translate(h, w); transform.rotate(Math.PI / 2); transform.scale(-1, 1); }
+            case 8 -> { transform.translate(0, w); transform.rotate(-Math.PI / 2); }
             default -> { return image; }
         }
 
-        boolean swap = orientation >= 5;
-        int newW = swap ? h : w;
-        int newH = swap ? w : h;
-        BufferedImage rotated = new BufferedImage(newW, newH, image.getType());
+        BufferedImage rotated = new BufferedImage(newW, newH, image.getType() == 0 ? BufferedImage.TYPE_INT_RGB : image.getType());
         Graphics2D g = rotated.createGraphics();
         g.setTransform(transform);
         g.drawImage(image, 0, 0, null);

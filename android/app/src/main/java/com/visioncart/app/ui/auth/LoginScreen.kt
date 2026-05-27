@@ -50,6 +50,7 @@ import com.visioncart.app.data.TokenManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import android.content.Context
+import androidx.compose.ui.tooling.preview.Preview
 
 data class AuthUiState(
     val email: String = "",
@@ -228,8 +229,7 @@ fun LoginScreen(
                                     context,
                                     loginData.token,
                                     loginData.user_id,
-                                    loginData.email,
-                                    loginData.nickname
+                                    loginData.email
                                 )
                                 state = state.copy(isLoading = false, success = true)
                                 onLoginSuccess()
@@ -277,5 +277,16 @@ fun LoginScreen(
                 textAlign = TextAlign.Center
             )
         }
+    }
+}
+
+@Preview(showBackground = true, showSystemUi = true)
+@Composable
+private fun LoginScreenPreview() {
+    MaterialTheme {
+        LoginScreen(
+            context = androidx.compose.ui.platform.LocalContext.current,
+            onLoginSuccess = {}
+        )
     }
 }

@@ -22,14 +22,18 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class TaobaoSearchService implements PlatformSearchService {
     private static final Logger log = LoggerFactory.getLogger(TaobaoSearchService.class);
+    private static final int DETAIL_ENRICH_LIMIT = 20;
+    private static final long DETAIL_CACHE_TTL_MS = Duration.ofMinutes(30).toMillis();
 
     private final VisionCartProperties properties;
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
+    private final Map<String, CachedDetail> detailCache = new ConcurrentHashMap<>();
     private volatile long apiClockOffsetMs = 0;
 
     public TaobaoSearchService(VisionCartProperties properties, ObjectMapper objectMapper) {
@@ -52,16 +56,12 @@ public class TaobaoSearchService implements PlatformSearchService {
         }
 
         try {
-            Map<String, String> params = buildParams(attributes, filter, page, pageSize, tb);
-            String body = executeSearch(tb, params);
-
-            return mapResponse(body);
+            return doSearch(attributes, filter, page, pageSize, tb);
         } catch (Exception e) {
             if (e.getMessage() != null && e.getMessage().contains("Invalid timestamp")) {
                 syncClockOffset(tb.getApiUrl());
                 try {
-                    Map<String, String> retryParams = buildParams(attributes, filter, page, pageSize, tb);
-                    return mapResponse(executeSearch(tb, retryParams));
+                    return doSearch(attributes, filter, page, pageSize, tb);
                 } catch (Exception retryError) {
                     log.warn("Taobao search retry failed: {}", retryError.toString());
                 }
@@ -71,7 +71,20 @@ public class TaobaoSearchService implements PlatformSearchService {
         }
     }
 
-    private Map<String, String> buildParams(Map<String, String> attributes,
+    private List<ProductCard> doSearch(Map<String, String> attributes, SearchFilter filter, int page, int pageSize,
+                                       VisionCartProperties.Taobao tb) throws Exception {
+        Map<String, ProductCard> byId = new LinkedHashMap<>();
+        for (String query : SearchQueryBuilder.taobaoQueries(attributes, filter, "商品")) {
+            Map<String, String> params = buildParams(query, filter, page, pageSize, tb);
+            mapResponse(executeSearch(tb, params)).forEach(product -> byId.putIfAbsent(product.id(), product));
+            if (byId.size() >= Math.min(DETAIL_ENRICH_LIMIT, Math.max(10, pageSize))) {
+                break;
+            }
+        }
+        return enrichWithDetails(new ArrayList<>(byId.values()), tb);
+    }
+
+    private Map<String, String> buildParams(String query,
                                             SearchFilter filter,
                                             int page,
                                             int pageSize,
@@ -84,7 +97,7 @@ public class TaobaoSearchService implements PlatformSearchService {
         params.put("sign_method", "md5");
         params.put("format", "json");
 
-        params.put("q", keyword(attributes, filter));
+        params.put("q", query);
         params.put("page_no", String.valueOf(Math.max(1, page)));
         params.put("page_size", String.valueOf(Math.min(100, Math.max(10, pageSize))));
         params.put("platform", "2");
@@ -124,25 +137,6 @@ public class TaobaoSearchService implements PlatformSearchService {
                 .body(buildQueryString(params))
                 .retrieve()
                 .body(String.class);
-    }
-
-    private String keyword(Map<String, String> attributes, SearchFilter filter) {
-        if (filter.keyword() != null && !filter.keyword().isBlank()) {
-            return filter.keyword();
-        }
-        String brand = SearchTextUtils.useful(attributes.get("品牌"));
-        String style = SearchTextUtils.useful(attributes.get("款式"));
-        String category = SearchTextUtils.useful(attributes.get("类目"));
-        if (StringUtils.isNotBlank(brand)) {
-            return brand;
-        }
-        if (StringUtils.isNotBlank(style)) {
-            return style;
-        }
-        if (StringUtils.isNotBlank(category)) {
-            return category;
-        }
-        return "商品";
     }
 
     private String sign(Map<String, String> params, String secret) throws Exception {
@@ -229,10 +223,11 @@ public class TaobaoSearchService implements PlatformSearchService {
                     firstText(item, "shop_title", "shop_name", "seller_nick"),
                     firstText(basicInfo, "shop_title", "shop_name", "seller_nick"));
             shopName = StringUtils.defaultIfBlank(shopName, "淘宝店铺");
-            long sales = parseSales(firstLong(item, "volume", "sell_num", "total_sales", "sales"));
-            if (sales == 0) {
-                sales = parseSales(firstLong(basicInfo, "volume", "sell_num", "total_sales", "tk_total_sales", "annual_vol"));
-            }
+            String brand = StringUtils.defaultIfBlank(
+                    firstText(basicInfo, "brand_name", "brand"),
+                    SearchTextUtils.inferBrand(title, shopName));
+            JsonNode publishInfo = item.path("publish_info");
+            SalesInfo salesInfo = salesInfo(item, basicInfo, publishInfo);
             boolean hasCoupon = item.path("coupon_amount").asLong(0) > 0
                     || priceInfo.path("final_promotion_path_list").path("final_promotion_path_map_data").isArray();
             String userType = firstLong(item, "user_type") == 1 || firstLong(basicInfo, "user_type") == 1 ? "天猫" : "淘宝";
@@ -246,6 +241,21 @@ public class TaobaoSearchService implements PlatformSearchService {
             tags.add(userType);
             if (item.path("free_shipment").asBoolean()) tags.add("包邮");
             if (hasCoupon) tags.add("有券");
+            addPromotionTags(tags, priceInfo);
+
+            String detailUrl = SearchTextUtils.normalizeUrl(firstText(
+                    publishInfo,
+                    "coupon_share_url",
+                    "click_url"));
+            if (StringUtils.isBlank(detailUrl)) {
+                detailUrl = SearchTextUtils.normalizeUrl(firstText(item, "item_url", "url"));
+            }
+            if (StringUtils.isBlank(detailUrl) && numIid.matches("\\d+")) {
+                detailUrl = "https://item.taobao.com/item.htm?id=" + numIid;
+            }
+            if (StringUtils.isBlank(detailUrl)) {
+                detailUrl = "https://s.taobao.com/search?q=" + java.net.URLEncoder.encode(title, StandardCharsets.UTF_8);
+            }
 
             products.add(new ProductCard(
                     "tb_" + numIid,
@@ -257,14 +267,176 @@ public class TaobaoSearchService implements PlatformSearchService {
                     selfOperated,
                     shopName,
                     rating,
-                    sales,
+                    salesInfo.sales(),
                     0.85,
                     tags,
-                    "https://item.taobao.com/item.htm?id=" + numIid
+                    detailUrl,
+                    brand,
+                    rating > 0 ? "shop_dsr" : "none",
+                    SearchTextUtils.salesLabel(salesInfo.sales(), salesInfo.source())
             ));
         }
 
         return products;
+    }
+
+    private List<ProductCard> enrichWithDetails(List<ProductCard> products, VisionCartProperties.Taobao tb) {
+        if (products.isEmpty()) {
+            return products;
+        }
+        try {
+            Map<String, TaobaoDetail> details = loadDetails(
+                    products.stream()
+                            .map(product -> product.id().replaceFirst("^tb_", ""))
+                            .filter(StringUtils::isNotBlank)
+                            .limit(DETAIL_ENRICH_LIMIT)
+                            .toList(),
+                    tb);
+            if (details.isEmpty()) {
+                return products;
+            }
+            return products.stream()
+                    .map(product -> applyDetail(product, details.get(product.id().replaceFirst("^tb_", ""))))
+                    .toList();
+        } catch (Exception e) {
+            log.warn("Taobao detail enrichment skipped: {}", e.toString());
+            return products;
+        }
+    }
+
+    private Map<String, TaobaoDetail> loadDetails(List<String> itemIds, VisionCartProperties.Taobao tb) throws Exception {
+        Map<String, TaobaoDetail> details = new LinkedHashMap<>();
+        List<String> missing = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        for (String itemId : itemIds) {
+            CachedDetail cached = detailCache.get(itemId);
+            if (cached != null && cached.expiresAt() > now) {
+                details.put(itemId, cached.detail());
+            } else {
+                missing.add(itemId);
+            }
+        }
+        if (!missing.isEmpty()) {
+            Map<String, TaobaoDetail> loaded = fetchDetails(missing, tb);
+            loaded.forEach((id, detail) -> detailCache.put(id, new CachedDetail(detail, now + DETAIL_CACHE_TTL_MS)));
+            details.putAll(loaded);
+        }
+        return details;
+    }
+
+    private Map<String, TaobaoDetail> fetchDetails(List<String> itemIds, VisionCartProperties.Taobao tb) throws Exception {
+        Map<String, String> params = new TreeMap<>();
+        params.put("method", "taobao.tbk.item.info.upgrade.get");
+        params.put("app_key", tb.getAppKey());
+        params.put("timestamp", taobaoTimestamp());
+        params.put("v", "2.0");
+        params.put("sign_method", "md5");
+        params.put("format", "json");
+        params.put("item_id", String.join(",", itemIds));
+        params.put("platform", "2");
+        params.put("sign", sign(params, tb.getAppSecret()));
+
+        String body = restClient.post()
+                .uri(tb.getApiUrl())
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .body(buildQueryString(params))
+                .retrieve()
+                .body(String.class);
+        return mapDetailResponse(body);
+    }
+
+    private Map<String, TaobaoDetail> mapDetailResponse(String body) throws Exception {
+        JsonNode root = objectMapper.readTree(body);
+        JsonNode errorResponse = root.path("error_response");
+        if (!errorResponse.isMissingNode() && !errorResponse.isEmpty()) {
+            throw new IllegalStateException(errorResponse.toString());
+        }
+        JsonNode details = root.path("tbk_item_info_upgrade_get_response").path("results").path("tbk_item_detail");
+        if (!details.isArray()) {
+            details = root.findPath("tbk_item_detail");
+        }
+        Map<String, TaobaoDetail> mapped = new LinkedHashMap<>();
+        if (!details.isArray()) {
+            return mapped;
+        }
+        for (JsonNode detail : details) {
+            TaobaoDetail item = toDetail(detail);
+            if (StringUtils.isNotBlank(item.itemId())) {
+                mapped.put(item.itemId(), item);
+            }
+            if (StringUtils.isNotBlank(item.inputItemId())) {
+                mapped.put(item.inputItemId(), item);
+            }
+        }
+        return mapped;
+    }
+
+    private TaobaoDetail toDetail(JsonNode detail) {
+        JsonNode basicInfo = detail.path("item_basic_info");
+        JsonNode priceInfo = detail.path("price_promotion_info");
+        JsonNode publishInfo = detail.path("publish_info");
+        String itemId = firstNonBlank(
+                firstText(detail, "item_id"),
+                firstText(basicInfo, "item_id", "num_iid"));
+        String inputItemId = firstText(detail, "input_item_iid");
+        String title = firstText(basicInfo, "title", "short_title", "sub_title");
+        String imageUrl = firstText(basicInfo, "pict_url", "white_image", "small_images");
+        BigDecimal price = firstPrice(
+                firstText(priceInfo, "final_promotion_price", "promotion_price", "zk_final_price"),
+                firstText(priceInfo, "zk_final_price"),
+                firstText(basicInfo, "zk_final_price", "price"));
+        BigDecimal originalPrice = firstPrice(
+                firstText(priceInfo, "reserve_price", "origin_price"),
+                firstText(basicInfo, "reserve_price", "price"));
+        String shopName = firstText(basicInfo, "shop_title", "shop_name", "seller_nick");
+        String brand = StringUtils.defaultIfBlank(firstText(basicInfo, "brand_name", "brand"),
+                SearchTextUtils.inferBrand(title, shopName));
+        double rating = parseRating(firstText(basicInfo, "shop_dsr", "item_score"));
+        SalesInfo sales = salesInfo(detail, basicInfo, publishInfo);
+        String detailUrl = SearchTextUtils.normalizeUrl(firstText(publishInfo, "coupon_share_url", "click_url"));
+        if (StringUtils.isBlank(detailUrl)) {
+            detailUrl = SearchTextUtils.normalizeUrl(firstText(basicInfo, "item_url", "tmall_desc_url", "taobao_desc_url"));
+        }
+        List<String> tags = new ArrayList<>();
+        String userType = firstLong(basicInfo, "user_type") == 1 ? "天猫" : "淘宝";
+        tags.add(userType);
+        if (basicInfo.path("free_shipment").asBoolean(false)) tags.add("包邮");
+        addPromotionTags(tags, priceInfo);
+        return new TaobaoDetail(itemId, inputItemId, title, imageUrl, price, originalPrice, shopName, brand,
+                rating, sales.sales(), sales.source(), tags, detailUrl, "天猫".equals(userType));
+    }
+
+    private ProductCard applyDetail(ProductCard base, TaobaoDetail detail) {
+        if (detail == null) {
+            return base;
+        }
+        List<String> tags = new ArrayList<>(base.tags());
+        detail.tags().forEach(tag -> {
+            if (!tags.contains(tag)) {
+                tags.add(tag);
+            }
+        });
+        long sales = Math.max(base.sales(), detail.sales());
+        String salesSource = detail.sales() >= base.sales() ? detail.salesSource() : salesSourceFromLabel(base.salesLabel());
+        double rating = detail.rating() > 0 ? detail.rating() : base.rating();
+        return new ProductCard(
+                base.id(),
+                StringUtils.defaultIfBlank(detail.title(), base.title()),
+                StringUtils.defaultIfBlank(detail.imageUrl(), base.imageUrl()),
+                detail.price().compareTo(BigDecimal.ZERO) > 0 ? detail.price() : base.price(),
+                detail.originalPrice().compareTo(BigDecimal.ZERO) > 0 ? detail.originalPrice() : base.originalPrice(),
+                base.platform(),
+                detail.selfOperated() || base.selfOperated(),
+                StringUtils.defaultIfBlank(detail.shopName(), base.shopName()),
+                rating,
+                sales,
+                base.similarity(),
+                tags,
+                StringUtils.defaultIfBlank(detail.detailUrl(), base.detailUrl()),
+                StringUtils.defaultIfBlank(detail.brand(), base.brand()),
+                rating > 0 ? "shop_dsr" : base.ratingSource(),
+                SearchTextUtils.salesLabel(sales, salesSource)
+        );
     }
 
     private String firstText(JsonNode item, String... names) {
@@ -308,10 +480,69 @@ public class TaobaoSearchService implements PlatformSearchService {
         return 0;
     }
 
-    private long parseSales(long volume) {
-        if (volume >= 10000) return volume;
-        // taobao sometimes returns values like "1.5万+" — but API returns long, so just use as-is
-        return volume;
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private SalesInfo salesInfo(JsonNode item, JsonNode basicInfo, JsonNode publishInfo) {
+        long monthly = SearchTextUtils.maxHumanCount(
+                firstText(item, "volume"),
+                firstText(item, "sell_num"),
+                firstText(item, "total_sales"),
+                firstText(item, "sales"),
+                firstText(item, "sales_tip"),
+                firstText(basicInfo, "volume"),
+                firstText(basicInfo, "sell_num"),
+                firstText(basicInfo, "total_sales"),
+                firstText(basicInfo, "monthly_sales"));
+        long annual = SearchTextUtils.maxHumanCount(firstText(basicInfo, "annual_vol"));
+        long promotion = SearchTextUtils.maxHumanCount(
+                firstText(basicInfo, "tk_total_sales"),
+                firstText(publishInfo, "daily_promotion_sales"),
+                firstText(publishInfo, "two_hour_promotion_sales"));
+        if (annual >= monthly && annual >= promotion) {
+            return new SalesInfo(annual, "annual");
+        }
+        if (promotion >= monthly) {
+            return new SalesInfo(promotion, "promotion");
+        }
+        return new SalesInfo(monthly, "monthly");
+    }
+
+    private void addPromotionTags(List<String> tags, JsonNode priceInfo) {
+        JsonNode tagList = priceInfo.path("promotion_tag_list");
+        if (tagList.isArray()) {
+            tagList.forEach(tag -> {
+                String name = firstText(tag, "tag_name", "name");
+                if (StringUtils.isNotBlank(name) && !tags.contains(name)) {
+                    tags.add(name);
+                }
+            });
+        }
+        JsonNode pathList = priceInfo.path("final_promotion_path_list").path("final_promotion_path_map_data");
+        if (pathList.isArray()) {
+            pathList.forEach(path -> {
+                String title = firstText(path, "promotion_title", "promotion_desc");
+                if (StringUtils.isNotBlank(title) && !tags.contains(title)) {
+                    tags.add(title);
+                }
+            });
+        }
+    }
+
+    private String salesSourceFromLabel(String label) {
+        if (label != null && label.startsWith("年销")) {
+            return "annual";
+        }
+        if (label != null && label.startsWith("推广")) {
+            return "promotion";
+        }
+        return "monthly";
     }
 
     private double parseRating(String... values) {
@@ -332,4 +563,25 @@ public class TaobaoSearchService implements PlatformSearchService {
         }
         return 0.0;
     }
+
+    private record SalesInfo(long sales, String source) {}
+
+    private record CachedDetail(TaobaoDetail detail, long expiresAt) {}
+
+    private record TaobaoDetail(
+            String itemId,
+            String inputItemId,
+            String title,
+            String imageUrl,
+            BigDecimal price,
+            BigDecimal originalPrice,
+            String shopName,
+            String brand,
+            double rating,
+            long sales,
+            String salesSource,
+            List<String> tags,
+            String detailUrl,
+            boolean selfOperated
+    ) {}
 }

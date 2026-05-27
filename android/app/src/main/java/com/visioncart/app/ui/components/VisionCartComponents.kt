@@ -1,7 +1,10 @@
 package com.visioncart.app.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,11 +13,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.FilterAlt
-import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.ImageSearch
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
@@ -25,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -42,6 +52,7 @@ import com.visioncart.app.data.ProductCard
 import com.visioncart.app.data.SearchFilter
 import com.visioncart.app.data.SuggestionCard
 import com.visioncart.app.ui.viewmodel.UiState
+import androidx.compose.ui.tooling.preview.Preview
 
 // ==================== Loading & Error States ====================
 
@@ -89,57 +100,143 @@ fun RecognitionPanel(
     categoryText: String,
     attributes: Map<String, AttributeValue>,
     state: UiState<com.visioncart.app.data.RecognitionResult>,
-    onAttributeClick: (String, String) -> Unit
+    onAttributeClick: (String, String) -> Unit,
+    onRetry: (() -> Unit)? = null
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            when (state) {
-                is UiState.Loading -> {
-                    Text("正在识别中...", style = MaterialTheme.typography.titleMedium)
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(18.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = Color(0xFFEAF3F0), shape = CircleShape) {
+                    Icon(
+                        Icons.Outlined.ImageSearch,
+                        contentDescription = null,
+                        tint = Color(0xFF0A7C66),
+                        modifier = Modifier.padding(8.dp).size(20.dp)
+                    )
                 }
-                is UiState.Error -> {
-                    Text("识别失败", style = MaterialTheme.typography.titleMedium, color = Color(0xFFD32F2F))
-                    Text(state.message, color = Color(0xFF757575), style = MaterialTheme.typography.bodySmall)
-                }
-                is UiState.Success -> {
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
                     Text(
-                        "识别结果：$categoryText",
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.titleMedium
+                        "识别结果",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF10201C)
                     )
                     Text(
-                        "置信度 ${(state.data.overallConfidence * 100).toInt()}%",
-                        color = Color(0xFF757575),
+                        when (state) {
+                            is UiState.Idle -> "等待图片输入"
+                            is UiState.Loading -> "正在分析商品特征"
+                            is UiState.Error -> "识别遇到问题"
+                            is UiState.Success -> categoryText.ifBlank { "已识别商品" }
+                        },
+                        color = Color(0xFF687A75),
                         style = MaterialTheme.typography.bodySmall
                     )
-                    attributes.forEach { (name, value) ->
+                }
+            }
+            when (state) {
+                is UiState.Loading -> {
+                    Surface(color = Color(0xFFF3F8F6), shape = RoundedCornerShape(14.dp)) {
                         Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { onAttributeClick(name, value.value) },
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(name, color = Color(0xFF53615E))
-                                if (value.verified) {
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("✓", color = Color(0xFF0A7C66), fontWeight = FontWeight.Bold)
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                color = Color(0xFF0A7C66),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("正在识别中...", color = Color(0xFF53615E), style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+                is UiState.Error -> {
+                    Surface(color = Color(0xFFFFF1F1), shape = RoundedCornerShape(14.dp)) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "识别失败",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Color(0xFFD32F2F),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(state.message, color = Color(0xFF7A5A5A), style = MaterialTheme.typography.bodySmall)
+                            if (onRetry != null) {
+                                TextButton(onClick = onRetry) {
+                                    Text("重试", color = Color(0xFF0A7C66), fontWeight = FontWeight.SemiBold)
                                 }
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "${value.value}  ${(value.confidence * 100).toInt()}%",
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("✎", color = Color(0xFF9E9E9E), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                is UiState.Success -> {
+                    Surface(color = Color(0xFFF3F8F6), shape = RoundedCornerShape(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Outlined.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF0A7C66),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "置信度 ${(state.data.overallConfidence * 100).toInt()}%",
+                                color = Color(0xFF0A7C66),
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                    attributes.forEach { (name, value) ->
+                        Surface(
+                            color = Color(0xFFFAFCFB),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onAttributeClick(name, value.value) }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(name, color = Color(0xFF53615E), style = MaterialTheme.typography.bodyMedium)
+                                    if (value.verified) {
+                                        Spacer(Modifier.width(5.dp))
+                                        Text("✓", color = Color(0xFF0A7C66), fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "${value.value}  ${(value.confidence * 100).toInt()}%",
+                                        color = Color(0xFF10201C),
+                                        fontWeight = FontWeight.Medium,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("✎", color = Color(0xFF9EAAA6), style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
                 }
                 is UiState.Idle -> {
-                    Text("拍照或选择图片开始识别", color = Color(0xFF9E9E9E))
+                    Surface(color = Color(0xFFF7F9F8), shape = RoundedCornerShape(14.dp)) {
+                        Text(
+                            "拍照或选择图片开始识别",
+                            color = Color(0xFF7A8A85),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.fillMaxWidth().padding(14.dp)
+                        )
+                    }
                 }
             }
         }
@@ -157,23 +254,41 @@ fun ProductCardView(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(18.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Row(modifier = Modifier.padding(12.dp)) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             // Product image
             if (product.imageUrl.isNotBlank()) {
                 AsyncImage(
                     model = product.imageUrl,
                     contentDescription = product.title,
                     modifier = Modifier
-                        .size(88.dp)
-                        .clip(MaterialTheme.shapes.small),
+                        .size(92.dp)
+                        .clip(RoundedCornerShape(14.dp)),
                     contentScale = ContentScale.Crop
                 )
-                Spacer(Modifier.width(12.dp))
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(92.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFFEAF3F0)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Outlined.ImageSearch,
+                        contentDescription = null,
+                        tint = Color(0xFF0A7C66),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
             }
+            Spacer(Modifier.width(12.dp))
 
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val brand = product.brand?.takeIf { it.isNotBlank() }
                 Text(
                     product.title,
                     fontWeight = FontWeight.SemiBold,
@@ -182,9 +297,28 @@ fun ProductCardView(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (brand != null) {
+                        Text(
+                            brand,
+                            color = Color(0xFF8A5A00),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFFFFF3D8))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
                     Text(
-                        "${product.platform} | ${product.shopName}",
-                        color = Color(0xFF53615E),
+                        product.platform,
+                        color = Color(0xFF0A7C66),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        " · ${product.shopName}",
+                        color = Color(0xFF687A75),
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -197,8 +331,9 @@ fun ProductCardView(
                             color = Color(0xFF0A7C66),
                             style = MaterialTheme.typography.labelSmall,
                             modifier = Modifier
-                                .clip(MaterialTheme.shapes.extraSmall)
-                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFFEAF3F0))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
                 }
@@ -212,7 +347,7 @@ fun ProductCardView(
                             "¥${product.price}",
                             color = Color(0xFF0A7C66),
                             fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium
+                            style = MaterialTheme.typography.titleLarge
                         )
                         if (product.originalPrice != null && product.originalPrice > product.price) {
                             Spacer(Modifier.width(6.dp))
@@ -238,13 +373,13 @@ fun ProductCardView(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        "⭐ ${product.rating}",
-                        color = Color(0xFF757575),
+                        ratingText(product),
+                        color = Color(0xFF687A75),
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        "销量 ${formatSales(product.sales)}",
-                        color = Color(0xFF757575),
+                        salesText(product),
+                        color = Color(0xFF687A75),
                         style = MaterialTheme.typography.bodySmall
                     )
                     if (product.tags.isNotEmpty()) {
@@ -254,8 +389,9 @@ fun ProductCardView(
                                 color = Color(0xFF53615E),
                                 style = MaterialTheme.typography.labelSmall,
                                 modifier = Modifier
-                                    .clip(MaterialTheme.shapes.extraSmall)
-                                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFFF3F8F6))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
                     }
@@ -263,6 +399,19 @@ fun ProductCardView(
             }
         }
     }
+}
+
+private fun ratingText(product: ProductCard): String {
+    return when {
+        product.rating > 0.0 && product.ratingSource == "shop_dsr" -> "店铺 ${"%.1f".format(product.rating)}"
+        product.rating > 0.0 -> "⭐ ${"%.1f".format(product.rating)}"
+        else -> "暂无评分"
+    }
+}
+
+private fun salesText(product: ProductCard): String {
+    return product.salesLabel?.takeIf { it.isNotBlank() }
+        ?: if (product.sales > 0) "销量 ${formatSales(product.sales)}" else "销量未知"
 }
 
 private fun formatSales(sales: Long): String {
@@ -281,16 +430,27 @@ fun SuggestionChipsRow(
     onCardClick: (SuggestionCard) -> Unit
 ) {
     if (cards.isEmpty()) return
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        cards.forEach { card ->
-            AssistChip(
-                onClick = { onCardClick(card) },
-                label = { Text("${card.icon} ${card.title}") },
-                colors = AssistChipDefaults.assistChipColors(
-                    containerColor = Color(0xFFF0F7F5),
-                    labelColor = Color(0xFF0A7C66)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Tune, contentDescription = null, tint = Color(0xFF0A7C66), modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("智能建议", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color(0xFF10201C))
+        }
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            cards.forEach { card ->
+                AssistChip(
+                    onClick = { onCardClick(card) },
+                    label = { Text("${card.icon} ${card.title}") },
+                    shape = RoundedCornerShape(999.dp),
+                    colors = AssistChipDefaults.assistChipColors(
+                        containerColor = Color.White,
+                        labelColor = Color(0xFF0A7C66)
+                    )
                 )
-            )
+            }
         }
     }
 }
@@ -303,20 +463,30 @@ fun NlpInputBar(
     onValueChange: (String) -> Unit,
     onSubmit: () -> Unit
 ) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        modifier = Modifier.fillMaxWidth(),
-        leadingIcon = { Icon(Icons.Outlined.FilterAlt, contentDescription = null) },
-        label = { Text("自然语言追加筛选") },
-        placeholder = { Text("1000元以内黑色款，要评价4.8分以上，按销量排") },
-        trailingIcon = {
-            if (value.isNotBlank()) {
-                TextButton(onClick = onSubmit) { Text("搜索") }
-            }
-        },
-        maxLines = 2
-    )
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(18.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            leadingIcon = { Icon(Icons.Outlined.FilterAlt, contentDescription = null, tint = Color(0xFF0A7C66)) },
+            label = { Text("追加筛选") },
+            placeholder = { Text("1000元以内黑色款，要评价4.8分以上") },
+            trailingIcon = {
+                if (value.isNotBlank()) {
+                    IconButton(onClick = onSubmit) {
+                        Icon(Icons.Outlined.Search, contentDescription = "搜索", tint = Color(0xFF0A7C66))
+                    }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+            maxLines = 1
+        )
+    }
 }
 
 // ==================== Attribute Correction Dialog ====================
@@ -378,25 +548,129 @@ fun FilterSummary(filter: SearchFilter, onClear: () -> Unit) {
 
     if (parts.isEmpty()) return
 
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Text("筛选:", color = Color(0xFF757575), style = MaterialTheme.typography.bodySmall)
-        parts.forEach { part ->
-            AssistChip(
-                onClick = {},
-                label = { Text(part, style = MaterialTheme.typography.labelSmall) },
-                colors = AssistChipDefaults.assistChipColors(
-                    containerColor = Color(0xFFE8F5E9),
-                    labelColor = Color(0xFF2E7D32)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("筛选", color = Color(0xFF687A75), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                parts.forEach { part ->
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(part, style = MaterialTheme.typography.labelSmall) },
+                        shape = RoundedCornerShape(999.dp),
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = Color(0xFFEAF3F0),
+                            labelColor = Color(0xFF0A7C66)
+                        )
+                    )
+                }
+            }
+            TextButton(onClick = onClear) {
+                Text("清除", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+// ==================== Previews ====================
+
+@Preview(showBackground = true)
+@Composable
+private fun LoadingIndicatorPreview() {
+    MaterialTheme { LoadingIndicator() }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ErrorMessagePreview() {
+    MaterialTheme { ErrorMessage("网络连接失败，请重试") {} }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun EmptyStatePreview() {
+    MaterialTheme { EmptyState() }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ProductCardViewPreview() {
+    MaterialTheme {
+        ProductCardView(
+            product = ProductCard(
+                id = "1",
+                title = "Apple iPhone 15 Pro Max 256GB 原色钛金属",
+                imageUrl = "",
+                price = 9299.0,
+                originalPrice = 9999.0,
+                platform = "京东",
+                selfOperated = true,
+                shopName = "Apple 自营旗舰店",
+                rating = 4.9,
+                sales = 50000,
+                similarity = 0.95,
+                tags = listOf("热卖", "正品"),
+                detailUrl = ""
+            ),
+            isFavorite = false
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun RecognitionPanelSuccessPreview() {
+    MaterialTheme {
+        RecognitionPanel(
+            categoryText = "手机",
+            attributes = mapOf(
+                "品牌" to AttributeValue("Apple", 0.98, true),
+                "颜色" to AttributeValue("原色钛金属", 0.92, true),
+                "存储" to AttributeValue("256GB", 0.85, false)
+            ),
+            state = UiState.Success(
+                com.visioncart.app.data.RecognitionResult(
+                    category = com.visioncart.app.data.CategoryDto("手机", "智能手机", "旗舰手机", 0.95),
+                    overallConfidence = 0.95,
+                    attributes = emptyMap(),
+                    keywords = emptyList(),
+                    sessionId = ""
                 )
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        TextButton(onClick = onClear) {
-            Text("清除", style = MaterialTheme.typography.labelSmall)
-        }
+            ),
+            onAttributeClick = { _, _ -> }
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun NlpInputBarPreview() {
+    MaterialTheme {
+        NlpInputBar(value = "", onValueChange = {}, onSubmit = {})
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun SuggestionChipsRowPreview() {
+    MaterialTheme {
+        SuggestionChipsRow(
+            cards = listOf(
+                SuggestionCard(id = "1", title = "手机", subtitle = "热门", icon = "📱", action = "search", priority = 1),
+                SuggestionCard(id = "2", title = "笔记本", subtitle = "推荐", icon = "💻", action = "search", priority = 2),
+                SuggestionCard(id = "3", title = "耳机", subtitle = "新品", icon = "🎧", action = "search", priority = 3)
+            ),
+            onCardClick = {}
+        )
     }
 }

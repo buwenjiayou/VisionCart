@@ -1,0 +1,121 @@
+package com.visioncart.service.search;
+
+import com.visioncart.api.dto.PriceRange;
+import com.visioncart.api.dto.SearchFilter;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+class SearchTextUtilsTest {
+
+    @Test
+    void searchKeywordPrefersRecognizedKeyword() {
+        String keyword = SearchTextUtils.searchKeyword(
+                Map.of(
+                        "品牌", "未知",
+                        "颜色", "白色",
+                        "款式", "常规款式",
+                        "类目", "无线鼠标",
+                        "关键词", "白色无线鼠标"
+                ),
+                emptyFilter(),
+                "商品"
+        );
+
+        assertEquals("白色无线鼠标", keyword);
+    }
+
+    @Test
+    void searchKeywordFallsBackToUsefulAttributeParts() {
+        String keyword = SearchTextUtils.searchKeyword(
+                Map.of(
+                        "品牌", "未知",
+                        "颜色", "白色",
+                        "款式", "常规款式",
+                        "类目", "无线鼠标"
+                ),
+                emptyFilter(),
+                "商品"
+        );
+
+        assertEquals("白色 无线鼠标", keyword);
+    }
+
+    @Test
+    void userKeywordOverridesRecognizedAttributes() {
+        SearchFilter filter = new SearchFilter(
+                new PriceRange(null, null),
+                List.of(),
+                null,
+                List.of(),
+                List.of(),
+                null,
+                null,
+                "desc",
+                "罗技鼠标"
+        );
+
+        assertEquals("罗技鼠标", SearchTextUtils.searchKeyword(Map.of("关键词", "白色无线鼠标"), filter, "商品"));
+    }
+
+    @Test
+    void parsesChineseSalesText() {
+        assertEquals(90_000L, SearchTextUtils.parseHumanCount("9万+"));
+        assertEquals(15_000L, SearchTextUtils.parseHumanCount("1.5万"));
+        assertEquals(1000L, SearchTextUtils.parseHumanCount("1000"));
+    }
+
+    @Test
+    void normalizesProtocolRelativeUrl() {
+        assertEquals("https://s.click.taobao.com/t", SearchTextUtils.normalizeUrl("//s.click.taobao.com/t"));
+    }
+
+    @Test
+    void maxHumanCountIgnoresLeadingZeroCandidates() {
+        assertEquals(5_000L, SearchTextUtils.maxHumanCount("0", "10", "5000+"));
+        assertEquals(200_000L, SearchTextUtils.maxHumanCount("0", "50", "20\u4e07+"));
+    }
+
+    @Test
+    void detectsCoreProductRelevance() {
+        assertEquals(true, SearchTextUtils.relevantToCoreProduct(
+                "白色静音无线办公鼠标",
+                Map.of("类目", "无线鼠标", "关键词", "白色无线鼠标")));
+        assertEquals(true, SearchTextUtils.relevantToCoreProduct(
+                "罗技G102二代有线游戏鼠标RGB背光轻量设计",
+                Map.of("类目", "无线鼠标", "关键词", "白色无线鼠标")));
+        assertEquals(false, SearchTextUtils.relevantToCoreProduct(
+                "肩颈按摩仪热敷捶打腰部按摩器",
+                Map.of("类目", "无线鼠标", "关键词", "白色无线鼠标")));
+    }
+
+    @Test
+    void buildsPlatformSpecificFallbackQueries() {
+        Map<String, String> attributes = Map.of(
+                "品牌", "未知",
+                "颜色", "白色",
+                "类目", "无线鼠标",
+                "关键词", "白色无线鼠标"
+        );
+
+        assertEquals(true, SearchQueryBuilder.taobaoQueries(attributes, emptyFilter(), "商品").contains("白色 无线鼠标"));
+        assertEquals(true, SearchQueryBuilder.pddQueries(attributes, emptyFilter(), "商品").contains("鼠标"));
+    }
+
+    private SearchFilter emptyFilter() {
+        return new SearchFilter(
+                new PriceRange(null, null),
+                List.of(),
+                null,
+                List.of(),
+                List.of(),
+                null,
+                null,
+                "desc",
+                null
+        );
+    }
+}

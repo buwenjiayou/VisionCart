@@ -5,8 +5,7 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "favorite_products")
 data class FavoriteProductEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val productId: String,
+    @PrimaryKey val productId: String,
     val platform: String,
     val title: String,
     val imageUrl: String,
@@ -17,5 +16,6 @@ data class FavoriteProductEntity(
     val sales: Long,
     val detailUrl: String,
     val sessionId: String,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
 )

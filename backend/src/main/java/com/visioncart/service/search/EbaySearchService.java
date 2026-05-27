@@ -151,15 +151,7 @@ public class EbaySearchService implements PlatformSearchService {
     }
 
     private String keyword(Map<String, String> attributes, SearchFilter filter) {
-        if (filter.keyword() != null && !filter.keyword().isBlank()) {
-            return filter.keyword();
-        }
-        return String.join(" ",
-                SearchTextUtils.useful(attributes.get("品牌")),
-                SearchTextUtils.useful(attributes.get("颜色")),
-                SearchTextUtils.useful(attributes.get("款式")),
-                SearchTextUtils.useful(attributes.get("类目"))
-        ).trim();
+        return SearchTextUtils.searchKeyword(attributes, filter, "shopping item");
     }
 
     private List<ProductCard> mapResponse(String body) throws Exception {
@@ -195,6 +187,11 @@ public class EbaySearchService implements PlatformSearchService {
             if (sellerNode.has("feedbackPercentage")) {
                 rating = sellerNode.path("feedbackPercentage").asDouble(0) / 20.0;
             }
+            long sales = item.path("itemCreationDate").isMissingNode() ? 0 : item.path("watchCount").asLong(0);
+            String detailUrl = SearchTextUtils.normalizeUrl(item.path("itemWebUrl").asText(""));
+            if (StringUtils.isBlank(detailUrl)) {
+                detailUrl = "https://www.ebay.com/itm/" + itemId;
+            }
 
             List<String> tags = new ArrayList<>();
             tags.add("eBay");
@@ -210,10 +207,10 @@ public class EbaySearchService implements PlatformSearchService {
                     false,
                     shopName,
                     rating,
-                    0,
+                    sales,
                     0.75,
                     tags,
-                    "https://www.ebay.com/itm/" + itemId
+                    detailUrl
             ));
         }
 

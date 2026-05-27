@@ -2,6 +2,7 @@ package com.visioncart.service.search;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.visioncart.api.dto.PlatformPriceStat;
 import com.visioncart.api.dto.ProductCard;
@@ -10,8 +11,10 @@ import com.visioncart.api.dto.SearchRequest;
 import com.visioncart.api.dto.SearchResult;
 import com.visioncart.api.dto.SuggestionCard;
 import com.visioncart.config.VisionCartProperties;
+import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.ai.HashUtils;
 import com.visioncart.service.suggestion.SuggestionService;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -23,6 +26,7 @@ import java.math.RoundingMode;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -47,6 +51,7 @@ public class SearchOrchestrator {
     private final ObjectMapper objectMapper;
     private final PlatformCircuitBreaker circuitBreaker;
     private final RegionResolver regionResolver;
+    private final RecognitionHistoryRepository recognitionHistoryRepository;
 
     public SearchOrchestrator(List<PlatformSearchService> platformServices,
                               ProductDeduplicator deduplicator,
@@ -57,7 +62,8 @@ public class SearchOrchestrator {
                               StringRedisTemplate redisTemplate,
                               ObjectMapper objectMapper,
                               PlatformCircuitBreaker circuitBreaker,
-                              RegionResolver regionResolver) {
+                              RegionResolver regionResolver,
+                              RecognitionHistoryRepository recognitionHistoryRepository) {
         this.platformServices = platformServices;
         this.deduplicator = deduplicator;
         this.ranker = ranker;
@@ -68,6 +74,7 @@ public class SearchOrchestrator {
         this.objectMapper = objectMapper;
         this.circuitBreaker = circuitBreaker;
         this.regionResolver = regionResolver;
+        this.recognitionHistoryRepository = recognitionHistoryRepository;
     }
 
     public SearchResult search(SearchRequest request) {
@@ -75,7 +82,7 @@ public class SearchOrchestrator {
     }
 
     public SearchResult search(SearchRequest request, boolean domestic) {
-        Map<String, String> attributes = request.attributes() == null ? Map.of() : request.attributes();
+        Map<String, String> attributes = enrichAttributes(request);
         SearchFilter filter = request.effectiveFilter();
 
         // Check cache (cache full ranked list, paginate on hit)
@@ -123,7 +130,9 @@ public class SearchOrchestrator {
         // Fill similarity fallback
         fillSimilarity(all, attributes);
 
-        List<ProductCard> filtered = applyFilter(deduplicator.deduplicate(all), filter);
+        List<ProductCard> filtered = applyCoreProductFilter(
+                applyFilter(deduplicator.deduplicate(all), filter),
+                attributes);
         List<ProductCard> ranked = applySort(ranker.rank(filtered, attributes), filter);
         List<ProductCard> page = diversifyPlatforms(ranked, request.effectivePageSize());
         List<SuggestionCard> cards = suggestionService.cards(request.clientType(), page);
@@ -132,6 +141,65 @@ public class SearchOrchestrator {
         putToCache(cacheKey, ranked);
 
         return new SearchResult(ranked.size(), page, stats(ranked), cards);
+    }
+
+    private Map<String, String> enrichAttributes(SearchRequest request) {
+        Map<String, String> attributes = new LinkedHashMap<>(
+                request.attributes() == null ? Map.of() : request.attributes());
+        if (StringUtils.isBlank(request.sessionId())) {
+            return attributes;
+        }
+
+        boolean needsCategory = StringUtils.isBlank(SearchTextUtils.useful(attributes.get("类目")));
+        boolean needsKeyword = StringUtils.isBlank(SearchTextUtils.useful(attributes.get("关键词")));
+        if (!needsCategory && !needsKeyword) {
+            return attributes;
+        }
+
+        recognitionHistoryRepository.findById(request.sessionId()).ifPresent(history -> {
+            if (needsCategory) {
+                putIfUsefulMissing(attributes, "类目", categoryName(history.getCategoryJson()));
+            }
+            if (needsKeyword && StringUtils.isNotBlank(history.getKeywords())) {
+                putIfUsefulMissing(attributes, "关键词", history.getKeywords().split(",")[0]);
+            }
+        });
+        return attributes;
+    }
+
+    private String categoryName(String categoryJson) {
+        if (StringUtils.isBlank(categoryJson)) {
+            return "";
+        }
+        try {
+            JsonNode category = objectMapper.readTree(categoryJson);
+            return firstNonBlank(
+                    category.path("level3").asText(""),
+                    category.path("level2").asText(""),
+                    category.path("level1").asText(""));
+        } catch (Exception e) {
+            log.warn("Failed to parse recognition category for search: {}", e.getMessage());
+            return "";
+        }
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    private void putIfUsefulMissing(Map<String, String> attributes, String key, String value) {
+        if (StringUtils.isNotBlank(SearchTextUtils.useful(attributes.get(key)))) {
+            return;
+        }
+        String useful = SearchTextUtils.useful(value);
+        if (StringUtils.isNotBlank(useful)) {
+            attributes.put(key, useful);
+        }
     }
 
     // --- Cache ---
@@ -172,7 +240,8 @@ public class SearchOrchestrator {
 
     private void fillSimilarity(List<ProductCard> products, Map<String, String> attributes) {
         Set<String> keywords = attributes.values().stream()
-                .filter(v -> v != null && !v.isBlank() && !"未知".equals(v))
+                .map(SearchTextUtils::useful)
+                .filter(v -> v != null && !v.isBlank())
                 .collect(Collectors.toSet());
         if (keywords.isEmpty()) return;
 
@@ -183,7 +252,7 @@ public class SearchOrchestrator {
             products.set(i, new ProductCard(
                     p.id(), p.title(), p.imageUrl(), p.price(), p.originalPrice(),
                     p.platform(), p.selfOperated(), p.shopName(), p.rating(), p.sales(),
-                    jaccard, p.tags(), p.detailUrl()
+                    jaccard, p.tags(), p.detailUrl(), p.brand(), p.ratingSource(), p.salesLabel()
             ));
         }
     }
@@ -227,7 +296,28 @@ public class SearchOrchestrator {
                 .filter(product -> filter.priceRange() == null || filter.priceRange().min() == null || product.price().compareTo(BigDecimal.valueOf(filter.priceRange().min())) >= 0)
                 .filter(product -> filter.priceRange() == null || filter.priceRange().max() == null || product.price().compareTo(BigDecimal.valueOf(filter.priceRange().max())) <= 0)
                 .filter(product -> filter.keyword() == null || filter.keyword().isBlank() || product.title().toLowerCase().contains(filter.keyword().toLowerCase()))
+                .filter(product -> filter.brands() == null || filter.brands().isEmpty() || filter.brands().stream().anyMatch(brand -> matchesBrand(product, brand)))
                 .toList();
+    }
+
+    private boolean matchesBrand(ProductCard product, String brand) {
+        String useful = SearchTextUtils.useful(brand);
+        if (useful.isBlank()) {
+            return true;
+        }
+        String productBrand = SearchTextUtils.useful(product.brand());
+        return useful.equalsIgnoreCase(productBrand)
+                || (product.title() != null && product.title().toLowerCase().contains(useful.toLowerCase()));
+    }
+
+    private List<ProductCard> applyCoreProductFilter(List<ProductCard> products, Map<String, String> attributes) {
+        if (StringUtils.isBlank(SearchTextUtils.useful(attributes.get("类目")))) {
+            return products;
+        }
+        List<ProductCard> relevant = products.stream()
+                .filter(product -> SearchTextUtils.relevantToCoreProduct(product.title(), attributes))
+                .toList();
+        return relevant;
     }
 
     private List<ProductCard> applySort(List<ProductCard> products, SearchFilter filter) {

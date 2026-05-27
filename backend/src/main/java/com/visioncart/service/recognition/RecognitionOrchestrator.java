@@ -134,7 +134,9 @@ public class RecognitionOrchestrator {
             if (result == null) {
                 log.error("Async recognition failed after {} attempts for session {}, using fallback",
                         maxRetry + 1, sessionId);
-                result = fallbackResult(originalFilename);
+                result = fallbackResult(originalFilename, sessionId);
+            } else {
+                result = withSessionId(result, sessionId);
             }
 
             saveHistory(result, originalFilename, imageSize, userId);
@@ -164,12 +166,8 @@ public class RecognitionOrchestrator {
 
     private RecognitionResult enrichWithPlatformStats(RecognitionResult result, boolean domestic) {
         try {
-            // 将识别属性转为搜索用的 flat map
-            java.util.Map<String, String> flatAttributes = new java.util.LinkedHashMap<>();
-            result.attributes().forEach((key, value) -> flatAttributes.put(key, value.value()));
-
             SearchResult searchResult = searchOrchestrator.search(new SearchRequest(
-                    result.sessionId(), flatAttributes, null, 1, 20, "recognition"
+                    result.sessionId(), RecognitionSearchMapper.toSearchAttributes(result), null, 1, 20, "recognition"
             ), domestic);
 
             List<PlatformPriceStat> stats = searchResult.platformStats();
@@ -184,10 +182,10 @@ public class RecognitionOrchestrator {
         return result;
     }
 
-    private RecognitionResult fallbackResult(String filename) {
+    private RecognitionResult fallbackResult(String filename, String sessionId) {
         String hint = filename != null ? filename.replaceAll("\\.[^.]+$", "") : "未知商品";
         return new RecognitionResult(
-                UUID.randomUUID().toString(),
+                sessionId,
                 new com.visioncart.api.dto.CategoryDto("未知", "未知", "未知", 0.1),
                 Map.of(
                         "品牌", new com.visioncart.api.dto.AttributeValue("未知", 0.1, false),
@@ -196,6 +194,17 @@ public class RecognitionOrchestrator {
                 ),
                 List.of(hint),
                 0.1
+        );
+    }
+
+    private RecognitionResult withSessionId(RecognitionResult result, String sessionId) {
+        return new RecognitionResult(
+                sessionId,
+                result.category(),
+                result.attributes(),
+                result.keywords(),
+                result.overallConfidence(),
+                result.platformStats()
         );
     }
 

@@ -26,7 +26,6 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 @RestController
 @RequestMapping("/api/v1/recognition")
@@ -46,24 +45,31 @@ public class RecognitionController {
         this.properties = properties;
     }
 
-    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of("image/jpeg", "image/png", "image/webp");
-    private static final long MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
-
     @PostMapping("/analyze")
     public ApiResponse<AsyncRecognitionResponse> analyze(@RequestParam("image") MultipartFile image,
                                                          @RequestParam(value = "region", required = false) String region) {
         if (image.isEmpty()) {
             return ApiResponse.fail(400, "图片文件不能为空");
         }
-        if (image.getSize() > MAX_IMAGE_SIZE) {
-            return ApiResponse.fail(400, "图片文件不能超过 10MB");
+        long maxUploadBytes = properties.getRecognition().getMaxUploadBytes();
+        if (image.getSize() > maxUploadBytes) {
+            long maxMb = Math.max(1, maxUploadBytes / 1024 / 1024);
+            return ApiResponse.fail(400, "图片文件不能超过 " + maxMb + "MB，请重新拍照或选择较小图片");
         }
         String contentType = image.getContentType();
-        if (contentType == null || !ALLOWED_CONTENT_TYPES.contains(contentType.toLowerCase())) {
-            return ApiResponse.fail(400, "仅支持 JPEG、PNG、WebP 格式的图片");
+        if (!looksLikeImageUpload(contentType)) {
+            return ApiResponse.fail(400, "请选择图片文件上传");
         }
         Long userId = getCurrentUserId();
         return ApiResponse.ok(orchestrator.submitAsync(image, region, userId));
+    }
+
+    private boolean looksLikeImageUpload(String contentType) {
+        if (contentType == null || contentType.isBlank()) {
+            return true;
+        }
+        String normalized = contentType.toLowerCase();
+        return normalized.startsWith("image/") || normalized.equals("application/octet-stream");
     }
 
     @GetMapping("/status/{sessionId}")
@@ -82,10 +88,11 @@ public class RecognitionController {
 
     @GetMapping("/attribute-options")
     public ApiResponse<Map<String, List<String>>> attributeOptions(@RequestParam String category,
-                                                                   @RequestParam String attribute) {
+                                                                   @RequestParam String attribute,
+                                                                   @RequestParam(value = "session_id", required = false) String sessionId) {
         List<String> options = properties.getRecognition().getAttributeOptions()
                 .getOrDefault(attribute, List.of());
-        return ApiResponse.ok(Map.of("options", options));
+        return ApiResponse.ok(Map.of("options", recognitionService.attributeOptions(category, attribute, sessionId, options)));
     }
 
     @GetMapping("/feedback/stats")

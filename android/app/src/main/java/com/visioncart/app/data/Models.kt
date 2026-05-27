@@ -72,7 +72,10 @@ data class ProductCard(
     val sales: Long,
     val similarity: Double,
     val tags: List<String>,
-    @Json(name = "detail_url") val detailUrl: String
+    @Json(name = "detail_url") val detailUrl: String,
+    val brand: String? = null,
+    @Json(name = "rating_source") val ratingSource: String? = null,
+    @Json(name = "sales_label") val salesLabel: String? = null
 )
 
 data class PlatformPriceStat(
@@ -89,6 +92,22 @@ data class SuggestionCard(
     val icon: String,
     val action: String,
     val priority: Int
+)
+
+data class AsyncRecognitionResponse(
+    @Json(name = "session_id") val sessionId: String,
+    val status: String,
+    @Json(name = "websocket_topic") val websocketTopic: String?,
+    @Json(name = "estimated_ms") val estimatedMs: Long
+)
+
+data class RecognitionTaskResult(
+    @Json(name = "session_id") val sessionId: String,
+    val status: String,
+    val result: RecognitionResult?,
+    val error: String?,
+    @Json(name = "created_at") val createdAt: String?,
+    @Json(name = "completed_at") val completedAt: String?
 )
 
 data class NlpParseRequest(

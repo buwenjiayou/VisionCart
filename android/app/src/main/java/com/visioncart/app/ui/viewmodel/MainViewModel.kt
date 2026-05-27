@@ -1,9 +1,13 @@
 package com.visioncart.app.ui.viewmodel
 
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.Types
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.visioncart.app.data.*
 import com.visioncart.app.data.db.FavoriteProductEntity
 import com.visioncart.app.data.db.RecognitionRecordEntity
@@ -41,6 +45,10 @@ data class MainUiState(
 
 class MainViewModel(private val repository: VisionCartRepository) : ViewModel() {
 
+    private companion object {
+        const val TAG = "MainViewModel"
+    }
+
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -59,13 +67,17 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
                 imageUri = imageUri,
                 recognitionState = UiState.Loading,
                 products = emptyList(),
+                productsLoading = false,
                 suggestionCards = emptyList(),
+                currentFilter = SearchFilter(),
+                currentAttributes = emptyMap(),
                 sessionId = null,
                 categoryText = ""
             )
             val result = repository.analyzeImage(imageUri)
             result.onSuccess { recognition ->
-                val attrs = recognition.attributes.mapValues { it.value.value }
+                Log.i(TAG, "Recognition succeeded: sessionId=${recognition.sessionId}, category=${recognition.category}")
+                val attrs = recognition.toSearchAttributes()
                 val categoryText = listOfNotNull(
                     recognition.category.level1,
                     recognition.category.level2,
@@ -82,8 +94,11 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
                 // Load suggestion cards
                 loadSuggestionCards(recognition.sessionId)
             }.onFailure { e ->
+                Log.e(TAG, "Recognition failed for uri=$imageUri", e)
                 _uiState.value = _uiState.value.copy(
-                    recognitionState = UiState.Error(e.message ?: "识别失败")
+                    recognitionState = UiState.Error(e.message ?: "识别失败"),
+                    productsLoading = false,
+                    toastMessage = e.message ?: "识别失败"
                 )
             }
         }
@@ -131,12 +146,16 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
             val result = repository.correctAttribute(sessionId, attribute, oldValue, newValue)
             result.onSuccess { correctionResult ->
                 // Update attributes
-                val updatedAttrs = correctionResult.updatedAttributes.mapValues { it.value.value }
+                val updatedRecognition = (_uiState.value.recognitionState as? UiState.Success)
+                    ?.data
+                    ?.copy(attributes = correctionResult.updatedAttributes)
+                val updatedAttrs = updatedRecognition?.toSearchAttributes()
+                    ?: correctionResult.updatedAttributes.mapValues { it.value.value }
                 _uiState.value = _uiState.value.copy(
                     currentAttributes = updatedAttrs,
                     recognitionState = _uiState.value.recognitionState.let { state ->
                         if (state is UiState.Success) {
-                            UiState.Success(state.data.copy(attributes = correctionResult.updatedAttributes))
+                            UiState.Success(updatedRecognition ?: state.data.copy(attributes = correctionResult.updatedAttributes))
                         } else state
                     }
                 )
@@ -179,6 +198,13 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
                 showToast("操作失败: ${e.message}")
             }
         }
+    }
+
+    // ==================== Filter ====================
+
+    fun clearFilter() {
+        _uiState.value = _uiState.value.copy(currentFilter = SearchFilter())
+        searchProducts()
     }
 
     // ==================== NLP ====================
@@ -236,12 +262,58 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
             if (isFav) {
                 repository.removeFavoriteLocal(product.id)
                 showToast("已取消收藏")
+                // Sync removal to backend
+                launch { repository.removeFavoriteBackend(product.id) }
             } else {
                 repository.addFavoriteLocal(product, _uiState.value.sessionId ?: "")
-                repository.addFavorite(product.id, _uiState.value.sessionId)
+                repository.addFavorite(product)
                 showToast("已收藏")
             }
         }
+    }
+
+    // ==================== Sync ====================
+
+    fun syncHistory() {
+        viewModelScope.launch { repository.syncHistoryFromBackend() }
+    }
+
+    fun syncFavorites() {
+        viewModelScope.launch { repository.syncFavoritesFromBackend() }
+    }
+
+    // ==================== Restore from History ====================
+
+    fun restoreFromHistory(record: RecognitionRecordEntity) {
+        val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
+        val categoryAdapter = moshi.adapter(CategoryDto::class.java)
+        val attributesAdapter = moshi.adapter<Map<String, AttributeValue>>(
+            Types.newParameterizedType(Map::class.java, String::class.java, AttributeValue::class.java)
+        )
+        val category = categoryAdapter.fromJson(record.categoryJson) ?: CategoryDto("", "", "", 0.0)
+        val attributes = attributesAdapter.fromJson(record.attributesJson) ?: emptyMap()
+        val categoryText = listOfNotNull(
+            category.level1.takeIf { it.isNotBlank() },
+            category.level2.takeIf { it.isNotBlank() },
+            category.level3.takeIf { it.isNotBlank() }
+        ).joinToString(" / ")
+
+        val restoredRecognition = RecognitionResult(
+            sessionId = record.sessionId,
+            category = category,
+            attributes = attributes,
+            keywords = record.keywords.split(","),
+            overallConfidence = record.confidence
+        )
+
+        _uiState.value = _uiState.value.copy(
+            sessionId = record.sessionId,
+            categoryText = categoryText,
+            currentAttributes = restoredRecognition.toSearchAttributes(),
+            imageUri = null,
+            recognitionState = UiState.Success(restoredRecognition)
+        )
+        searchProducts()
     }
 
     // ==================== Toast ====================

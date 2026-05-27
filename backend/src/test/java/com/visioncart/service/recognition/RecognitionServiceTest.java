@@ -61,7 +61,8 @@ class RecognitionServiceTest {
 
         RecognitionResult result = recognitionService.analyze(image, "整张图");
 
-        assertThat(result.sessionId()).isEqualTo("session-1");
+        assertThat(result.sessionId()).isNotBlank();
+        assertThat(result.sessionId()).isNotEqualTo("session-1");
         assertThat(result.overallConfidence()).isEqualTo(0.82);
         assertThat(result.attributes()).containsKey("品牌");
         verify(historyRepository).save(any(RecognitionHistory.class));

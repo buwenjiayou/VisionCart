@@ -159,18 +159,19 @@ public class VisionCartProperties {
     public static class Recognition {
         private int imageMaxDimension = 1024;
         private float imageJpegQuality = 0.85f;
+        private long maxUploadBytes = 25L * 1024L * 1024L;
         private long timeoutMs = 30000;
         private int retryCount = 1;
-        private double blurThreshold = 100.0;
-        private int brightnessMin = 30;
-        private int brightnessMax = 225;
+        private double blurThreshold = 35.0;
+        private int brightnessMin = 15;
+        private int brightnessMax = 245;
         private int corePoolSize = 4;
         private int maxPoolSize = 16;
         private int queueCapacity = 50;
         private long retryBaseDelayMs = 1000;
         private Map<String, List<String>> attributeOptions = Map.of(
                 "颜色", List.of("黑色", "白色", "红色", "蓝色", "深蓝色", "藏青", "灰色", "绿色", "黄色", "粉色", "棕色", "米白色"),
-                "品牌", List.of("耐克", "阿迪达斯", "安踏", "李宁", "彪马", "新百伦", "亚瑟士"),
+                "品牌", List.of("罗技", "雷蛇", "卓威", "富勒", "雷神", "英菲克", "Apple", "华为", "小米", "未知"),
                 "款式", List.of("跑鞋", "篮球鞋", "板鞋", "训练鞋", "休闲鞋")
         );
 
@@ -179,6 +180,9 @@ public class VisionCartProperties {
 
         public float getImageJpegQuality() { return imageJpegQuality; }
         public void setImageJpegQuality(float imageJpegQuality) { this.imageJpegQuality = imageJpegQuality; }
+
+        public long getMaxUploadBytes() { return maxUploadBytes; }
+        public void setMaxUploadBytes(long maxUploadBytes) { this.maxUploadBytes = maxUploadBytes; }
 
         public long getTimeoutMs() { return timeoutMs; }
         public void setTimeoutMs(long timeoutMs) { this.timeoutMs = timeoutMs; }

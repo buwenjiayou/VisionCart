@@ -1,5 +1,7 @@
 server:
   port: ${PORT:8080}
+  tomcat:
+    max-http-form-post-size: 30MB
 
 spring:
   application:
@@ -7,6 +9,10 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: non_null
+  servlet:
+    multipart:
+      max-file-size: 30MB
+      max-request-size: 30MB
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/visioncart?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${MYSQL_USERNAME:visioncart}
@@ -39,16 +45,18 @@ spring:
           temperature: 0
   mail:
     host: ${MAIL_HOST:smtp.qq.com}
-    port: ${MAIL_PORT:587}
+    port: ${MAIL_PORT:465}
     username: ${MAIL_USERNAME:noreply@example.com}
     password: ${MAIL_PASSWORD:}
     properties:
       mail:
         smtp:
           auth: true
-          starttls:
+          ssl:
             enable: true
-            required: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
 
 visioncart:
   public-base-url: ${PUBLIC_BASE_URL:http://localhost:8080}
@@ -103,13 +111,14 @@ visioncart:
     history-retention-days: ${PRICE_MONITOR_HISTORY_DAYS:90}
     notification-dedup-days: ${PRICE_MONITOR_DEDUP_DAYS:3}
   recognition:
+    max-upload-bytes: ${RECOGNITION_MAX_UPLOAD_BYTES:26214400}
     image-max-dimension: ${RECOGNITION_IMAGE_MAX_DIM:1024}
     image-jpeg-quality: ${RECOGNITION_IMAGE_JPEG_QUALITY:0.85}
     timeout-ms: ${RECOGNITION_TIMEOUT_MS:30000}
     retry-count: ${RECOGNITION_RETRY_COUNT:1}
-    blur-threshold: ${RECOGNITION_BLUR_THRESHOLD:100.0}
-    brightness-min: ${RECOGNITION_BRIGHTNESS_MIN:30}
-    brightness-max: ${RECOGNITION_BRIGHTNESS_MAX:225}
+    blur-threshold: ${RECOGNITION_BLUR_THRESHOLD:35.0}
+    brightness-min: ${RECOGNITION_BRIGHTNESS_MIN:15}
+    brightness-max: ${RECOGNITION_BRIGHTNESS_MAX:245}
     core-pool-size: ${RECOGNITION_CORE_POOL_SIZE:4}
     max-pool-size: ${RECOGNITION_MAX_POOL_SIZE:16}
     queue-capacity: ${RECOGNITION_QUEUE_CAPACITY:50}

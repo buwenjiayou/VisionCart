@@ -9,6 +9,7 @@ import com.visioncart.config.VisionCartProperties;
 import com.visioncart.service.ai.AiTraceService;
 import com.visioncart.service.ai.PromptLoader;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -22,7 +23,6 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 @Component
 public class DoubaoVisionClient implements VisionModelService {
@@ -33,6 +33,7 @@ public class DoubaoVisionClient implements VisionModelService {
     private final String arkBaseUrl;
     private final PromptLoader promptLoader;
 
+    @Autowired
     public DoubaoVisionClient(VisionCartProperties properties,
                               AiTraceService traceService,
                               ObjectMapper objectMapper,
@@ -47,7 +48,6 @@ public class DoubaoVisionClient implements VisionModelService {
                         .build());
     }
 
-    // Package-private constructor for testing
     DoubaoVisionClient(VisionCartProperties properties,
                        AiTraceService traceService,
                        ObjectMapper objectMapper,
@@ -212,7 +212,7 @@ public class DoubaoVisionClient implements VisionModelService {
         }
 
         return new RecognitionResult(
-                UUID.randomUUID().toString(),
+                "",
                 categoryDto,
                 attributes,
                 keywords,
