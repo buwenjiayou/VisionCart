@@ -117,8 +117,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         handleIntentExtras(intent)
         val repository = VisionCartRepository(applicationContext)
+        androidx.activity.enableEdgeToEdge()
         setContent {
-            MaterialTheme {
+            com.visioncart.app.ui.theme.VisionCartTheme {
                 VisionCartApp(
                     repository = repository,
                     onOverlay = { toggleOverlay() },
@@ -493,7 +494,9 @@ fun VisionCartApp(
     ) { padding ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Home.route
+            startDestination = Screen.Home.route,
+            enterTransition = { androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(300)) + androidx.compose.animation.slideInVertically(initialOffsetY = { 50 }, animationSpec = androidx.compose.animation.core.tween(300)) },
+            exitTransition = { androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(300)) }
         ) {
             composable(Screen.Home.route) {
                 HomeScreen(
@@ -743,14 +746,24 @@ private fun HomeDashboardHeader(
     isRecognizing: Boolean
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF10201C)),
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+        Box(
+            modifier = Modifier.background(
+                brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                    colors = listOf(
+                        com.visioncart.app.ui.theme.BrandGradientStart,
+                        com.visioncart.app.ui.theme.BrandGradientEnd
+                    )
+                )
+            )
         ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
@@ -790,6 +803,7 @@ private fun HomeDashboardHeader(
                 HomeMetricChip(label = "收藏", value = "${favoriteCount}件", modifier = Modifier.weight(1f))
                 HomeMetricChip(label = "模式", value = "悬浮可用", modifier = Modifier.weight(1f))
             }
+        }
         }
     }
 }

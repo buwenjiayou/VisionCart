@@ -47,6 +47,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import com.visioncart.app.data.AttributeValue
 import com.visioncart.app.data.ProductCard
 import com.visioncart.app.data.SearchFilter
@@ -58,11 +62,49 @@ import androidx.compose.ui.tooling.preview.Preview
 
 @Composable
 fun LoadingIndicator() {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(32.dp),
-        horizontalArrangement = Arrangement.Center
+    val transition = rememberInfiniteTransition()
+    val translateAnim by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1000f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = androidx.compose.animation.core.FastOutLinearInEasing),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Restart
+        ),
+        label = "shimmer"
+    )
+
+    val brush = androidx.compose.ui.graphics.Brush.linearGradient(
+        colors = listOf(
+            Color(0xFFEAF3F0),
+            Color(0xFFF8FBF9),
+            Color(0xFFEAF3F0)
+        ),
+        start = androidx.compose.ui.geometry.Offset(10f, 10f),
+        end = androidx.compose.ui.geometry.Offset(translateAnim, translateAnim)
+    )
+
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        CircularProgressIndicator()
+        repeat(3) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = RoundedCornerShape(18.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ) {
+                Row(modifier = Modifier.padding(12.dp)) {
+                    Spacer(modifier = Modifier.size(92.dp).clip(RoundedCornerShape(14.dp)).background(brush))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+                        Spacer(modifier = Modifier.height(20.dp).fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(brush))
+                        Spacer(modifier = Modifier.height(16.dp).fillMaxWidth(0.7f).clip(RoundedCornerShape(4.dp)).background(brush))
+                        Spacer(modifier = Modifier.height(16.dp).fillMaxWidth(0.4f).clip(RoundedCornerShape(4.dp)).background(brush))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -253,7 +295,7 @@ fun ProductCardView(
     onClick: () -> Unit = {}
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().bounceClick(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = Color.White),
         shape = RoundedCornerShape(18.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)

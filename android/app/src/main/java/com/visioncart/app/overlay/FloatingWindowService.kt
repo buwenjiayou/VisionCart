@@ -559,10 +559,10 @@ private fun CollapsedFloatingBall(onClick: () -> Unit) {
 
     // Breathing glow effect
     val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 0.7f,
+        initialValue = 0.4f,
+        targetValue = 0.8f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = LinearEasing),
+            animation = tween(1500, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "glow"
@@ -571,9 +571,9 @@ private fun CollapsedFloatingBall(onClick: () -> Unit) {
     // Subtle scale pulse
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = 1.06f,
+        targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = LinearEasing),
+            animation = tween(1500, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "scale"
@@ -584,16 +584,16 @@ private fun CollapsedFloatingBall(onClick: () -> Unit) {
         modifier = Modifier.fillMaxSize()
     ) {
         // Outer glow ring
-        Canvas(modifier = Modifier.size(52.dp)) {
+        Canvas(modifier = Modifier.size(56.dp)) {
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        Color(0xFF0D9B7F).copy(alpha = glowAlpha),
+                        com.visioncart.app.ui.theme.BrandGradientStart.copy(alpha = glowAlpha * 0.6f),
                         Color.Transparent
                     ),
-                    radius = size.minDimension / 2 * 1.4f
+                    radius = size.minDimension / 2 * 1.5f
                 ),
-                radius = size.minDimension / 2 * 1.3f
+                radius = size.minDimension / 2 * 1.4f
             )
         }
 
@@ -601,15 +601,18 @@ private fun CollapsedFloatingBall(onClick: () -> Unit) {
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(44.dp)
+                .size(46.dp)
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
                 }
-                .shadow(8.dp, CircleShape)
+                .shadow(12.dp, CircleShape, spotColor = com.visioncart.app.ui.theme.BrandGradientEnd)
                 .background(
                     brush = Brush.linearGradient(
-                        colors = listOf(Color(0xFF0A7C66), Color(0xFF0D9B7F))
+                        colors = listOf(
+                            com.visioncart.app.ui.theme.BrandGradientStart,
+                            com.visioncart.app.ui.theme.BrandGradientEnd
+                        )
                     ),
                     shape = CircleShape
                 )
@@ -702,25 +705,20 @@ private fun SemiCircleMenuOverlay(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .padding(start = if (isOnLeftEdge) 8.dp else 0.dp, end = if (isOnLeftEdge) 0.dp else 8.dp)
-                .size(44.dp)
+                .size(46.dp)
                 .graphicsLayer {
                     scaleX = centerScale
                     scaleY = centerScale
                 }
-                .shadow(6.dp, CircleShape)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color(0xFF757575), Color(0xFF424242))
-                    ),
-                    CircleShape
-                )
+                .shadow(12.dp, CircleShape)
+                .background(Color.White, CircleShape)
                 .clickable(onClick = onDismiss)
         ) {
             Icon(
                 Icons.Default.Close,
                 contentDescription = "关闭",
-                tint = Color.White,
-                modifier = Modifier.size(20.dp)
+                tint = Color(0xFFD32F2F),
+                modifier = Modifier.size(24.dp)
             )
         }
     }
@@ -777,15 +775,20 @@ private fun DualMenuItem(
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(48.dp)
-                .shadow(4.dp, CircleShape)
-                .background(item.color, CircleShape)
+                .size(52.dp)
+                .shadow(12.dp, CircleShape, spotColor = item.color)
+                .background(
+                    brush = Brush.linearGradient(
+                        colors = listOf(item.color.copy(alpha = 0.8f), item.color)
+                    ),
+                    shape = CircleShape
+                )
         ) {
             Icon(
                 item.icon,
                 contentDescription = item.label,
                 tint = Color.White,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier.size(24.dp)
             )
         }
         Spacer(Modifier.height(4.dp))
@@ -893,10 +896,10 @@ private fun OverlayPanel(
     Card(
         modifier = Modifier
             .fillMaxSize()
-            .padding(4.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+            .padding(8.dp),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.95f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
     ) {
         Column(
             Modifier.padding(14.dp),
