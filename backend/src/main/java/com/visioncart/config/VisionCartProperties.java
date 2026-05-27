@@ -17,6 +17,8 @@ public class VisionCartProperties {
     private final Suggestion suggestion = new Suggestion();
     private final CircuitBreaker circuitBreaker = new CircuitBreaker();
     private final PriceMonitor priceMonitor = new PriceMonitor();
+    private final Security security = new Security();
+    private final RateLimit rateLimit = new RateLimit();
 
     public String getPublicBaseUrl() { return publicBaseUrl; }
     public void setPublicBaseUrl(String publicBaseUrl) { this.publicBaseUrl = publicBaseUrl; }
@@ -30,12 +32,16 @@ public class VisionCartProperties {
     public Suggestion getSuggestion() { return suggestion; }
     public CircuitBreaker getCircuitBreaker() { return circuitBreaker; }
     public PriceMonitor getPriceMonitor() { return priceMonitor; }
+    public Security getSecurity() { return security; }
+    public RateLimit getRateLimit() { return rateLimit; }
 
     // ==================== AI ====================
     public static class Ai {
         private String llmModel;
         private String visionModel;
         private String visionApiKey;
+        private String qwenFlashModel = "qwen3-vl-flash";
+        private String qwenPlusModel = "qwen3-vl-plus";
         private int nlpRetryCount = 2;
         private long nlpRetryBaseDelayMs = 1000;
         private double temperature = 0.0;
@@ -50,6 +56,12 @@ public class VisionCartProperties {
 
         public String getVisionApiKey() { return visionApiKey; }
         public void setVisionApiKey(String visionApiKey) { this.visionApiKey = visionApiKey; }
+
+        public String getQwenFlashModel() { return qwenFlashModel; }
+        public void setQwenFlashModel(String qwenFlashModel) { this.qwenFlashModel = qwenFlashModel; }
+
+        public String getQwenPlusModel() { return qwenPlusModel; }
+        public void setQwenPlusModel(String qwenPlusModel) { this.qwenPlusModel = qwenPlusModel; }
 
         public int getNlpRetryCount() { return nlpRetryCount; }
         public void setNlpRetryCount(int nlpRetryCount) { this.nlpRetryCount = nlpRetryCount; }
@@ -169,6 +181,9 @@ public class VisionCartProperties {
         private int maxPoolSize = 16;
         private int queueCapacity = 50;
         private long retryBaseDelayMs = 1000;
+        private int multiProductThreshold = 2;
+        private double minDetectionConfidence = 0.7;
+        private int maxProducts = 5;
         private Map<String, List<String>> attributeOptions = Map.of(
                 "颜色", List.of("黑色", "白色", "红色", "蓝色", "深蓝色", "藏青", "灰色", "绿色", "黄色", "粉色", "棕色", "米白色"),
                 "品牌", List.of("罗技", "雷蛇", "卓威", "富勒", "雷神", "英菲克", "Apple", "华为", "小米", "未知"),
@@ -210,6 +225,15 @@ public class VisionCartProperties {
 
         public long getRetryBaseDelayMs() { return retryBaseDelayMs; }
         public void setRetryBaseDelayMs(long retryBaseDelayMs) { this.retryBaseDelayMs = retryBaseDelayMs; }
+
+        public int getMultiProductThreshold() { return multiProductThreshold; }
+        public void setMultiProductThreshold(int multiProductThreshold) { this.multiProductThreshold = multiProductThreshold; }
+
+        public double getMinDetectionConfidence() { return minDetectionConfidence; }
+        public void setMinDetectionConfidence(double minDetectionConfidence) { this.minDetectionConfidence = minDetectionConfidence; }
+
+        public int getMaxProducts() { return maxProducts; }
+        public void setMaxProducts(int maxProducts) { this.maxProducts = maxProducts; }
 
         public Map<String, List<String>> getAttributeOptions() { return attributeOptions; }
         public void setAttributeOptions(Map<String, List<String>> attributeOptions) { this.attributeOptions = attributeOptions; }
@@ -277,5 +301,76 @@ public class VisionCartProperties {
 
         public int getNotificationDedupDays() { return notificationDedupDays; }
         public void setNotificationDedupDays(int notificationDedupDays) { this.notificationDedupDays = notificationDedupDays; }
+    }
+
+    // ==================== Security ====================
+    public static class Security {
+        private String allowedOrigins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080";
+        private String adminUserIds = "";
+
+        public String getAllowedOrigins() { return allowedOrigins; }
+        public void setAllowedOrigins(String allowedOrigins) { this.allowedOrigins = allowedOrigins; }
+
+        public String getAdminUserIds() { return adminUserIds; }
+        public void setAdminUserIds(String adminUserIds) { this.adminUserIds = adminUserIds; }
+
+        public java.util.List<String> allowedOriginList() {
+            return java.util.Arrays.stream(java.util.Optional.ofNullable(allowedOrigins).orElse("").split(","))
+                    .map(String::trim)
+                    .filter(value -> !value.isBlank())
+                    .toList();
+        }
+
+        public boolean isAdmin(Long userId) {
+            if (userId == null) {
+                return false;
+            }
+            return java.util.Arrays.stream(java.util.Optional.ofNullable(adminUserIds).orElse("").split(","))
+                    .map(String::trim)
+                    .filter(value -> !value.isBlank())
+                    .anyMatch(value -> {
+                        try {
+                            return Long.parseLong(value) == userId;
+                        } catch (NumberFormatException ignored) {
+                            return false;
+                        }
+                    });
+        }
+    }
+
+    // ==================== Rate Limit ====================
+    public static class RateLimit {
+        private boolean enabled = true;
+        private int defaultLimit = 120;
+        private int defaultWindowSeconds = 60;
+        private int authLimit = 10;
+        private int authWindowSeconds = 300;
+        private int recognitionLimit = 20;
+        private int recognitionWindowSeconds = 3600;
+        private int maxLocalKeys = 10000;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+        public int getDefaultLimit() { return defaultLimit; }
+        public void setDefaultLimit(int defaultLimit) { this.defaultLimit = defaultLimit; }
+
+        public int getDefaultWindowSeconds() { return defaultWindowSeconds; }
+        public void setDefaultWindowSeconds(int defaultWindowSeconds) { this.defaultWindowSeconds = defaultWindowSeconds; }
+
+        public int getAuthLimit() { return authLimit; }
+        public void setAuthLimit(int authLimit) { this.authLimit = authLimit; }
+
+        public int getAuthWindowSeconds() { return authWindowSeconds; }
+        public void setAuthWindowSeconds(int authWindowSeconds) { this.authWindowSeconds = authWindowSeconds; }
+
+        public int getRecognitionLimit() { return recognitionLimit; }
+        public void setRecognitionLimit(int recognitionLimit) { this.recognitionLimit = recognitionLimit; }
+
+        public int getRecognitionWindowSeconds() { return recognitionWindowSeconds; }
+        public void setRecognitionWindowSeconds(int recognitionWindowSeconds) { this.recognitionWindowSeconds = recognitionWindowSeconds; }
+
+        public int getMaxLocalKeys() { return maxLocalKeys; }
+        public void setMaxLocalKeys(int maxLocalKeys) { this.maxLocalKeys = maxLocalKeys; }
     }
 }

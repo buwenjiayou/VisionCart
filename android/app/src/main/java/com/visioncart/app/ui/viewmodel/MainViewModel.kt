@@ -38,7 +38,8 @@ data class MainUiState(
     val sessionId: String? = null,
     val categoryText: String = "",
     val toastMessage: String? = null,
-    val imageUri: Uri? = null
+    val imageUri: Uri? = null,
+    val multiProductCandidates: List<RecognitionCandidate> = emptyList()
 )
 
 // ==================== Main ViewModel ====================
@@ -72,29 +73,51 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
                 currentFilter = SearchFilter(),
                 currentAttributes = emptyMap(),
                 sessionId = null,
-                categoryText = ""
+                categoryText = "",
+                multiProductCandidates = emptyList()
             )
             val result = repository.analyzeImage(imageUri)
             result.onSuccess { recognition ->
-                Log.i(TAG, "Recognition succeeded: sessionId=${recognition.sessionId}, category=${recognition.category}")
-                val attrs = recognition.toSearchAttributes()
-                val categoryText = listOfNotNull(
-                    recognition.category.level1,
-                    recognition.category.level2,
-                    recognition.category.level3
-                ).joinToString(" / ")
-                _uiState.value = _uiState.value.copy(
-                    recognitionState = UiState.Success(recognition),
-                    sessionId = recognition.sessionId,
-                    currentAttributes = attrs,
-                    categoryText = categoryText
-                )
-                // Auto search products
-                searchProducts()
-                // Load suggestion cards
-                loadSuggestionCards(recognition.sessionId)
+                handleRecognitionSuccess(recognition)
             }.onFailure { e ->
                 Log.e(TAG, "Recognition failed for uri=$imageUri", e)
+                if (e is VisionCartRepository.MultiProductPendingException) {
+                    _uiState.value = _uiState.value.copy(
+                        recognitionState = UiState.Idle,
+                        sessionId = e.sessionId,
+                        productsLoading = false,
+                        multiProductCandidates = e.candidates,
+                        toastMessage = "请选择要识别的商品"
+                    )
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        recognitionState = UiState.Error(e.message ?: "识别失败"),
+                        productsLoading = false,
+                        multiProductCandidates = emptyList(),
+                        toastMessage = e.message ?: "识别失败"
+                    )
+                }
+            }
+        }
+    }
+
+    fun selectRecognitionCandidate(candidate: RecognitionCandidate) {
+        val sessionId = _uiState.value.sessionId ?: return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                recognitionState = UiState.Loading,
+                products = emptyList(),
+                productsLoading = false,
+                suggestionCards = emptyList()
+            )
+            val result = repository.selectProductForRecognition(
+                sessionId,
+                candidate.candidateId,
+                _uiState.value.imageUri?.toString()
+            )
+            result.onSuccess { recognition ->
+                handleRecognitionSuccess(recognition)
+            }.onFailure { e ->
                 _uiState.value = _uiState.value.copy(
                     recognitionState = UiState.Error(e.message ?: "识别失败"),
                     productsLoading = false,
@@ -102,6 +125,25 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
                 )
             }
         }
+    }
+
+    private fun handleRecognitionSuccess(recognition: RecognitionResult) {
+        Log.i(TAG, "Recognition succeeded: sessionId=${recognition.sessionId}, category=${recognition.category}")
+        val attrs = recognition.toSearchAttributes()
+        val categoryText = listOfNotNull(
+            recognition.category.level1,
+            recognition.category.level2,
+            recognition.category.level3
+        ).joinToString(" / ")
+        _uiState.value = _uiState.value.copy(
+            recognitionState = UiState.Success(recognition),
+            sessionId = recognition.sessionId,
+            currentAttributes = attrs,
+            categoryText = categoryText,
+            multiProductCandidates = emptyList()
+        )
+        searchProducts()
+        loadSuggestionCards(recognition.sessionId)
     }
 
     // ==================== Search ====================
@@ -311,7 +353,8 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
             categoryText = categoryText,
             currentAttributes = restoredRecognition.toSearchAttributes(),
             imageUri = null,
-            recognitionState = UiState.Success(restoredRecognition)
+            recognitionState = UiState.Success(restoredRecognition),
+            multiProductCandidates = emptyList()
         )
         searchProducts()
     }

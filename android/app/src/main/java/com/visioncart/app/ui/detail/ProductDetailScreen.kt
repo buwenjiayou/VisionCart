@@ -1,14 +1,14 @@
 package com.visioncart.app.ui.detail
 
 import android.annotation.SuppressLint
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebChromeClient
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -18,6 +18,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +37,17 @@ fun ProductDetailScreen(
 ) {
     var isLoading by remember { mutableStateOf(true) }
     val context = LocalContext.current
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewRef?.apply {
+                stopLoading()
+                destroy()
+            }
+            webViewRef = null
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
@@ -59,6 +71,7 @@ fun ProductDetailScreen(
         AndroidView(
             factory = { ctx ->
                 WebView(ctx).apply {
+                    webViewRef = this
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.loadWithOverviewMode = true
@@ -71,7 +84,15 @@ fun ProductDetailScreen(
                         override fun onPageFinished(view: WebView?, url: String?) {
                             isLoading = false
                         }
+                        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                            val requestUrl = request?.url?.toString() ?: return false
+                            if (requestUrl.startsWith("http://") || requestUrl.startsWith("https://")) {
+                                return false
+                            }
+                            return true
+                        }
                     }
+                    webChromeClient = WebChromeClient()
                     loadUrl(url)
                 }
             },

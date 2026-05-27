@@ -54,6 +54,10 @@ data class SuggestionExecuteResult(
     val toast: String? = null
 )
 
+data class ProductSelectionRequest(
+    val candidate_id: String
+)
+
 data class FavoriteRequest(
     val product_id: String,
     val platform: String? = null,
@@ -115,6 +119,12 @@ interface VisionCartApi {
     @GET("/api/v1/recognition/status/{sessionId}")
     suspend fun getRecognitionStatus(@retrofit2.http.Path("sessionId") sessionId: String): ApiResponse<RecognitionTaskResult>
 
+    @POST("/api/v1/recognition/{sessionId}/select-product")
+    suspend fun selectRecognitionProduct(
+        @retrofit2.http.Path("sessionId") sessionId: String,
+        @Body request: ProductSelectionRequest
+    ): ApiResponse<AsyncRecognitionResponse>
+
     @PUT("/api/v1/recognition/attributes")
     suspend fun correctAttributes(@Body request: AttributeCorrectionRequest): ApiResponse<AttributeCorrectionResult>
 
@@ -167,6 +177,7 @@ object ApiClient {
     private val API_BASE_URL = BuildConfig.API_BASE_URL
 
     // Mutable token holder — set after login
+    @Volatile
     var authToken: String? = null
 
     private val authInterceptor = Interceptor { chain ->

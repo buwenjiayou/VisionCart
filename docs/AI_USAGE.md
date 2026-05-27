@@ -4,11 +4,11 @@
 
 后端使用 Spring AI 作为大语言模型编排层，避免在业务代码中散落直接 HTTP 调用。`SpringAiNlpService` 负责：
 
-- 提示词模板管理
+- 提示词模板管理（通过 `PromptLoader` 从 YAML 文件加载，支持版本管理）
 - 规则提取结果作为上下文提示
-- 通过 `ChatClient` 调用大语言模型
-- JSON 结构化输出解析
-- AI 调用日志与耗时追踪
+- 通过 `ChatClient` 调用大语言模型（含重试与指数退避）
+- JSON 结构化输出解析与 Schema 校验（`AiOutputValidator`）
+- AI 调用日志、耗时追踪与 Micrometer 指标（`AiTraceService`）
 
 视觉模型通过 `VisionModelService` 抽象封装，当前实现为 `DoubaoVisionClient`，用于调用兼容 OpenAI 接口格式的多模态服务。
 
@@ -21,17 +21,17 @@
 - 平台和排序字段使用枚举
 - 只输出 JSON，不输出 Markdown
 
-这样可以降低格式漂移，方便后处理校验。
+提示词存储在 `src/main/resources/prompts/` 目录下的 YAML 文件中，通过 `PromptLoader` 组件加载，支持版本管理和热更新（修改 YAML 后重新部署即可）。
 
 ## 缓存降本
 
-自然语言筛选先走规则引擎，命中价格、平台、颜色、评分、排序等高频条件时不调用 LLM。解析结果生成统一语义 key，写入 Redis：
+搜索结果通过 `SearchOrchestrator` 使用 Redis 缓存，TTL 为 5 分钟。自然语言筛选先走规则引擎，命中价格、平台、颜色、评分、排序等高频条件时不调用 LLM。
 
-```text
-nlp:cache:{md5}
-```
+## 安全防护
 
-Redis 短时不可用时会使用进程内缓存维持当前进程的查询体验；生产环境仍应保障 Redis 可用。
+- **Prompt 注入防护**：`PromptSanitizer` 在 LLM 调用前检测并过滤注入指令（中英文）。
+- **输出 Schema 校验**：`AiOutputValidator` 对 LLM 返回的筛选条件进行枚举校验和范围限制。
+- **输入验证**：DTO 使用 `@Size` 约束限制输入长度，Controller 验证图片格式和大小。
 
 ## 工程原则
 

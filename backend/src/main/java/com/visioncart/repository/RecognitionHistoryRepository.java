@@ -6,6 +6,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
+import java.util.Optional;
 
 public interface RecognitionHistoryRepository extends JpaRepository<RecognitionHistory, String> {
     List<RecognitionHistory> findTop20ByOrderByCreatedAtDesc();
@@ -13,4 +14,6 @@ public interface RecognitionHistoryRepository extends JpaRepository<RecognitionH
     Page<RecognitionHistory> findByOrderByCreatedAtDesc(Pageable pageable);
 
     Page<RecognitionHistory> findByUserIdOrderByCreatedAtDesc(Long userId, Pageable pageable);
+
+    Optional<RecognitionHistory> findBySessionIdAndUserId(String sessionId, Long userId);
 }

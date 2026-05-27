@@ -9,6 +9,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
@@ -504,6 +505,13 @@ public class PddSearchService implements PlatformSearchService {
             }
         }
         return "";
+    }
+
+    @Scheduled(fixedDelay = 300_000)
+    void evictExpiredCaches() {
+        long now = System.currentTimeMillis();
+        detailCache.entrySet().removeIf(e -> e.getValue().expiresAt() <= now);
+        promotionUrlCache.entrySet().removeIf(e -> e.getValue().expiresAt() <= now);
     }
 
     private record CachedDetail(PddDetail detail, long expiresAt) {}

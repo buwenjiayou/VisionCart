@@ -2,8 +2,12 @@ package com.visioncart.service.recognition;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.visioncart.api.dto.AttributeValue;
 import com.visioncart.api.dto.AsyncRecognitionResponse;
+import com.visioncart.api.dto.CategoryDto;
 import com.visioncart.api.dto.PlatformPriceStat;
+import com.visioncart.api.dto.ProductSelectionRequest;
+import com.visioncart.api.dto.RecognitionCandidate;
 import com.visioncart.api.dto.RecognitionResult;
 import com.visioncart.api.dto.SearchRequest;
 import com.visioncart.api.dto.SearchResult;
@@ -22,11 +26,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class RecognitionOrchestrator {
@@ -69,22 +79,29 @@ public class RecognitionOrchestrator {
 
     public AsyncRecognitionResponse submitAsync(MultipartFile image, String region, Long userId) {
         String sessionId = UUID.randomUUID().toString();
-        taskManager.createTask(sessionId);
 
         byte[] imageBytes;
         try {
             imageBytes = image.getBytes();
         } catch (Exception e) {
+            taskManager.createTask(sessionId, null, 0L, userId);
             taskManager.markFailed(sessionId, "读取图片失败");
             throw new IllegalStateException("读取图片失败: " + e.getMessage(), e);
         }
 
         String originalFilename = image.getOriginalFilename();
         long imageSize = image.getSize();
+        String imageHash = HashUtils.sha256Hex(imageBytes);
+        taskManager.createTask(sessionId, originalFilename, imageSize, userId, imageHash);
         boolean domestic = regionResolver.isDomestic();
 
-        CompletableFuture.runAsync(() -> doRecognize(sessionId, imageBytes, region, originalFilename, imageSize, userId, domestic),
-                recognitionExecutor);
+        try {
+            CompletableFuture.runAsync(() -> doRecognize(sessionId, imageBytes, region, originalFilename, imageSize, imageHash, userId, domestic),
+                    recognitionExecutor);
+        } catch (RejectedExecutionException error) {
+            taskManager.markFailed(sessionId, "服务繁忙，请稍后重试");
+            throw error;
+        }
 
         return new AsyncRecognitionResponse(
                 sessionId,
@@ -94,60 +111,72 @@ public class RecognitionOrchestrator {
         );
     }
 
+    public RecognitionTaskResult getStatus(String sessionId, Long userId) {
+        if (!taskManager.belongsToUser(sessionId, userId)) {
+            return null;
+        }
+        return taskManager.getStatus(sessionId);
+    }
+
     public RecognitionTaskResult getStatus(String sessionId) {
         return taskManager.getStatus(sessionId);
     }
 
+    public AsyncRecognitionResponse selectProduct(String sessionId, ProductSelectionRequest request, Long userId) {
+        if (!taskManager.belongsToUser(sessionId, userId)) {
+            throw new SecurityException("无权访问该识别任务");
+        }
+        RecognitionCandidate candidate = taskManager.getCandidate(sessionId, request.candidateId());
+        byte[] crop = taskManager.getCandidateCrop(sessionId, request.candidateId());
+        if (candidate == null || crop == null) {
+            throw new IllegalStateException("候选商品不存在或已过期");
+        }
+
+        taskManager.markProcessing(sessionId);
+        boolean domestic = regionResolver.isDomestic();
+        String originalFilename = taskManager.getOriginalFilename(sessionId);
+        long imageSize = taskManager.getImageSize(sessionId);
+        String imageHash = taskManager.getImageHash(sessionId);
+        try {
+            CompletableFuture.runAsync(
+                    () -> completeSelectedProduct(sessionId, crop, candidate, originalFilename, imageSize, imageHash, userId, domestic),
+                    recognitionExecutor
+            );
+        } catch (RejectedExecutionException error) {
+            taskManager.markFailed(sessionId, "服务繁忙，请稍后重试");
+            throw error;
+        }
+
+        return new AsyncRecognitionResponse(
+                sessionId,
+                "PROCESSING",
+                WS_TOPIC + sessionId,
+                properties.getRecognition().getTimeoutMs() * (properties.getRecognition().getRetryCount() + 1) + 5000
+        );
+    }
+
     private void doRecognize(String sessionId, byte[] imageBytes, String region,
-                             String originalFilename, long imageSize, Long userId, boolean domestic) {
+                             String originalFilename, long imageSize, String imageHash, Long userId, boolean domestic) {
         try {
             byte[] processed = imageProcessor.process(imageBytes);
             String contentType = "image/jpeg";
 
-            int maxRetry = properties.getRecognition().getRetryCount();
-            RecognitionResult result = null;
-            Exception lastError = null;
-
-            for (int attempt = 0; attempt <= maxRetry; attempt++) {
-                try {
-                    result = visionClient.analyze(processed, contentType, region);
-                    break;
-                } catch (Exception e) {
-                    lastError = e;
-                    log.warn("Async recognition attempt {}/{} failed for session {}: {}",
-                            attempt + 1, maxRetry + 1, sessionId, e.getMessage());
-                    if (!RetryPolicy.isRetryable(e)) {
-                        log.warn("Non-retryable error, skipping remaining attempts for session {}", sessionId);
-                        break;
-                    }
-                    if (attempt < maxRetry) {
-                        try {
-                            Thread.sleep(RetryPolicy.backoffDelayMs(attempt, 1000L));
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                    }
+            if (visionClient.supportsTwoStageRecognition()) {
+                boolean waitingForSelection = doTwoStageRecognize(sessionId, processed, contentType, region,
+                        originalFilename, imageSize, imageHash, userId, domestic);
+                if (waitingForSelection) {
+                    return;
                 }
-            }
-
-            if (result == null) {
-                log.error("Async recognition failed after {} attempts for session {}, using fallback",
-                        maxRetry + 1, sessionId);
-                result = fallbackResult(originalFilename, sessionId);
             } else {
-                result = withSessionId(result, sessionId);
+                RecognitionResult result;
+                try {
+                    result = executeWithRetry(sessionId, "single", () -> visionClient.analyze(processed, contentType, region));
+                } catch (Exception error) {
+                    log.error("Async recognition failed after retries for session {}, using fallback", sessionId, error);
+                    result = fallbackResult(originalFilename, sessionId);
+                }
+                completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic);
             }
-
-            saveHistory(result, originalFilename, imageSize, userId);
-
-            // 识别完成后搜索各平台均价
-            RecognitionResult enriched = enrichWithPlatformStats(result, domestic);
-
-            taskManager.markCompleted(sessionId, enriched);
-            messagingTemplate.convertAndSend(WS_TOPIC + sessionId, new RecognitionTaskResult(
-                    sessionId, "COMPLETED", enriched, null, null, Instant.now()
-            ));
 
         } catch (ImageQualityException e) {
             log.warn("Image quality rejected for session {}: {}", sessionId, e.getReason());
@@ -162,6 +191,152 @@ public class RecognitionOrchestrator {
                     sessionId, "FAILED", null, "识别失败: " + e.getMessage(), null, Instant.now()
             ));
         }
+    }
+
+    private boolean doTwoStageRecognize(String sessionId,
+                                        byte[] processed,
+                                        String contentType,
+                                        String region,
+                                        String originalFilename,
+                                        long imageSize,
+                                        String imageHash,
+                                        Long userId,
+                                        boolean domestic) throws Exception {
+        List<RecognitionCandidate> detected = executeWithRetry(sessionId, "detect",
+                () -> visionClient.detectProducts(processed, contentType, region));
+        List<CandidateWork> candidates = prepareCandidates(processed, detected);
+        if (candidates.isEmpty()) {
+            throw new IllegalStateException("未检测到商品，请重新拍照或裁剪后再试");
+        }
+
+        int threshold = Math.max(2, properties.getRecognition().getMultiProductThreshold());
+        if (candidates.size() >= threshold) {
+            List<RecognitionCandidate> visibleCandidates = candidates.stream().map(CandidateWork::candidate).toList();
+            Map<String, byte[]> cropImages = new LinkedHashMap<>();
+            candidates.forEach(candidate -> cropImages.put(candidate.candidate().candidateId(), candidate.cropBytes()));
+            taskManager.markMultiProductPending(sessionId, visibleCandidates, cropImages);
+            messagingTemplate.convertAndSend(WS_TOPIC + sessionId, new RecognitionTaskResult(
+                    sessionId, "MULTI_PRODUCT_PENDING", null, null, null, null, visibleCandidates
+            ));
+            return true;
+        }
+
+        CandidateWork selected = candidates.get(0);
+        RecognitionResult result = extractAttributesWithFallback(sessionId, selected.cropBytes(), contentType, selected.candidate());
+        completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic);
+        return false;
+    }
+
+    private void completeSelectedProduct(String sessionId,
+                                         byte[] crop,
+                                         RecognitionCandidate candidate,
+                                         String originalFilename,
+                                         long imageSize,
+                                         String imageHash,
+                                         Long userId,
+                                         boolean domestic) {
+        try {
+            RecognitionResult result = extractAttributesWithFallback(sessionId, crop, "image/jpeg", candidate);
+            completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic);
+        } catch (Exception e) {
+            log.error("Selected product recognition failed for session {}", sessionId, e);
+            taskManager.markFailed(sessionId, "识别失败: " + e.getMessage());
+            messagingTemplate.convertAndSend(WS_TOPIC + sessionId, new RecognitionTaskResult(
+                    sessionId, "FAILED", null, "识别失败: " + e.getMessage(), null, Instant.now()
+            ));
+        }
+    }
+
+    private RecognitionResult extractAttributesWithFallback(String sessionId,
+                                                            byte[] crop,
+                                                            String contentType,
+                                                            RecognitionCandidate candidate) {
+        try {
+            return executeWithRetry(sessionId, "attributes", () ->
+                    visionClient.extractAttributes(crop, contentType, candidate.category(), candidate.brand(), "裁剪商品区域"));
+        } catch (Exception error) {
+            log.warn("Plus attribute extraction failed for session {}, using detection fallback: {}",
+                    sessionId, error.getMessage());
+            return fallbackFromCandidate(candidate, sessionId);
+        }
+    }
+
+    private void completeRecognition(String sessionId,
+                                     RecognitionResult result,
+                                     String originalFilename,
+                                     long imageSize,
+                                     String imageHash,
+                                     Long userId,
+                                     boolean domestic) {
+        RecognitionResult withSession = withSessionId(result, sessionId);
+        saveHistory(withSession, originalFilename, imageSize, imageHash, userId);
+        RecognitionResult enriched = enrichWithPlatformStats(withSession, domestic);
+        taskManager.markCompleted(sessionId, enriched);
+        messagingTemplate.convertAndSend(WS_TOPIC + sessionId, new RecognitionTaskResult(
+                sessionId, "COMPLETED", enriched, null, null, Instant.now()
+        ));
+    }
+
+    private List<CandidateWork> prepareCandidates(byte[] imageBytes, List<RecognitionCandidate> detected) {
+        if (detected == null || detected.isEmpty()) {
+            return List.of();
+        }
+        List<CandidateWork> candidates = new ArrayList<>();
+        double minConfidence = properties.getRecognition().getMinDetectionConfidence();
+        int index = 1;
+        for (RecognitionCandidate candidate : detected) {
+            if (candidate.confidence() < minConfidence) {
+                continue;
+            }
+            try {
+                ImageProcessor.CroppedImage crop = imageProcessor.cropToJpeg(imageBytes, candidate.bbox());
+                String candidateId = "candidate-" + index++;
+                String preview = "data:image/jpeg;base64," + Base64.getEncoder().encodeToString(crop.bytes());
+                RecognitionCandidate visible = new RecognitionCandidate(
+                        candidateId,
+                        candidate.bbox(),
+                        candidate.category(),
+                        candidate.brand(),
+                        candidate.confidence(),
+                        preview
+                );
+                candidates.add(new CandidateWork(visible, crop.bytes(), crop.sourceArea()));
+            } catch (ImageQualityException e) {
+                log.debug("Skipping invalid detected bbox {}: {}", candidate.bbox(), e.getReason());
+            }
+        }
+        return candidates.stream()
+                .sorted(Comparator
+                        .comparingLong(CandidateWork::sourceArea).reversed()
+                        .thenComparing((CandidateWork item) -> item.candidate().confidence(), Comparator.reverseOrder()))
+                .limit(Math.max(1, properties.getRecognition().getMaxProducts()))
+                .toList();
+    }
+
+    private <T> T executeWithRetry(String sessionId, String stage, RetryableOperation<T> operation) throws Exception {
+        int maxRetry = properties.getRecognition().getRetryCount();
+        Exception lastError = null;
+        for (int attempt = 0; attempt <= maxRetry; attempt++) {
+            try {
+                return operation.run();
+            } catch (Exception e) {
+                lastError = e;
+                log.warn("Recognition {} attempt {}/{} failed for session {}: {}",
+                        stage, attempt + 1, maxRetry + 1, sessionId, e.getMessage());
+                if (!RetryPolicy.isRetryable(e)) {
+                    break;
+                }
+                if (attempt < maxRetry) {
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(RetryPolicy.backoffDelayMs(attempt, properties.getRecognition().getRetryBaseDelayMs()));
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        throw lastError == null ? new IllegalStateException("识别失败") : lastError;
     }
 
     private RecognitionResult enrichWithPlatformStats(RecognitionResult result, boolean domestic) {
@@ -197,6 +372,24 @@ public class RecognitionOrchestrator {
         );
     }
 
+    private RecognitionResult fallbackFromCandidate(RecognitionCandidate candidate, String sessionId) {
+        String category = candidate.category() == null || candidate.category().isBlank() ? "未知" : candidate.category();
+        String brand = candidate.brand() == null || candidate.brand().isBlank() ? "未知" : candidate.brand();
+        return new RecognitionResult(
+                sessionId,
+                new CategoryDto("商品", category, category, Math.max(0.1, candidate.confidence())),
+                Map.of(
+                        "品牌", new AttributeValue(brand, "未知".equals(brand) ? 0.3 : candidate.confidence(), false),
+                        "颜色", new AttributeValue("未知", 0.3, false),
+                        "款式", new AttributeValue("未知", 0.3, false),
+                        "材质", new AttributeValue("未知", 0.3, false),
+                        "适用人群", new AttributeValue("通用", 0.3, false)
+                ),
+                List.of(category),
+                Math.max(0.1, candidate.confidence())
+        );
+    }
+
     private RecognitionResult withSessionId(RecognitionResult result, String sessionId) {
         return new RecognitionResult(
                 sessionId,
@@ -208,12 +401,12 @@ public class RecognitionOrchestrator {
         );
     }
 
-    private void saveHistory(RecognitionResult result, String filename, long size, Long userId) {
+    private void saveHistory(RecognitionResult result, String filename, long size, String imageHash, Long userId) {
         try {
             RecognitionHistory history = new RecognitionHistory();
             history.setSessionId(result.sessionId());
             history.setImageUrl("upload://" + result.sessionId());
-            history.setImageHash(HashUtils.sha256Hex(filename + ":" + size));
+            history.setImageHash(imageHash != null ? imageHash : HashUtils.sha256Hex(filename + ":" + size));
             history.setCategoryJson(objectMapper.writeValueAsString(result.category()));
             history.setAttributesJson(objectMapper.writeValueAsString(result.attributes()));
             history.setKeywords(String.join(",", result.keywords()));
@@ -224,5 +417,13 @@ public class RecognitionOrchestrator {
         } catch (JsonProcessingException e) {
             log.error("Failed to save recognition history for session {}", result.sessionId(), e);
         }
+    }
+
+    private record CandidateWork(RecognitionCandidate candidate, byte[] cropBytes, long sourceArea) {
+    }
+
+    @FunctionalInterface
+    private interface RetryableOperation<T> {
+        T run() throws Exception;
     }
 }

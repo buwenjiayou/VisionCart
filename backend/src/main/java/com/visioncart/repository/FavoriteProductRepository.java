@@ -13,6 +13,8 @@ public interface FavoriteProductRepository extends JpaRepository<FavoriteProduct
 
     List<FavoriteProduct> findByProductId(String productId);
 
+    List<FavoriteProduct> findByUserIdAndProductIdIn(Long userId, List<String> productIds);
+
     List<FavoriteProduct> findTop50ByUserIdOrderByCreatedAtDesc(Long userId);
 
     @Modifying

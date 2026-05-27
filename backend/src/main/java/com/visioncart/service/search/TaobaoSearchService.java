@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
@@ -562,6 +563,12 @@ public class TaobaoSearchService implements PlatformSearchService {
             }
         }
         return 0.0;
+    }
+
+    @Scheduled(fixedDelay = 300_000)
+    void evictExpiredCaches() {
+        long now = System.currentTimeMillis();
+        detailCache.entrySet().removeIf(e -> e.getValue().expiresAt() <= now);
     }
 
     private record SalesInfo(long sales, String source) {}

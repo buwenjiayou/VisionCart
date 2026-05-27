@@ -53,7 +53,11 @@ public class RecognitionService {
         RecognitionHistory history = new RecognitionHistory();
         history.setSessionId(result.sessionId());
         history.setImageUrl("upload://" + result.sessionId());
-        history.setImageHash(HashUtils.sha256Hex(image.getOriginalFilename() + ":" + image.getSize()));
+        try {
+            history.setImageHash(HashUtils.sha256Hex(image.getBytes()));
+        } catch (Exception ignored) {
+            history.setImageHash(HashUtils.sha256Hex(image.getOriginalFilename() + ":" + image.getSize()));
+        }
         history.setCategoryJson(toJson(result.category()));
         history.setAttributesJson(toJson(result.attributes()));
         history.setKeywords(String.join(",", result.keywords()));
@@ -64,18 +68,20 @@ public class RecognitionService {
     }
 
     @Transactional
-    public AttributeCorrectionResult correct(AttributeCorrectionRequest request) {
-        RecognitionHistory history = historyRepository.findById(request.sessionId()).orElse(null);
-        Map<String, AttributeValue> attributes = readAttributes(history == null ? null : history.getAttributesJson());
+    public AttributeCorrectionResult correct(AttributeCorrectionRequest request, Long userId) {
+        RecognitionHistory history = (userId == null
+                ? historyRepository.findById(request.sessionId())
+                : historyRepository.findBySessionIdAndUserId(request.sessionId(), userId))
+                .orElseThrow(() -> new IllegalArgumentException("识别会话不存在或已过期"));
+        Map<String, AttributeValue> attributes = readAttributes(history.getAttributesJson());
         attributes.put(request.attribute(), new AttributeValue(request.newValue(), 1.0, true));
 
-        if (history != null) {
-            history.setAttributesJson(toJson(attributes));
-            historyRepository.save(history);
-        }
+        history.setAttributesJson(toJson(attributes));
+        historyRepository.save(history);
 
         RecognitionFeedback feedback = new RecognitionFeedback();
         feedback.setSessionId(request.sessionId());
+        feedback.setImageHash(history.getImageHash());
         feedback.setAttributeName(request.attribute());
         feedback.setVlmOutput(request.oldValue());
         feedback.setUserCorrection(request.newValue());
@@ -90,24 +96,30 @@ public class RecognitionService {
                 1,
                 20,
                 "app"
-        ));
+        ), userId);
         return new AttributeCorrectionResult(attributes, searchResult);
+    }
+
+    public AttributeCorrectionResult correct(AttributeCorrectionRequest request) {
+        return correct(request, null);
     }
 
     public List<RecognitionHistory> latestHistory() {
         return historyRepository.findTop20ByOrderByCreatedAtDesc();
     }
 
-    public List<String> attributeOptions(String category, String attribute, String sessionId, List<String> defaults) {
+    public List<String> attributeOptions(String category, String attribute, String sessionId, Long userId, List<String> defaults) {
         LinkedHashSet<String> options = new LinkedHashSet<>();
         if (SearchTextUtils.ATTR_BRAND.equals(attribute) && sessionId != null && !sessionId.isBlank()) {
-            historyRepository.findById(sessionId).ifPresent(history -> {
+            (userId == null
+                    ? historyRepository.findById(sessionId)
+                    : historyRepository.findBySessionIdAndUserId(sessionId, userId)).ifPresent(history -> {
                 Map<String, AttributeValue> attributes = readAttributes(history.getAttributesJson());
                 Map<String, String> flatAttributes = new LinkedHashMap<>();
                 attributes.forEach((key, value) -> flatAttributes.put(key, value.value()));
                 try {
                     SearchResult searchResult = searchOrchestrator.search(new SearchRequest(
-                            sessionId, flatAttributes, null, 1, 20, "attribute_options"));
+                            sessionId, flatAttributes, null, 1, 20, "attribute_options"), userId);
                     searchResult.products().stream()
                             .map(this::brandCandidate)
                             .map(SearchTextUtils::useful)

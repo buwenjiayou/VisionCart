@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import java.util.concurrent.RejectedExecutionException;
 import java.util.stream.Collectors;
 
 @RestControllerAdvice
@@ -76,6 +77,13 @@ public class ApiExceptionHandler {
     ApiResponse<Void> transientDb(TransientDataAccessException error) {
         log.error("Transient database error", error);
         return ApiResponse.fail(503, "数据库暂时不可用，请稍后重试");
+    }
+
+    @ExceptionHandler(RejectedExecutionException.class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    ApiResponse<Void> queueFull(RejectedExecutionException error) {
+        log.warn("Request rejected because executor queue is full: {}", error.getMessage());
+        return ApiResponse.fail(503, "服务繁忙，请稍后重试");
     }
 
     @ExceptionHandler(DataAccessException.class)

@@ -7,6 +7,7 @@ import com.visioncart.api.dto.CategoryDto;
 import com.visioncart.api.dto.RecognitionResult;
 import com.visioncart.config.VisionCartProperties;
 import com.visioncart.service.ai.AiTraceService;
+import com.visioncart.service.ai.AiJsonUtils;
 import com.visioncart.service.ai.PromptLoader;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -170,7 +171,7 @@ public class DoubaoVisionClient implements VisionModelService {
         if (StringUtils.isBlank(content)) {
             throw new IllegalStateException("豆包视觉返回为空");
         }
-        JsonNode parsed = objectMapper.readTree(extractJson(content));
+        JsonNode parsed = objectMapper.readTree(AiJsonUtils.extractFirstJsonObject(content));
         JsonNode category = parsed.path("category");
         CategoryDto categoryDto = new CategoryDto(
                 textOrDefault(category.path("level1"), "未知"),
@@ -224,15 +225,6 @@ public class DoubaoVisionClient implements VisionModelService {
         attributes.putIfAbsent(key, new AttributeValue("未知", 0.3, false));
     }
 
-    private String extractJson(String content) {
-        int start = content.indexOf('{');
-        int end = content.lastIndexOf('}');
-        if (start >= 0 && end > start) {
-            return content.substring(start, end + 1);
-        }
-        return content;
-    }
-
     private String textOrDefault(JsonNode node, String defaultValue) {
         return node == null || node.isMissingNode() || node.isNull() || node.asText().isBlank()
                 ? defaultValue
@@ -243,7 +235,7 @@ public class DoubaoVisionClient implements VisionModelService {
         if (node == null || node.isMissingNode() || node.isNull()) {
             return defaultValue;
         }
-        return Math.max(0, Math.min(1, node.asDouble(defaultValue)));
+        return AiJsonUtils.clampConfidence(node.asDouble(defaultValue), defaultValue);
     }
 
     private boolean isPlaceholder(String value) {

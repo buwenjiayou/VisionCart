@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -99,10 +100,10 @@ class RecognitionServiceTest {
         AttributeCorrectionRequest request = new AttributeCorrectionRequest(
                 "missing", "品牌", "未知", "Nike");
 
-        AttributeCorrectionResult result = recognitionService.correct(request);
-
-        assertThat(result.updatedAttributes().get("品牌").value()).isEqualTo("Nike");
-        verify(feedbackRepository).save(any(RecognitionFeedback.class));
+        assertThatThrownBy(() -> recognitionService.correct(request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("识别会话不存在");
+        verify(feedbackRepository, never()).save(any(RecognitionFeedback.class));
     }
 
     @Test

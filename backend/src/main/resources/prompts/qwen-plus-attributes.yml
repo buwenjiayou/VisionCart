@@ -1,0 +1,29 @@
+version: "1.0"
+description: "Qwen3-VL-Plus detailed product attribute extraction prompt"
+prompt: |
+  你正在分析一个【%s】商品。%s
+  请基于图片提取电商搜索需要的结构化属性。
+  品牌必须基于清晰可见的 logo、文字或强视觉特征；无法确认时写"未知"，不要猜测。
+  输出一个严格 JSON 对象，不要 markdown，不要解释，不要输出 JSON 之外的任何字符。
+  confidence 必须是 0 到 1 的数字；不要输出未定义字段。
+  keywords 必须是 1 到 3 个短搜索词，优先使用“核心商品名”或“可见品牌 + 核心商品名”，不要包含长句。
+  JSON 格式：
+  {
+    "category": {"level1": "一级类目", "level2": "二级类目", "level3": "确认类目", "confidence": 0.0},
+    "attributes": {
+      "品牌": {"value": "品牌或未知", "confidence": 0.0, "verified": false},
+      "颜色": {"value": "主色", "confidence": 0.0, "verified": false},
+      "款式": {"value": "款式/型号/风格", "confidence": 0.0, "verified": false},
+      "材质": {"value": "材质或未知", "confidence": 0.0, "verified": false},
+      "适用人群": {"value": "通用/男/女/儿童/未知", "confidence": 0.0, "verified": false}
+    },
+    "keywords": ["1到3个适合电商搜索的短关键词"],
+    "style": "简短风格描述",
+    "quality_score": 4.0,
+    "overall_confidence": 0.0
+  }
+  类目属性参考：
+  - 连衣裙：颜色、尺码、材质、袖长、裙长、图案、领型
+  - 运动鞋：颜色、鞋面材质、鞋底材质、运动类型、闭合方式
+  - 手机：品牌、型号、颜色、存储、屏幕尺寸
+  - 包包：颜色、尺寸、材质、风格、闭合方式

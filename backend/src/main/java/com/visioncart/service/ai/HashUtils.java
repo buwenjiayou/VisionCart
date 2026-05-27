@@ -9,9 +9,13 @@ public final class HashUtils {
     private HashUtils() {}
 
     public static String sha256Hex(String input) {
+        return sha256Hex(input.getBytes(StandardCharsets.UTF_8));
+    }
+
+    public static String sha256Hex(byte[] input) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(input.getBytes(StandardCharsets.UTF_8)));
+            return HexFormat.of().formatHex(digest.digest(input));
         } catch (Exception error) {
             throw new IllegalStateException("SHA-256 not available", error);
         }

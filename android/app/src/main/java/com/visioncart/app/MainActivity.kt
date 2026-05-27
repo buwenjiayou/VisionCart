@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -117,7 +118,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         handleIntentExtras(intent)
         val repository = VisionCartRepository(applicationContext)
-        androidx.activity.enableEdgeToEdge()
         setContent {
             com.visioncart.app.ui.theme.VisionCartTheme {
                 VisionCartApp(
@@ -127,7 +127,6 @@ class MainActivity : ComponentActivity() {
                         val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
                         mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
                     },
-                    isOverlayRunning = { isFloatingWindowServiceRunning() },
                     navigationRequests = navigationRequests,
                     onNavigationRequestHandled = { navigationRequests.value = null }
                 )
@@ -169,7 +168,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (isFloatingWindowServiceRunning()) {
+        if (FloatingWindowService.isRunning.value) {
             stopFloatingWindowService()
             Toast.makeText(this, "悬浮球已关闭", Toast.LENGTH_SHORT).show()
         } else {
@@ -184,12 +183,6 @@ class MainActivity : ComponentActivity() {
 
     private fun stopFloatingWindowService() {
         stopService(Intent(this, FloatingWindowService::class.java))
-    }
-
-    private fun isFloatingWindowServiceRunning(): Boolean {
-        val manager = getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager
-        return manager.getRunningServices(Integer.MAX_VALUE)
-            .any { it.service.className == FloatingWindowService::class.java.name }
     }
 }
 
@@ -214,7 +207,6 @@ fun VisionCartApp(
     repository: VisionCartRepository,
     onOverlay: () -> Unit,
     onRequestScreenshot: () -> Unit = {},
-    isOverlayRunning: () -> Boolean = { false },
     navigationRequests: StateFlow<String?>,
     onNavigationRequestHandled: () -> Unit
 ) {
@@ -227,15 +219,7 @@ fun VisionCartApp(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
     val snackbarHostState = remember { SnackbarHostState() }
-    var isOverlayActive by remember { mutableStateOf(isOverlayRunning()) }
-
-    // Poll overlay status periodically
-    LaunchedEffect(Unit) {
-        while (true) {
-            kotlinx.coroutines.delay(1000)
-            isOverlayActive = isOverlayRunning()
-        }
-    }
+    val isOverlayActive by FloatingWindowService.isRunning.collectAsState()
 
     // Check saved token on startup — auto login
     LaunchedEffect(Unit) {
@@ -429,10 +413,7 @@ fun VisionCartApp(
                                     tint = Color(0xFF53615E)
                                 )
                             }
-                            IconButton(onClick = {
-                                onOverlay()
-                                isOverlayActive = isOverlayRunning()
-                            }) {
+                            IconButton(onClick = { onOverlay() }) {
                                 Icon(
                                     Icons.Outlined.Window,
                                     contentDescription = if (isOverlayActive) "关闭悬浮窗" else "开启悬浮窗",
@@ -657,6 +638,15 @@ private fun HomeScreen(
                     { viewModel.analyzeImage(uri) }
                 }
             )
+        }
+
+        if (uiState.multiProductCandidates.isNotEmpty()) {
+            item {
+                MultiProductSelectionPanel(
+                    candidates = uiState.multiProductCandidates,
+                    onSelect = { viewModel.selectRecognitionCandidate(it) }
+                )
+            }
         }
 
         // Suggestion Cards

@@ -11,6 +11,8 @@ import com.visioncart.repository.PriceHistoryRepository;
 import com.visioncart.service.search.SearchOrchestrator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +23,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class PriceMonitorService {
@@ -32,22 +35,35 @@ public class PriceMonitorService {
     private final PriceAlertRepository alertRepository;
     private final FavoriteProductRepository favoriteRepository;
     private final SimpMessagingTemplate messagingTemplate;
+    private final StringRedisTemplate redisTemplate;
     private final int historyDays;
     private final int dedupDays;
 
+    @Autowired
     public PriceMonitorService(SearchOrchestrator searchOrchestrator,
                                PriceHistoryRepository historyRepository,
                                PriceAlertRepository alertRepository,
                                FavoriteProductRepository favoriteRepository,
                                SimpMessagingTemplate messagingTemplate,
+                               StringRedisTemplate redisTemplate,
                                VisionCartProperties properties) {
         this.searchOrchestrator = searchOrchestrator;
         this.historyRepository = historyRepository;
         this.alertRepository = alertRepository;
         this.favoriteRepository = favoriteRepository;
         this.messagingTemplate = messagingTemplate;
+        this.redisTemplate = redisTemplate;
         this.historyDays = properties.getPriceMonitor().getHistoryRetentionDays();
         this.dedupDays = properties.getPriceMonitor().getNotificationDedupDays();
+    }
+
+    PriceMonitorService(SearchOrchestrator searchOrchestrator,
+                        PriceHistoryRepository historyRepository,
+                        PriceAlertRepository alertRepository,
+                        FavoriteProductRepository favoriteRepository,
+                        SimpMessagingTemplate messagingTemplate,
+                        VisionCartProperties properties) {
+        this(searchOrchestrator, historyRepository, alertRepository, favoriteRepository, messagingTemplate, null, properties);
     }
 
     /**
@@ -148,17 +164,12 @@ public class PriceMonitorService {
         if (lowest30d != null && currentPrice.compareTo(lowest30d) <= 0 && favoritePrice != null) {
             // This is a history low — check if user has any alert for dedup
             PriceAlert dedupAlert = alertRepository.findByUserIdAndProductIdAndActiveTrue(userId, productId).orElse(null);
-            if (dedupAlert == null || shouldNotify(dedupAlert)) {
-                // Create a temporary notification-only alert for dedup tracking
-                PriceAlert notificationRecord = dedupAlert != null ? dedupAlert : new PriceAlert();
-                notificationRecord.setProductId(productId);
-                notificationRecord.setPlatform(platform);
-                notificationRecord.setUserId(userId);
-                notificationRecord.setTargetPrice(favoritePrice);
-                notificationRecord.setCurrentPrice(currentPrice);
-                notificationRecord.setNotifiedAt(Instant.now());
-                notificationRecord.setActive(dedupAlert != null);
-                alertRepository.save(notificationRecord);
+            if ((dedupAlert == null || shouldNotify(dedupAlert)) && markNotificationDedup(userId, productId, "history_low")) {
+                if (dedupAlert != null) {
+                    dedupAlert.setCurrentPrice(currentPrice);
+                    dedupAlert.setNotifiedAt(Instant.now());
+                    alertRepository.save(dedupAlert);
+                }
                 sendNotification(userId, "history_low", favorite, currentPrice, null);
             }
         }
@@ -169,19 +180,29 @@ public class PriceMonitorService {
                     .divide(favoritePrice, 4, RoundingMode.HALF_UP);
             if (drop.compareTo(LARGE_DROP_THRESHOLD) >= 0) {
                 PriceAlert dedupAlert = alertRepository.findByUserIdAndProductIdAndActiveTrue(userId, productId).orElse(null);
-                if (dedupAlert == null || shouldNotify(dedupAlert)) {
-                    PriceAlert notificationRecord = dedupAlert != null ? dedupAlert : new PriceAlert();
-                    notificationRecord.setProductId(productId);
-                    notificationRecord.setPlatform(platform);
-                    notificationRecord.setUserId(userId);
-                    notificationRecord.setTargetPrice(favoritePrice);
-                    notificationRecord.setCurrentPrice(currentPrice);
-                    notificationRecord.setNotifiedAt(Instant.now());
-                    notificationRecord.setActive(dedupAlert != null);
-                    alertRepository.save(notificationRecord);
+                if ((dedupAlert == null || shouldNotify(dedupAlert)) && markNotificationDedup(userId, productId, "large_drop")) {
+                    if (dedupAlert != null) {
+                        dedupAlert.setCurrentPrice(currentPrice);
+                        dedupAlert.setNotifiedAt(Instant.now());
+                        alertRepository.save(dedupAlert);
+                    }
                     sendNotification(userId, "large_drop", favorite, currentPrice, null);
                 }
             }
+        }
+    }
+
+    private boolean markNotificationDedup(Long userId, String productId, String alertType) {
+        if (redisTemplate == null) {
+            return true;
+        }
+        String key = "visioncart:price-alert:dedup:" + userId + ":" + productId + ":" + alertType;
+        try {
+            Boolean first = redisTemplate.opsForValue().setIfAbsent(key, "1", Math.max(1, dedupDays), TimeUnit.DAYS);
+            return Boolean.TRUE.equals(first);
+        } catch (Exception error) {
+            log.warn("Price alert dedup unavailable, sending notification without Redis dedup: {}", error.getMessage());
+            return true;
         }
     }
 

@@ -4,6 +4,7 @@ import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
 public final class RetryPolicy {
 
@@ -45,7 +46,7 @@ public final class RetryPolicy {
                 lastException = e;
                 if (attempt < maxRetries && isRetryable(e)) {
                     try {
-                        Thread.sleep(backoffDelayMs(attempt, baseDelayMs));
+                        TimeUnit.MILLISECONDS.sleep(backoffDelayMs(attempt, baseDelayMs));
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         throw e;

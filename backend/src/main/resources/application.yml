@@ -1,5 +1,6 @@
 server:
   port: ${PORT:8080}
+  address: ${SERVER_ADDRESS:0.0.0.0}
   tomcat:
     max-http-form-post-size: 30MB
 
@@ -58,15 +59,22 @@ spring:
           timeout: 5000
           writetimeout: 5000
 
+aliyun:
+  bailian:
+    api-key: ${ALIYUN_BAILIAN_API_KEY:}
+    base-url: ${ALIYUN_BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+
 visioncart:
   public-base-url: ${PUBLIC_BASE_URL:http://localhost:8080}
   jwt:
-    secret: ${JWT_SECRET:VisionCartLocalDevelopmentJwtSecretChangeMe1234567890}
+    secret: ${JWT_SECRET}
     expiration: ${JWT_EXPIRATION:604800000}
   ai:
     llm-model: ${ARK_LLM_MODEL:}
     vision-model: ${ARK_VISION_MODEL:}
     vision-api-key: ${ARK_VISION_API_KEY:}
+    qwen-flash-model: ${QWEN_VL_FLASH_MODEL:qwen3-vl-flash}
+    qwen-plus-model: ${QWEN_VL_PLUS_MODEL:qwen3-vl-plus}
     temperature: ${AI_TEMPERATURE:0.0}
     max-tokens: ${AI_MAX_TOKENS:}
     top-p: ${AI_TOP_P:}
@@ -110,6 +118,18 @@ visioncart:
     max-products-per-run: ${PRICE_MONITOR_MAX_PRODUCTS:50}
     history-retention-days: ${PRICE_MONITOR_HISTORY_DAYS:90}
     notification-dedup-days: ${PRICE_MONITOR_DEDUP_DAYS:3}
+  security:
+    allowed-origins: ${VISIONCART_ALLOWED_ORIGINS:http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080}
+    admin-user-ids: ${VISIONCART_ADMIN_USER_IDS:}
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    default-limit: ${RATE_LIMIT_DEFAULT_LIMIT:120}
+    default-window-seconds: ${RATE_LIMIT_DEFAULT_WINDOW_SECONDS:60}
+    auth-limit: ${RATE_LIMIT_AUTH_LIMIT:10}
+    auth-window-seconds: ${RATE_LIMIT_AUTH_WINDOW_SECONDS:300}
+    recognition-limit: ${RATE_LIMIT_RECOGNITION_LIMIT:20}
+    recognition-window-seconds: ${RATE_LIMIT_RECOGNITION_WINDOW_SECONDS:3600}
+    max-local-keys: ${RATE_LIMIT_MAX_LOCAL_KEYS:10000}
   recognition:
     max-upload-bytes: ${RECOGNITION_MAX_UPLOAD_BYTES:26214400}
     image-max-dimension: ${RECOGNITION_IMAGE_MAX_DIM:1024}
@@ -123,6 +143,9 @@ visioncart:
     max-pool-size: ${RECOGNITION_MAX_POOL_SIZE:16}
     queue-capacity: ${RECOGNITION_QUEUE_CAPACITY:50}
     retry-base-delay-ms: ${RECOGNITION_RETRY_BASE_DELAY_MS:1000}
+    multi-product-threshold: ${RECOGNITION_MULTI_PRODUCT_THRESHOLD:2}
+    min-detection-confidence: ${RECOGNITION_MIN_DETECTION_CONFIDENCE:0.7}
+    max-products: ${RECOGNITION_MAX_PRODUCTS:5}
 
 springdoc:
   swagger-ui:

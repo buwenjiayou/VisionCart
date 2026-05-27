@@ -3,7 +3,7 @@ package com.visioncart.api.controller;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.visioncart.api.dto.*;
-import com.visioncart.config.JwtAuthenticationFilter.AuthPrincipal;
+import com.visioncart.config.SecurityUtils;
 import com.visioncart.domain.FavoriteProduct;
 import com.visioncart.domain.PriceHistory;
 import com.visioncart.domain.RecognitionHistory;
@@ -18,8 +18,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import org.springframework.transaction.annotation.Transactional;
@@ -61,7 +59,7 @@ public class UserDataController {
     @Transactional
     @PostMapping("/favorites")
     public ApiResponse<FavoriteCard> addFavorite(@Valid @RequestBody FavoriteRequest request) {
-        Long userId = getCurrentUserId();
+        Long userId = SecurityUtils.currentUserId();
 
         // 冲突解决：如果客户端时间比服务端旧，返回服务端最新数据
         FavoriteProduct existingByProduct = favoriteRepository.findByProductIdAndUserId(request.productId(), userId).orElse(null);
@@ -92,7 +90,7 @@ public class UserDataController {
 
     @GetMapping("/favorites")
     public ApiResponse<List<FavoriteCard>> favorites() {
-        Long userId = getCurrentUserId();
+        Long userId = SecurityUtils.currentUserId();
         List<FavoriteProduct> items = favoriteRepository.findTop50ByUserIdOrderByCreatedAtDesc(userId);
 
         // Return current data immediately, trigger async price refresh in background
@@ -115,7 +113,7 @@ public class UserDataController {
     @Transactional
     @DeleteMapping("/favorites/{productId}")
     public ApiResponse<Void> removeFavorite(@PathVariable String productId) {
-        Long userId = getCurrentUserId();
+        Long userId = SecurityUtils.currentUserId();
         favoriteRepository.deleteByProductIdAndUserId(productId, userId);
         return ApiResponse.ok(null);
     }
@@ -124,7 +122,7 @@ public class UserDataController {
     public ApiResponse<PagedResult<HistoryItem>> history(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
-        Long userId = getCurrentUserId();
+        Long userId = SecurityUtils.currentUserId();
         int clampedSize = Math.min(Math.max(size, 1), 50);
         Pageable pageable = PageRequest.of(Math.max(page - 1, 0), clampedSize);
         Page<RecognitionHistory> result = historyRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable);
@@ -189,11 +187,4 @@ public class UserDataController {
         }
     }
 
-    private Long getCurrentUserId() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && auth.getPrincipal() instanceof AuthPrincipal principal) {
-            return principal.getUserId();
-        }
-        throw new SecurityException("未登录");
-    }
 }

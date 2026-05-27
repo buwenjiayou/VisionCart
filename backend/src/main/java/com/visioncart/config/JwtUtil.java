@@ -74,14 +74,16 @@ public class JwtUtil {
     }
 
     public void invalidateToken(String token) {
+        Claims claims;
         try {
-            Claims claims = parseToken(token);
-            long ttlMs = claims.getExpiration().getTime() - System.currentTimeMillis();
-            if (ttlMs > 0) {
-                redisTemplate.opsForValue().set(BLACKLIST_PREFIX + token, "1", ttlMs, TimeUnit.MILLISECONDS);
-            }
+            claims = parseToken(token);
         } catch (Exception e) {
             // Token already expired or invalid, no need to blacklist
+            return;
+        }
+        long ttlMs = claims.getExpiration().getTime() - System.currentTimeMillis();
+        if (ttlMs > 0) {
+            redisTemplate.opsForValue().set(BLACKLIST_PREFIX + token, "1", ttlMs, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -89,7 +91,7 @@ public class JwtUtil {
         try {
             return Boolean.TRUE.equals(redisTemplate.hasKey(BLACKLIST_PREFIX + token));
         } catch (Exception e) {
-            return false; // Redis unavailable, fail open
+            throw new IllegalStateException("Token blacklist is unavailable", e);
         }
     }
 }

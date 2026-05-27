@@ -19,7 +19,7 @@ public class AsyncConfig {
                 search.getMaxPoolSize(),
                 60, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(search.getQueueCapacity()),
-                new ThreadPoolExecutor.CallerRunsPolicy()
+                new ThreadPoolExecutor.AbortPolicy()
         );
     }
 
@@ -31,7 +31,7 @@ public class AsyncConfig {
                 recognition.getMaxPoolSize(),
                 60, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(recognition.getQueueCapacity()),
-                new ThreadPoolExecutor.CallerRunsPolicy()
+                new ThreadPoolExecutor.AbortPolicy()
         );
     }
 }

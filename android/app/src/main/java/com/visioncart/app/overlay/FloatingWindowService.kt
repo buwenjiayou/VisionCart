@@ -164,6 +164,8 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         private const val EXTRA_RESULT_DATA = "resultData"
         private const val TAG = "FloatingWindowService"
 
+        val isRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
+
         fun startScreenshot(context: Context, resultCode: Int, data: Intent) {
             val intent = Intent(context, FloatingWindowService::class.java).apply {
                 action = ACTION_SCREENSHOT
@@ -180,6 +182,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
 
     override fun onCreate() {
         super.onCreate()
+        isRunning.value = true
         startForegroundWithNotification()
         savedStateController.performAttach()
         savedStateController.performRestore(null)
@@ -246,7 +249,12 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_SCREENSHOT) {
             val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-            val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+            val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(EXTRA_RESULT_DATA)
+            }
             if (resultData != null) {
                 startScreenCapture(resultCode, resultData)
             }
@@ -257,6 +265,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        isRunning.value = false
         serviceScope.cancel()
         overlayView?.let { windowManager.removeView(it) }
         overlayView = null

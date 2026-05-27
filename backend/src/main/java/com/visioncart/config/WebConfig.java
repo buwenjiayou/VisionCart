@@ -10,11 +10,16 @@ import java.util.List;
 
 @Configuration
 public class WebConfig {
+    private final VisionCartProperties properties;
+
+    public WebConfig(VisionCartProperties properties) {
+        this.properties = properties;
+    }
 
     @Bean
     CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowedOrigins(properties.getSecurity().allowedOriginList());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(false);

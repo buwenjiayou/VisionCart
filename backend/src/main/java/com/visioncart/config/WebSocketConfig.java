@@ -25,9 +25,11 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private static final Logger log = LoggerFactory.getLogger(WebSocketConfig.class);
 
     private final JwtUtil jwtUtil;
+    private final VisionCartProperties properties;
 
-    public WebSocketConfig(JwtUtil jwtUtil) {
+    public WebSocketConfig(JwtUtil jwtUtil, VisionCartProperties properties) {
         this.jwtUtil = jwtUtil;
+        this.properties = properties;
     }
 
     @Override
@@ -39,7 +41,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws/recognition")
-                .setAllowedOriginPatterns("*")
+                .setAllowedOrigins(properties.getSecurity().allowedOriginList().toArray(String[]::new))
                 .withSockJS();
     }
 

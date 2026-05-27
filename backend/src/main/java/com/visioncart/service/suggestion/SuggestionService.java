@@ -238,6 +238,9 @@ public class SuggestionService {
 
     private SessionData getOrCreateSession(String sessionId) {
         if (sessionId == null) return new SessionData();
+        if (sessions.size() >= maxSessions) {
+            cleanupExpiredSessions();
+        }
         return sessions.computeIfAbsent(sessionId, k -> new SessionData());
     }
 

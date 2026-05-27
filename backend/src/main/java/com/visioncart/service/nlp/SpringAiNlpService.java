@@ -101,9 +101,7 @@ public class SpringAiNlpService implements NlpModelService {
         } catch (Exception error) {
             traceService.fail("nlp.parse", traceId, error, "none");
             log.warn("LLM unavailable, building best-effort fallback: {}", error.getMessage());
-            NlpParseResult fallback = buildFallback(parsed.filter(), history);
-            conversationManager.addTurn(request.sessionId(), sanitizedInput, fallback.filter());
-            return fallback;
+            return buildFallback(parsed.filter(), history);
         }
     }
 

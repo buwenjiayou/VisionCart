@@ -107,7 +107,17 @@ data class RecognitionTaskResult(
     val result: RecognitionResult?,
     val error: String?,
     @Json(name = "created_at") val createdAt: String?,
-    @Json(name = "completed_at") val completedAt: String?
+    @Json(name = "completed_at") val completedAt: String?,
+    val candidates: List<RecognitionCandidate> = emptyList()
+)
+
+data class RecognitionCandidate(
+    @Json(name = "candidate_id") val candidateId: String,
+    val bbox: List<Int>,
+    val category: String,
+    val brand: String?,
+    val confidence: Double,
+    @Json(name = "preview_image_url") val previewImageUrl: String?
 )
 
 data class NlpParseRequest(

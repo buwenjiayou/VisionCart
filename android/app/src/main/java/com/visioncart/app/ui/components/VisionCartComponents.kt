@@ -38,6 +38,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,6 +54,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import com.visioncart.app.data.AttributeValue
 import com.visioncart.app.data.ProductCard
+import com.visioncart.app.data.RecognitionCandidate
 import com.visioncart.app.data.SearchFilter
 import com.visioncart.app.data.SuggestionCard
 import com.visioncart.app.ui.viewmodel.UiState
@@ -278,6 +280,81 @@ fun RecognitionPanel(
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.fillMaxWidth().padding(14.dp)
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MultiProductSelectionPanel(
+    candidates: List<RecognitionCandidate>,
+    onSelect: (RecognitionCandidate) -> Unit
+) {
+    if (candidates.isEmpty()) return
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(18.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                "选择要识别的商品",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF10201C)
+            )
+            Text(
+                "检测到 ${candidates.size} 个商品",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF687A75)
+            )
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                candidates.forEach { candidate ->
+                    Surface(
+                        modifier = Modifier
+                            .width(150.dp)
+                            .clickable { onSelect(candidate) },
+                        color = Color(0xFFF8FBF9),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            AsyncImage(
+                                model = candidate.previewImageUrl,
+                                contentDescription = candidate.category,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(112.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFFEAF3F0)),
+                                contentScale = ContentScale.Crop
+                            )
+                            Text(
+                                candidate.category.ifBlank { "商品" },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color(0xFF10201C)
+                            )
+                            Text(
+                                candidate.brand?.takeIf { it.isNotBlank() } ?: "品牌未知",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF687A75)
+                            )
+                            Text(
+                                "置信度 ${(candidate.confidence * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF0A7C66),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }

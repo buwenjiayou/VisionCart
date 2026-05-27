@@ -1,15 +1,13 @@
 package com.visioncart.api.controller;
 
 import com.visioncart.api.dto.*;
-import com.visioncart.config.JwtAuthenticationFilter.AuthPrincipal;
+import com.visioncart.config.SecurityUtils;
 import com.visioncart.service.auth.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -52,7 +50,7 @@ public class AuthController {
     @GetMapping("/profile")
     public ResponseEntity<ApiResponse<UserProfile>> getProfile() {
         try {
-            Long userId = getCurrentUserId();
+            Long userId = SecurityUtils.currentUserId();
             UserProfile profile = authService.getUserProfile(userId);
             return ResponseEntity.ok(ApiResponse.ok(profile));
         } catch (SecurityException e) {
@@ -69,13 +67,5 @@ public class AuthController {
             authService.logout(authHeader.substring(7));
         }
         return ResponseEntity.ok(ApiResponse.ok(null));
-    }
-
-    private Long getCurrentUserId() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && auth.getPrincipal() instanceof AuthPrincipal principal) {
-            return principal.getUserId();
-        }
-        throw new SecurityException("未登录");
     }
 }

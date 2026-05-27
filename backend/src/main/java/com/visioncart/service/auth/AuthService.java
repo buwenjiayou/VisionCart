@@ -30,6 +30,7 @@ public class AuthService {
     private static final String CODE_PREFIX = "verify:code:";
     private static final int CODE_LENGTH = 6;
     private static final int CODE_EXPIRE_MINUTES = 5;
+    private static final int MAX_MEMORY_VERIFICATION_KEYS = 10_000;
     private final UserRepository userRepository;
     private final JwtUtil jwtUtil;
     private final StringRedisTemplate redisTemplate;
@@ -148,6 +149,7 @@ public class AuthService {
     }
 
     private void setValue(String key, String value, long timeout, TimeUnit unit) {
+        trimMemoryStoreIfNeeded();
         memoryVerificationStore.put(key, new ExpiringValue(value, Instant.now().plusMillis(unit.toMillis(timeout))));
         try {
             redisTemplate.opsForValue().set(key, value, timeout, unit);
@@ -191,6 +193,24 @@ public class AuthService {
                 it.remove();
             }
         }
+        trimMemoryStoreIfNeeded();
+    }
+
+    private void trimMemoryStoreIfNeeded() {
+        if (memoryVerificationStore.size() <= MAX_MEMORY_VERIFICATION_KEYS) {
+            return;
+        }
+        Instant now = Instant.now();
+        memoryVerificationStore.entrySet().removeIf(entry -> entry.getValue().expiresAt().isBefore(now));
+        if (memoryVerificationStore.size() <= MAX_MEMORY_VERIFICATION_KEYS) {
+            return;
+        }
+        memoryVerificationStore.entrySet().stream()
+                .sorted(Map.Entry.comparingByValue(java.util.Comparator.comparing(ExpiringValue::expiresAt)))
+                .limit(memoryVerificationStore.size() - MAX_MEMORY_VERIFICATION_KEYS)
+                .map(Map.Entry::getKey)
+                .toList()
+                .forEach(memoryVerificationStore::remove);
     }
 
     private record ExpiringValue(String value, Instant expiresAt) {

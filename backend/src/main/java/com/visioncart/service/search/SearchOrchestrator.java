@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -81,8 +82,16 @@ public class SearchOrchestrator {
         return search(request, regionResolver.isDomestic());
     }
 
+    public SearchResult search(SearchRequest request, Long userId) {
+        return search(request, regionResolver.isDomestic(), userId);
+    }
+
     public SearchResult search(SearchRequest request, boolean domestic) {
-        Map<String, String> attributes = enrichAttributes(request);
+        return search(request, domestic, null);
+    }
+
+    public SearchResult search(SearchRequest request, boolean domestic, Long userId) {
+        Map<String, String> attributes = enrichAttributes(request, userId);
         SearchFilter filter = request.effectiveFilter();
 
         // Check cache (cache full ranked list, paginate on hit)
@@ -97,8 +106,9 @@ public class SearchOrchestrator {
         // Parallel platform search with circuit breaker, filtered by region
         List<CompletableFuture<List<ProductCard>>> searches = platformServices.stream()
                 .filter(ps -> !domestic || ps.domesticOnly())
-                .map(platformService -> CompletableFuture
-                        .supplyAsync(() -> {
+                .map(platformService -> {
+                    try {
+                        return CompletableFuture.supplyAsync(() -> {
                             if (!circuitBreaker.allowRequest(platformService.platform())) {
                                 log.info("Circuit open, skipping {}", platformService.platform());
                                 return List.<ProductCard>of();
@@ -112,11 +122,16 @@ public class SearchOrchestrator {
                                 return result;
                             } catch (Exception e) {
                                 long durationMs = (System.nanoTime() - start) / 1_000_000;
-                                circuitBreaker.recordFailure(platformService.platform(), durationMs);
-                                throw e;
-                            }
-                        }, searchExecutor)
-                        .completeOnTimeout(List.of(), platformTimeout.toMillis(), TimeUnit.MILLISECONDS)
+                            circuitBreaker.recordFailure(platformService.platform(), durationMs);
+                            throw e;
+                        }
+                        }, searchExecutor);
+                    } catch (RejectedExecutionException error) {
+                        log.warn("{} search skipped: executor queue full", platformService.platform());
+                        return CompletableFuture.completedFuture(List.<ProductCard>of());
+                    }
+                })
+                .map(future -> future.completeOnTimeout(List.of(), platformTimeout.toMillis(), TimeUnit.MILLISECONDS)
                         .exceptionally(error -> {
                             log.warn("{} search skipped: {}", error.getClass().getSimpleName(), error.getMessage());
                             return List.of();
@@ -143,7 +158,7 @@ public class SearchOrchestrator {
         return new SearchResult(ranked.size(), page, stats(ranked), cards);
     }
 
-    private Map<String, String> enrichAttributes(SearchRequest request) {
+    private Map<String, String> enrichAttributes(SearchRequest request, Long userId) {
         Map<String, String> attributes = new LinkedHashMap<>(
                 request.attributes() == null ? Map.of() : request.attributes());
         if (StringUtils.isBlank(request.sessionId())) {
@@ -156,7 +171,9 @@ public class SearchOrchestrator {
             return attributes;
         }
 
-        recognitionHistoryRepository.findById(request.sessionId()).ifPresent(history -> {
+        (userId == null
+                ? recognitionHistoryRepository.findById(request.sessionId())
+                : recognitionHistoryRepository.findBySessionIdAndUserId(request.sessionId(), userId)).ifPresent(history -> {
             if (needsCategory) {
                 putIfUsefulMissing(attributes, "类目", categoryName(history.getCategoryJson()));
             }
@@ -295,7 +312,8 @@ public class SearchOrchestrator {
                 .filter(product -> filter.ratingMin() == null || product.rating() == 0 || product.rating() >= filter.ratingMin())
                 .filter(product -> filter.priceRange() == null || filter.priceRange().min() == null || product.price().compareTo(BigDecimal.valueOf(filter.priceRange().min())) >= 0)
                 .filter(product -> filter.priceRange() == null || filter.priceRange().max() == null || product.price().compareTo(BigDecimal.valueOf(filter.priceRange().max())) <= 0)
-                .filter(product -> filter.keyword() == null || filter.keyword().isBlank() || product.title().toLowerCase().contains(filter.keyword().toLowerCase()))
+                .filter(product -> filter.keyword() == null || filter.keyword().isBlank()
+                        || StringUtils.defaultString(product.title()).toLowerCase().contains(filter.keyword().toLowerCase()))
                 .filter(product -> filter.brands() == null || filter.brands().isEmpty() || filter.brands().stream().anyMatch(brand -> matchesBrand(product, brand)))
                 .toList();
     }
@@ -317,7 +335,7 @@ public class SearchOrchestrator {
         List<ProductCard> relevant = products.stream()
                 .filter(product -> SearchTextUtils.relevantToCoreProduct(product.title(), attributes))
                 .toList();
-        return relevant;
+        return relevant.isEmpty() ? products : relevant;
     }
 
     private List<ProductCard> applySort(List<ProductCard> products, SearchFilter filter) {

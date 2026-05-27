@@ -67,19 +67,21 @@ public class PlatformCircuitBreaker {
             return;
         }
 
-        if (durationMs > slowCallThresholdMs) {
-            recordSlowCall(state, platform);
-        }
+        synchronized (state) {
+            if (durationMs > slowCallThresholdMs) {
+                recordSlowCall(state, platform);
+            }
 
-        if (state.status == Status.CLOSED) {
-            state.failures.set(0);
-        }
+            if (state.status == Status.CLOSED) {
+                state.failures.set(0);
+            }
 
-        if (state.status == Status.HALF_OPEN) {
-            int successes = state.halfOpenSuccesses.incrementAndGet();
-            if (successes >= halfOpenProbeCount) {
-                states.remove(platform);
-                log.info("Circuit closed for {} after {} successful probes", platform, successes);
+            if (state.status == Status.HALF_OPEN) {
+                int successes = state.halfOpenSuccesses.incrementAndGet();
+                if (successes >= halfOpenProbeCount) {
+                    states.remove(platform, state);
+                    log.info("Circuit closed for {} after {} successful probes", platform, successes);
+                }
             }
         }
     }
@@ -94,21 +96,23 @@ public class PlatformCircuitBreaker {
             state = states.computeIfAbsent(platform, k -> new CircuitState());
         }
 
-        if (durationMs > slowCallThresholdMs) {
-            recordSlowCall(state, platform);
-        }
+        synchronized (state) {
+            if (durationMs > slowCallThresholdMs) {
+                recordSlowCall(state, platform);
+            }
 
-        if (state.status == Status.HALF_OPEN) {
-            state.status = Status.OPEN;
-            state.openedAt = System.currentTimeMillis();
-            log.warn("Circuit re-opened for {} during half-open probe", platform);
-            return;
-        }
-        int failures = state.failures.incrementAndGet();
-        if (failures >= failureThreshold) {
-            state.status = Status.OPEN;
-            state.openedAt = System.currentTimeMillis();
-            log.warn("Circuit opened for {} after {} failures", platform, failures);
+            if (state.status == Status.HALF_OPEN) {
+                state.status = Status.OPEN;
+                state.openedAt = System.currentTimeMillis();
+                log.warn("Circuit re-opened for {} during half-open probe", platform);
+                return;
+            }
+            int failures = state.failures.incrementAndGet();
+            if (failures >= failureThreshold) {
+                state.status = Status.OPEN;
+                state.openedAt = System.currentTimeMillis();
+                log.warn("Circuit opened for {} after {} failures", platform, failures);
+            }
         }
     }
 
@@ -140,7 +144,7 @@ public class PlatformCircuitBreaker {
     public enum Status { CLOSED, OPEN, HALF_OPEN }
 
     private static class CircuitState {
-        Status status = Status.CLOSED;
+        volatile Status status = Status.CLOSED;
         final AtomicInteger failures = new AtomicInteger(0);
         final AtomicInteger halfOpenSuccesses = new AtomicInteger(0);
         final AtomicInteger halfOpenAllowed = new AtomicInteger(0);

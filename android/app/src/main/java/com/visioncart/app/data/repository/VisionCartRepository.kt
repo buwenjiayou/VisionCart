@@ -41,6 +41,11 @@ class VisionCartRepository(private val context: Context) {
 
     // ==================== Recognition ====================
 
+    class MultiProductPendingException(
+        val sessionId: String,
+        val candidates: List<RecognitionCandidate>
+    ) : Exception("请选择要识别的商品")
+
     suspend fun analyzeImage(imageUri: Uri): Result<RecognitionResult> {
         return try {
             val file = uriToFile(imageUri)
@@ -72,6 +77,8 @@ class VisionCartRepository(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Recognition request failed for file=${file.name}, size=${file.length()}", e)
             Result.failure(e)
+        } finally {
+            try { file.delete() } catch (_: Exception) {}
         }
     }
 
@@ -88,6 +95,7 @@ class VisionCartRepository(private val context: Context) {
                         if (task.result != null) return task.result
                         throw Exception("识别结果为空")
                     }
+                    "MULTI_PRODUCT_PENDING" -> throw MultiProductPendingException(sessionId, task.candidates)
                     "FAILED" -> throw Exception(task.error ?: "识别失败")
                     else -> {
                         // PROCESSING or PENDING, continue polling
@@ -102,6 +110,24 @@ class VisionCartRepository(private val context: Context) {
             kotlinx.coroutines.delay(intervalMs)
         }
         throw Exception("识别超时")
+    }
+
+    suspend fun selectProductForRecognition(
+        sessionId: String,
+        candidateId: String,
+        imageUrl: String? = null
+    ): Result<RecognitionResult> {
+        return try {
+            val response = api.selectRecognitionProduct(sessionId, ProductSelectionRequest(candidateId))
+            if (response.code != 200 || response.data == null) {
+                return Result.failure(Exception(response.message))
+            }
+            val result = pollRecognitionResult(sessionId)
+            saveRecognitionToLocal(result, imageUrl ?: "upload://$sessionId")
+            Result.success(result)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     suspend fun correctAttribute(

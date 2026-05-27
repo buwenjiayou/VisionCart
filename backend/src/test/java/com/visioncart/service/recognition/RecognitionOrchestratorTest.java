@@ -1,6 +1,7 @@
 package com.visioncart.service.recognition;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.visioncart.api.dto.RecognitionCandidate;
 import com.visioncart.api.dto.RecognitionResult;
 import com.visioncart.api.dto.CategoryDto;
 import com.visioncart.api.dto.AttributeValue;
@@ -101,6 +102,26 @@ class RecognitionOrchestratorTest {
 
         // Wait for async processing
         verify(taskManager, timeout(5000)).markCompleted(eq(response.sessionId()), any(RecognitionResult.class));
+    }
+
+    @Test
+    void shouldPauseForSelectionWhenMultipleProductsDetected() {
+        when(imageProcessor.process(any())).thenReturn(new byte[]{0});
+        when(imageProcessor.cropToJpeg(any(), any())).thenReturn(
+                new ImageProcessor.CroppedImage(new byte[]{1, 2, 3}, 80, 80, 6400)
+        );
+        when(visionClient.supportsTwoStageRecognition()).thenReturn(true);
+        when(visionClient.detectProducts(any(byte[].class), anyString(), anyString())).thenReturn(List.of(
+                new RecognitionCandidate("raw-1", List.of(0, 0, 80, 80), "鼠标", "罗技", 0.92, null),
+                new RecognitionCandidate("raw-2", List.of(10, 10, 70, 70), "键盘", null, 0.88, null)
+        ));
+
+        org.springframework.mock.web.MockMultipartFile image =
+                new org.springframework.mock.web.MockMultipartFile("image", "test.jpg", "image/jpeg", new byte[]{0});
+
+        var response = orchestrator.submitAsync(image, "整张图", 1L);
+
+        verify(taskManager, timeout(5000)).markMultiProductPending(eq(response.sessionId()), any(), any());
     }
 
     @Test

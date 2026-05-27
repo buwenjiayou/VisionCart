@@ -18,6 +18,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.List;
 import java.util.Iterator;
 
 @Component
@@ -83,6 +84,57 @@ public class ImageProcessor {
             } finally {
                 reader.dispose();
             }
+        } catch (ImageQualityException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new ImageQualityException("decode_failed");
+        }
+    }
+
+    public CroppedImage cropToJpeg(byte[] imageBytes, List<Integer> bbox) {
+        if (bbox == null || bbox.size() < 4) {
+            throw new ImageQualityException("invalid_bbox");
+        }
+        try {
+            BufferedImage image = ImageIO.read(new ByteArrayInputStream(imageBytes));
+            if (image == null) {
+                throw new ImageQualityException("decode_failed");
+            }
+            image = toRgb(image);
+            int imageWidth = image.getWidth();
+            int imageHeight = image.getHeight();
+
+            int x1 = clamp(bbox.get(0), 0, imageWidth - 1);
+            int y1 = clamp(bbox.get(1), 0, imageHeight - 1);
+            int x2 = clamp(bbox.get(2), 0, imageWidth);
+            int y2 = clamp(bbox.get(3), 0, imageHeight);
+            if (x2 <= x1) {
+                int tmp = x1;
+                x1 = Math.max(0, x2);
+                x2 = Math.min(imageWidth, tmp);
+            }
+            if (y2 <= y1) {
+                int tmp = y1;
+                y1 = Math.max(0, y2);
+                y2 = Math.min(imageHeight, tmp);
+            }
+
+            int width = x2 - x1;
+            int height = y2 - y1;
+            long area = (long) width * height;
+            long minArea = Math.max(256L, Math.round(imageWidth * imageHeight * 0.01));
+            if (width < 12 || height < 12 || area < minArea) {
+                throw new ImageQualityException("invalid_bbox");
+            }
+
+            int padX = Math.max(4, Math.round(width * 0.04f));
+            int padY = Math.max(4, Math.round(height * 0.04f));
+            int cropX = Math.max(0, x1 - padX);
+            int cropY = Math.max(0, y1 - padY);
+            int cropRight = Math.min(imageWidth, x2 + padX);
+            int cropBottom = Math.min(imageHeight, y2 + padY);
+            BufferedImage crop = image.getSubimage(cropX, cropY, cropRight - cropX, cropBottom - cropY);
+            return new CroppedImage(encodeJpeg(crop, config.getImageJpegQuality()), crop.getWidth(), crop.getHeight(), area);
         } catch (ImageQualityException e) {
             throw e;
         } catch (IOException e) {
@@ -163,6 +215,10 @@ public class ImageProcessor {
         return (int) (0.299 * r + 0.587 * g + 0.114 * b);
     }
 
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
     private byte[] encodeJpeg(BufferedImage image, float quality) throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         ImageWriter writer = ImageIO.getImageWritersByFormatName("jpg").next();
@@ -241,5 +297,8 @@ public class ImageProcessor {
     }
 
     public record QualityCheckResult(boolean passed, String reason) {
+    }
+
+    public record CroppedImage(byte[] bytes, int width, int height, long sourceArea) {
     }
 }
