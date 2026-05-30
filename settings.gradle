@@ -21,4 +21,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "VisionCart"
 include("backend")
-include("android:app")
+if (file("android/app/build.gradle").exists()) {
+    include("android:app")
+}

@@ -13,7 +13,8 @@ import java.time.Instant;
 @Entity
 @Table(name = "recognition_history", indexes = {
     @Index(name = "idx_history_user", columnList = "user_id"),
-    @Index(name = "idx_history_created", columnList = "created_at DESC")
+    @Index(name = "idx_history_created", columnList = "created_at DESC"),
+    @Index(name = "idx_history_user_created", columnList = "user_id, created_at DESC")
 })
 public class RecognitionHistory {
     @Id
@@ -35,7 +36,7 @@ public class RecognitionHistory {
     @Column(length = 512)
     private String keywords;
 
-    private Double confidence;
+    private double confidence = 0.0;
 
     @Column(name = "user_id")
     private Long userId;

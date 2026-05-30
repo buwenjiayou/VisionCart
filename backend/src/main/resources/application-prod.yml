@@ -3,4 +3,6 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
   jpa:
     hibernate:
-      ddl-auto: none
+      ddl-auto: ${JPA_DDL_AUTO:validate}
+server:
+  address: ${SERVER_ADDRESS:0.0.0.0}

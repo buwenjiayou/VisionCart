@@ -2,28 +2,41 @@ version: "1.0"
 description: "Qwen3-VL-Plus detailed product attribute extraction prompt"
 prompt: |
   你正在分析一个【%s】商品。%s
-  请基于图片提取电商搜索需要的结构化属性。
+  请基于图片提取电商搜索需要的结构化属性。图片中只有一个商品，只分析这一个。
+  目标是尽量搜索到同款或高度相似商品；请优先识别品牌、型号、系列、货号、规格、颜色、材质、款式、图案、适用场景等会影响同款匹配的字段。
   品牌必须基于清晰可见的 logo、文字或强视觉特征；无法确认时写"未知"，不要猜测。
+  型号、系列、货号必须来自清晰可见的文字或极可靠的外观线索；不确定时写"未知"。
   输出一个严格 JSON 对象，不要 markdown，不要解释，不要输出 JSON 之外的任何字符。
   confidence 必须是 0 到 1 的数字；不要输出未定义字段。
-  keywords 必须是 1 到 3 个短搜索词，优先使用“核心商品名”或“可见品牌 + 核心商品名”，不要包含长句。
+  keywords 必须是 1 到 3 个短搜索词，优先使用"可见品牌 + 型号/系列/货号 + 核心商品名"，其次使用"可见品牌 + 款式/关键特征 + 核心商品名"，不要只输出宽泛类目词。
+  style 和 quality_score 放在 JSON 顶层，不要放到 attributes 里。quality_score 范围 1-5。
   JSON 格式：
   {
     "category": {"level1": "一级类目", "level2": "二级类目", "level3": "确认类目", "confidence": 0.0},
     "attributes": {
       "品牌": {"value": "品牌或未知", "confidence": 0.0, "verified": false},
+      "型号": {"value": "型号或未知", "confidence": 0.0, "verified": false},
+      "系列": {"value": "系列或未知", "confidence": 0.0, "verified": false},
+      "货号": {"value": "货号或未知", "confidence": 0.0, "verified": false},
+      "规格": {"value": "规格/容量/尺码或未知", "confidence": 0.0, "verified": false},
       "颜色": {"value": "主色", "confidence": 0.0, "verified": false},
       "款式": {"value": "款式/型号/风格", "confidence": 0.0, "verified": false},
       "材质": {"value": "材质或未知", "confidence": 0.0, "verified": false},
+      "图案": {"value": "图案或未知", "confidence": 0.0, "verified": false},
+      "适用场景": {"value": "场景或未知", "confidence": 0.0, "verified": false},
       "适用人群": {"value": "通用/男/女/儿童/未知", "confidence": 0.0, "verified": false}
     },
-    "keywords": ["1到3个适合电商搜索的短关键词"],
+    "keywords": ["1到3个适合同款搜索的短关键词"],
     "style": "简短风格描述",
     "quality_score": 4.0,
     "overall_confidence": 0.0
   }
   类目属性参考：
-  - 连衣裙：颜色、尺码、材质、袖长、裙长、图案、领型
-  - 运动鞋：颜色、鞋面材质、鞋底材质、运动类型、闭合方式
+  - 连衣裙：品牌、型号/货号、颜色、尺码、材质、袖长、裙长、图案、领型
+  - 运动鞋：品牌、型号/系列/货号、颜色、鞋面材质、鞋底材质、运动类型、闭合方式
   - 手机：品牌、型号、颜色、存储、屏幕尺寸
-  - 包包：颜色、尺寸、材质、风格、闭合方式
+  - 包包：品牌、型号/系列、颜色、尺寸、材质、风格、闭合方式
+  - 家电：品牌、型号、系列、颜色、容量、能效等级
+  - 美妆：品牌、功效、适用肤质、规格
+  - 食品：品牌、口味、规格、保质期
+  - 对于未列出的类目，提取该类目最显著的 3-5 个属性

@@ -81,7 +81,8 @@ fun FavoritesScreen(
                             sales = fav.sales,
                             similarity = 0.0,
                             tags = emptyList(),
-                            detailUrl = fav.detailUrl
+                            detailUrl = fav.detailUrl,
+                            brand = fav.brand
                         )
                     ) },
                     onClick = { onProductClick(fav.detailUrl) }

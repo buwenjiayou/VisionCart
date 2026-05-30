@@ -225,6 +225,7 @@ fun LoginScreen(
                                 val loginData = response.data
                                 // Save token persistently
                                 ApiClient.authToken = loginData.token
+                                ApiClient.currentUserId = loginData.user_id
                                 TokenManager.saveToken(
                                     context,
                                     loginData.token,

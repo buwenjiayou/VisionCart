@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 // ==================== UI State ====================
 
@@ -39,7 +40,9 @@ data class MainUiState(
     val categoryText: String = "",
     val toastMessage: String? = null,
     val imageUri: Uri? = null,
-    val multiProductCandidates: List<RecognitionCandidate> = emptyList()
+    val imagePreviewUrl: String? = null,
+    val multiProductCandidates: List<RecognitionCandidate> = emptyList(),
+    val nlpQuery: String = ""
 )
 
 // ==================== Main ViewModel ====================
@@ -60,12 +63,17 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
     val history: StateFlow<List<RecognitionRecordEntity>> = repository.getHistoryFlow()
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    fun resetState() {
+        _uiState.value = MainUiState()
+    }
+
     // ==================== Recognition ====================
 
     fun analyzeImage(imageUri: Uri) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 imageUri = imageUri,
+                imagePreviewUrl = imageUri.toString(),
                 recognitionState = UiState.Loading,
                 products = emptyList(),
                 productsLoading = false,
@@ -74,7 +82,8 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
                 currentAttributes = emptyMap(),
                 sessionId = null,
                 categoryText = "",
-                multiProductCandidates = emptyList()
+                multiProductCandidates = emptyList(),
+                nlpQuery = ""
             )
             val result = repository.analyzeImage(imageUri)
             result.onSuccess { recognition ->
@@ -82,9 +91,12 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
             }.onFailure { e ->
                 Log.e(TAG, "Recognition failed for uri=$imageUri", e)
                 if (e is VisionCartRepository.MultiProductPendingException) {
+                    val pendingImageUri = e.imageUrl?.let(Uri::parse) ?: imageUri
                     _uiState.value = _uiState.value.copy(
                         recognitionState = UiState.Idle,
                         sessionId = e.sessionId,
+                        imageUri = pendingImageUri,
+                        imagePreviewUrl = e.imageUrl ?: imageUri.toString(),
                         productsLoading = false,
                         multiProductCandidates = e.candidates,
                         toastMessage = "请选择要识别的商品"
@@ -260,16 +272,21 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
                 NlpParseRequest(
                     sessionId = sessionId,
                     userInput = userInput,
-                    context = mapOf(
-                        "product_name" to _uiState.value.categoryText,
-                        "category" to _uiState.value.categoryText
+                    context = NlpContext(
+                        productName = _uiState.value.categoryText,
+                        category = _uiState.value.categoryText
                     )
                 )
             )
             result.onSuccess { nlpResult ->
                 val mergedFilter = mergeFilter(_uiState.value.currentFilter, nlpResult.filter)
-                _uiState.value = _uiState.value.copy(currentFilter = mergedFilter)
+                _uiState.value = _uiState.value.copy(currentFilter = mergedFilter, nlpQuery = userInput)
                 searchProducts()
+                // Persist NLP state to history record
+                try {
+                    val filterAdapter = Moshi.Builder().add(KotlinJsonAdapterFactory()).build().adapter(SearchFilter::class.java)
+                    repository.updateRecognitionNlp(sessionId, userInput, filterAdapter.toJson(mergedFilter))
+                } catch (_: Exception) {}
             }.onFailure { e ->
                 _uiState.value = _uiState.value.copy(
                     productsLoading = false,
@@ -332,8 +349,12 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
         val attributesAdapter = moshi.adapter<Map<String, AttributeValue>>(
             Types.newParameterizedType(Map::class.java, String::class.java, AttributeValue::class.java)
         )
-        val category = categoryAdapter.fromJson(record.categoryJson) ?: CategoryDto("", "", "", 0.0)
-        val attributes = attributesAdapter.fromJson(record.attributesJson) ?: emptyMap()
+        val category = try {
+            categoryAdapter.fromJson(record.categoryJson) ?: CategoryDto("", "", "", 0.0)
+        } catch (_: Exception) { CategoryDto("", "", "", 0.0) }
+        val attributes = try {
+            attributesAdapter.fromJson(record.attributesJson) ?: emptyMap()
+        } catch (_: Exception) { emptyMap() }
         val categoryText = listOfNotNull(
             category.level1.takeIf { it.isNotBlank() },
             category.level2.takeIf { it.isNotBlank() },
@@ -348,15 +369,37 @@ class MainViewModel(private val repository: VisionCartRepository) : ViewModel() 
             overallConfidence = record.confidence
         )
 
+        // Restore NLP filter from history
+        val restoredFilter = try {
+            val filterAdapter = moshi.adapter(SearchFilter::class.java)
+            filterAdapter.fromJson(record.filterJson) ?: SearchFilter()
+        } catch (_: Exception) {
+            SearchFilter()
+        }
+
         _uiState.value = _uiState.value.copy(
             sessionId = record.sessionId,
             categoryText = categoryText,
             currentAttributes = restoredRecognition.toSearchAttributes(),
-            imageUri = null,
+            currentFilter = restoredFilter,
+            nlpQuery = record.nlpQuery,
+            imageUri = localFileUriOrNull(record.imageUrl),
+            imagePreviewUrl = record.imageUrl.takeIf { it.isNotBlank() },
             recognitionState = UiState.Success(restoredRecognition),
             multiProductCandidates = emptyList()
         )
         searchProducts()
+    }
+
+    private fun localFileUriOrNull(imageUrl: String): Uri? {
+        if (!imageUrl.startsWith("file://")) return null
+        return try {
+            val uri = Uri.parse(imageUrl)
+            val path = uri.path ?: return null
+            if (File(path).isFile) uri else null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     // ==================== Toast ====================

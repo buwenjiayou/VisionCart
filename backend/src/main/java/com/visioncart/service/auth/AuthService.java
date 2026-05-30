@@ -7,6 +7,7 @@ import com.visioncart.repository.UserRepository;
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import org.slf4j.Logger;
+import org.springframework.mail.MailException;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Service;
 
 import org.springframework.scheduling.annotation.Scheduled;
 
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Iterator;
@@ -88,7 +90,7 @@ public class AuthService {
         if (storedCode == null) {
             throw new IllegalArgumentException("验证码已过期，请重新获取");
         }
-        if (!storedCode.equals(code)) {
+        if (!MessageDigest.isEqual(storedCode.getBytes(), code.getBytes())) {
             throw new IllegalArgumentException("验证码错误");
         }
         deleteValue(codeKey);
@@ -239,7 +241,7 @@ public class AuthService {
                     true
             );
             mailSender.send(message);
-        } catch (MessagingException e) {
+        } catch (MailException | MessagingException e) {
             log.error("发送验证码邮件失败: to={}", to, e);
             throw new RuntimeException("验证码发送失败，请稍后再试");
         }

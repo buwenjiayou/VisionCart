@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -64,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -106,14 +109,6 @@ class MainActivity : ComponentActivity() {
 
     private var shouldStartOverlayAfterPermission = false
 
-    private val mediaProjectionLauncher = registerForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == RESULT_OK && result.data != null) {
-            FloatingWindowService.startScreenshot(this, result.resultCode, result.data!!)
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleIntentExtras(intent)
@@ -123,10 +118,6 @@ class MainActivity : ComponentActivity() {
                 VisionCartApp(
                     repository = repository,
                     onOverlay = { toggleOverlay() },
-                    onRequestScreenshot = {
-                        val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-                        mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
-                    },
                     navigationRequests = navigationRequests,
                     onNavigationRequestHandled = { navigationRequests.value = null }
                 )
@@ -206,7 +197,6 @@ sealed class Screen(val route: String) {
 fun VisionCartApp(
     repository: VisionCartRepository,
     onOverlay: () -> Unit,
-    onRequestScreenshot: () -> Unit = {},
     navigationRequests: StateFlow<String?>,
     onNavigationRequestHandled: () -> Unit
 ) {
@@ -215,6 +205,7 @@ fun VisionCartApp(
     var isLoggedIn by remember { mutableStateOf(false) }
     var isChecking by remember { mutableStateOf(true) }
     var userEmail by remember { mutableStateOf("") }
+    var currentUserId by remember { mutableStateOf<Long?>(null) }
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
@@ -226,6 +217,8 @@ fun VisionCartApp(
         val token = TokenManager.getToken(context)
         if (!token.isNullOrBlank()) {
             ApiClient.authToken = token
+            currentUserId = TokenManager.getUserId(context)
+            ApiClient.currentUserId = currentUserId
             userEmail = TokenManager.getEmail(context) ?: ""
             isLoggedIn = true
         }
@@ -240,7 +233,6 @@ fun VisionCartApp(
                 Screen.Camera.route -> navController.navigate(Screen.Camera.route) { launchSingleTop = true }
                 Screen.Favorites.route -> navController.navigate(Screen.Favorites.route) { launchSingleTop = true }
                 Screen.History.route -> navController.navigate(Screen.History.route) { launchSingleTop = true }
-                "screenshot" -> onRequestScreenshot()
                 else -> Log.w("VisionCart", "Unknown navigation request: $target")
             }
             onNavigationRequestHandled()
@@ -260,6 +252,7 @@ fun VisionCartApp(
         LoginScreen(
             context = context,
             onLoginSuccess = {
+                currentUserId = ApiClient.currentUserId
                 isLoggedIn = true
                 scope.launch {
                     userEmail = TokenManager.getEmail(context) ?: ""
@@ -272,11 +265,29 @@ fun VisionCartApp(
     // ========== Logged in UI ==========
 
     val viewModel: MainViewModel = viewModel(
+        key = "main-${currentUserId ?: 0L}",
         factory = MainViewModel.Factory(repository)
     )
     val uiState by viewModel.uiState.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
     val history by viewModel.history.collectAsState()
+
+    // Sync history from backend on first load
+    LaunchedEffect(currentUserId) {
+        viewModel.syncHistory()
+    }
+
+    // Double-back to exit (without logging out)
+    var backPressTime by remember { mutableLongStateOf(0L) }
+    BackHandler {
+        val now = System.currentTimeMillis()
+        if (now - backPressTime < 2000) {
+            (context as? ComponentActivity)?.moveTaskToBack(true)
+        } else {
+            backPressTime = now
+            Toast.makeText(context, "再按一次退出应用", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // Show toast messages
     LaunchedEffect(uiState.toastMessage) {
@@ -360,13 +371,8 @@ fun VisionCartApp(
                     TopAppBar(
                         title = {
                             Text(
-                                "VisionCart",
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF10201C),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontSize = 14.sp
+                                "🛒",
+                                fontSize = 22.sp
                             )
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -429,7 +435,11 @@ fun VisionCartApp(
                                         Log.w("VisionCart", "Logout request failed; clearing local session anyway", error)
                                     }
                                     ApiClient.authToken = null
+                                    ApiClient.currentUserId = null
                                     TokenManager.clearToken(context)
+                                    repository.clearLocalDataOnLogout()
+                                    viewModel.resetState()
+                                    currentUserId = null
                                     isLoggedIn = false
                                     navigateHome(clearBackStack = true)
                                 }
@@ -577,13 +587,16 @@ private fun HomeScreen(
     modifier: Modifier = Modifier
 ) {
     var nlpInput by remember { mutableStateOf("") }
+    // Sync nlpInput when restoring from history (sessionId changes)
+    LaunchedEffect(uiState.sessionId) {
+        nlpInput = uiState.nlpQuery
+    }
     val favoriteIds = favorites.map { it.productId }.toSet()
 
+    Column(modifier = modifier.fillMaxSize().background(Color(0xFFF8FBF9))) {
     LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color(0xFFF8FBF9)),
-        contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 96.dp),
+        modifier = Modifier.weight(1f),
+        contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
@@ -604,21 +617,24 @@ private fun HomeScreen(
         }
 
         // Image Preview (if captured)
-        uiState.imageUri?.let { uri ->
+        (uiState.imagePreviewUrl ?: uiState.imageUri?.toString())?.let { previewUrl ->
             item {
-                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(200.dp)
-                            .padding(8.dp)
-                    ) {
-                        coil.compose.AsyncImage(
-                            model = uri,
-                            contentDescription = "拍摄的图片",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Fit
-                        )
+                val imageModel = rememberAuthenticatedImageModel(previewUrl)
+                if (imageModel != null) {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .padding(8.dp)
+                        ) {
+                            coil.compose.AsyncImage(
+                                model = imageModel,
+                                contentDescription = "拍摄的图片",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                            )
+                        }
                     }
                 }
             }
@@ -669,20 +685,6 @@ private fun HomeScreen(
             )
         }
 
-        // NLP Input
-        if (uiState.sessionId != null) {
-            item {
-                NlpInputBar(
-                    value = nlpInput,
-                    onValueChange = { nlpInput = it },
-                    onSubmit = {
-                        viewModel.parseNlp(nlpInput)
-                        nlpInput = ""
-                    }
-                )
-            }
-        }
-
         // Products Loading
         if (uiState.productsLoading) {
             item { LoadingIndicator() }
@@ -725,6 +727,18 @@ private fun HomeScreen(
             item { EmptyState("没有高相关商品，试试纠正品牌或放宽筛选条件") }
         }
     }
+    // Pinned NLP Input Bar — always visible at bottom
+    if (uiState.sessionId != null) {
+        NlpInputBar(
+            value = nlpInput,
+            onValueChange = { nlpInput = it },
+            onSubmit = {
+                viewModel.parseNlp(nlpInput)
+                nlpInput = ""
+            }
+        )
+    }
+    }
 }
 
 // ==================== Action Panel ====================
@@ -751,49 +765,53 @@ private fun HomeDashboardHeader(
             )
         ) {
             Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .background(Color(0xFF0A7C66), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Outlined.ImageSearch,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(23.dp)
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color(0xFF0A7C66), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Outlined.ImageSearch,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "智能识物比价",
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            if (isRecognizing) "正在为你整理识别结果" else "拍照、截屏或从相册开始",
+                            color = Color(0xFFBFD5CF),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "智能识物比价",
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        if (isRecognizing) "正在为你整理识别结果" else "拍照、截屏或从相册开始",
-                        color = Color(0xFFBFD5CF),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                HomeMetricChip(
-                    label = "当前结果",
-                    value = if (recognizedCount > 0) "${recognizedCount}件" else "待识别",
-                    modifier = Modifier.weight(1f)
-                )
-                HomeMetricChip(label = "收藏", value = "${favoriteCount}件", modifier = Modifier.weight(1f))
-                HomeMetricChip(label = "模式", value = "悬浮可用", modifier = Modifier.weight(1f))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    HomeMetricChip(
+                        label = "当前结果",
+                        value = if (recognizedCount > 0) "${recognizedCount}件" else "待识别",
+                        modifier = Modifier.weight(1f)
+                    )
+                    HomeMetricChip(label = "收藏", value = "${favoriteCount}件", modifier = Modifier.weight(1f))
+                    HomeMetricChip(label = "模式", value = "悬浮可用", modifier = Modifier.weight(1f))
+                }
             }
-        }
         }
     }
 }
@@ -803,11 +821,24 @@ private fun HomeMetricChip(label: String, value: String, modifier: Modifier = Mo
     Surface(
         color = Color.White.copy(alpha = 0.1f),
         shape = RoundedCornerShape(12.dp),
-        modifier = modifier
+        modifier = modifier.heightIn(min = 48.dp)
     ) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 9.dp)) {
-            Text(label, color = Color(0xFFBFD5CF), style = MaterialTheme.typography.labelSmall)
-            Text(value, color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        Column(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
+            Text(
+                label,
+                color = Color(0xFFBFD5CF),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                value,
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

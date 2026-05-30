@@ -17,6 +17,9 @@ public final class SearchTextUtils {
     public static final String ATTR_STYLE = "款式";
     public static final String ATTR_CATEGORY = "类目";
     public static final String ATTR_KEYWORD = "关键词";
+    public static final String ATTR_KEYWORDS = "__keywords";
+    public static final String ATTR_CATEGORY_CHAIN = "__category_chain";
+    public static final String ATTR_BRAND_RELIABLE = "__brand_reliable";
 
     private SearchTextUtils() {}
 
@@ -32,6 +35,9 @@ public final class SearchTextUtils {
                 || "普通款".equals(trimmed)
                 || "标准款".equals(trimmed)
                 || "基础款".equals(trimmed)
+                || "无".equals(trimmed)
+                || "无品牌".equals(trimmed)
+                || "null".equalsIgnoreCase(trimmed)
                 || "unknown".equalsIgnoreCase(trimmed)
                 ? ""
                 : trimmed;
@@ -119,7 +125,7 @@ public final class SearchTextUtils {
         }
 
         String core = coreProductToken(category);
-        if (StringUtils.isBlank(core)) {
+        if (StringUtils.isBlank(core) || core.length() < 2) {
             return true;
         }
         return normalizedTitle.contains(core.toLowerCase(Locale.ROOT));
@@ -155,13 +161,31 @@ public final class SearchTextUtils {
     }
 
     public static String inferBrand(String title, String shopName) {
-        String haystack = (StringUtils.defaultString(title) + " " + StringUtils.defaultString(shopName)).toLowerCase(Locale.ROOT);
-        for (String brand : COMMON_BRANDS) {
-            if (haystack.contains(brand.toLowerCase(Locale.ROOT))) {
-                return brand;
-            }
+        return BrandMatcher.inferBrand(title, shopName);
+    }
+
+    public static List<String> splitSearchTerms(String value) {
+        String useful = useful(value);
+        if (useful.isBlank()) {
+            return List.of();
         }
-        return "";
+        return Arrays.stream(useful.split("[,，;；|\\n\\r]+"))
+                .map(SearchTextUtils::useful)
+                .filter(StringUtils::isNotBlank)
+                .distinct()
+                .toList();
+    }
+
+    public static boolean containsNormalized(String text, String token) {
+        String normalizedToken = normalizeForMatch(token);
+        return !normalizedToken.isBlank()
+                && normalizeForMatch(text).contains(normalizedToken);
+    }
+
+    public static String normalizeForMatch(String value) {
+        return StringUtils.defaultString(value)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{IsHan}a-z0-9]+", "");
     }
 
     public static String salesLabel(long sales, String source) {
@@ -213,15 +237,9 @@ public final class SearchTextUtils {
     );
 
     private static final List<String> CORE_PRODUCT_TERMS = List.of(
+            "运动鞋", "篮球鞋", "跑鞋", "板鞋", "休闲鞋", "训练鞋",
             "鼠标", "键盘", "耳机", "手机", "电脑", "笔记本", "显示器", "手表",
             "相机", "路由器", "充电器", "数据线", "音箱", "鞋", "包", "衣", "裤", "裙"
     );
 
-    private static final List<String> COMMON_BRANDS = List.of(
-            "Apple", "苹果", "华为", "小米", "荣耀", "OPPO", "vivo", "三星", "联想", "ThinkPad",
-            "戴尔", "惠普", "华硕", "宏碁", "罗技", "Logitech", "雷蛇", "Razer", "卓威", "ZOWIE",
-            "富勒", "雷神", "SANWA", "重力星球", "英菲克", "inphic", "达尔优", "双飞燕", "微软",
-            "Nike", "耐克", "Adidas", "阿迪达斯", "李宁", "安踏", "特步", "彪马", "PUMA",
-            "New Balance", "新百伦", "安德玛", "Under Armour", "斐乐", "FILA"
-    );
 }

@@ -14,6 +14,7 @@ import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
 
 import java.security.Principal;
 import java.util.List;
@@ -46,6 +47,12 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     }
 
     @Override
+    public void configureWebSocketTransport(WebSocketTransportRegistration registry) {
+        registry.setMessageSizeLimit(64 * 1024);      // 64KB
+        registry.setSendBufferSizeLimit(128 * 1024);   // 128KB
+    }
+
+    @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
         registration.interceptors(new JwtStompChannelInterceptor());
     }
@@ -69,26 +76,47 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     log.info("STOMP CONNECT authenticated: userId={}", userId);
                 } else {
                     log.warn("STOMP CONNECT rejected: invalid or missing token");
-                    return null; // Reject the CONNECT
+                    return null;
                 }
             }
 
             if (accessor != null && StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
                 Principal user = accessor.getUser();
                 if (user == null) {
-                    // Check token from SUBSCRIBE headers as fallback
                     String token = extractToken(accessor);
                     if (token != null && jwtUtil.validateToken(token)) {
                         Long userId = jwtUtil.getUserId(token);
                         accessor.setUser(new StompPrincipal(userId, jwtUtil.getEmail(token)));
                     } else {
                         log.warn("STOMP SUBSCRIBE rejected: unauthenticated");
-                        return null; // Reject the message
+                        return null;
                     }
+                }
+                // Validate topic ownership
+                String destination = accessor.getDestination();
+                if (destination != null && !isTopicAllowed(accessor.getUser(), destination)) {
+                    log.warn("STOMP SUBSCRIBE rejected: user={} not authorized for topic={}",
+                            accessor.getUser().getName(), destination);
+                    return null;
                 }
             }
 
             return message;
+        }
+
+        private boolean isTopicAllowed(Principal user, String destination) {
+            if (user instanceof StompPrincipal principal) {
+                Long userId = principal.userId();
+                // /topic/price-alert/{userId} — must match own userId
+                if (destination.startsWith("/topic/price-alert/")) {
+                    String topicUserId = destination.substring("/topic/price-alert/".length());
+                    return String.valueOf(userId).equals(topicUserId);
+                }
+                // /topic/recognition/{sessionId} — allowed for any authenticated user
+                // (sessionId is a UUID, ownership is checked at the REST API level)
+                return destination.startsWith("/topic/recognition/");
+            }
+            return false;
         }
 
         private String extractToken(StompHeaderAccessor accessor) {

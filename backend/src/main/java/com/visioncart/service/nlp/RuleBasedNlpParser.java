@@ -15,7 +15,9 @@ public class RuleBasedNlpParser {
     private static final Pattern PRICE_RANGE = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:到|至|-|~)\\s*(\\d+(?:\\.\\d+)?)");
     private static final Pattern PRICE_MAX = Pattern.compile("(?:不超过|不超|最高|最多|以内|以下|低于)\\s*(\\d+(?:\\.\\d+)?)");
     private static final Pattern PRICE_MAX_REVERSE = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:以内|以下|不超过|不超|内)");
+    private static final Pattern PRICE_MIN = Pattern.compile("(?:超过|高于|最少|至少|不低于|不下)\\s*(\\d+(?:\\.\\d+)?)");
     private static final Pattern RATING_MIN = Pattern.compile("(\\d(?:\\.\\d)?)\\s*(?:分|星|评分|好评)?\\s*(?:以上|及以上|>=|≥)");
+    private static final String CN_DIGITS = "零一二两三四五六七八九十百千万亿";
 
     public ParsedFilter parse(String input) {
         String normalized = normalize(input);
@@ -38,6 +40,11 @@ public class RuleBasedNlpParser {
                 Matcher reverseMatcher = PRICE_MAX_REVERSE.matcher(normalized);
                 if (reverseMatcher.find()) {
                     max = Double.parseDouble(reverseMatcher.group(1));
+                } else {
+                    Matcher minMatcher = PRICE_MIN.matcher(normalized);
+                    if (minMatcher.find()) {
+                        min = Double.parseDouble(minMatcher.group(1));
+                    }
                 }
             }
         }
@@ -102,17 +109,99 @@ public class RuleBasedNlpParser {
                 null
         );
         // 关键字段: 价格、平台、排序 — 只有命中这些才算完整，颜色/自营/评分不够
-        boolean hasPrice = min != null || max != null;
+        boolean hasMeaningfulPrice = (min != null && min > 1) || (max != null && max > 1);
         boolean hasPlatform = !platforms.isEmpty();
         boolean hasSort = sortBy != null;
-        boolean complete = hasPrice || hasPlatform || hasSort;
+        boolean complete = hasMeaningfulPrice || hasPlatform || hasSort;
         return new ParsedFilter(filter, complete);
     }
 
     private String normalize(String input) {
-        return input == null ? "" : input.toLowerCase(Locale.ROOT)
+        if (input == null) return "";
+        String s = input.toLowerCase(Locale.ROOT)
                 .replaceAll("(?i)rmb|￥|¥|元|块钱|块", "")
                 .replaceAll("\\s+", "");
+        // 先处理 "阿拉伯数字+中文单位" 的情况，如 "1万" → "10000"
+        s = Pattern.compile("(\\d+(?:\\.\\d+)?)万").matcher(s)
+                .replaceAll(mr -> String.valueOf((long)(Double.parseDouble(mr.group(1)) * 10000)));
+        s = Pattern.compile("(\\d+(?:\\.\\d+)?)亿").matcher(s)
+                .replaceAll(mr -> String.valueOf((long)(Double.parseDouble(mr.group(1)) * 100000000L)));
+        s = Pattern.compile("(\\d+(?:\\.\\d+)?)千").matcher(s)
+                .replaceAll(mr -> String.valueOf((long)(Double.parseDouble(mr.group(1)) * 1000)));
+        // 中文数字 → 阿拉伯数字（手动扫描）
+        StringBuilder sb = new StringBuilder();
+        int i = 0;
+        while (i < s.length()) {
+            char c = s.charAt(i);
+            if (CN_DIGITS.indexOf(c) >= 0) {
+                int start = i;
+                while (i < s.length() && CN_DIGITS.indexOf(s.charAt(i)) >= 0) {
+                    i++;
+                }
+                String cnNum = s.substring(start, i);
+                sb.append(parseChineseNumber(cnNum));
+            } else {
+                sb.append(c);
+                i++;
+            }
+        }
+        return sb.toString();
+    }
+
+    private long parseChineseNumber(String cn) {
+        long n = 0, current = 0;
+        for (int i = 0; i < cn.length(); i++) {
+            int d = chineseDigit(cn.charAt(i));
+            if (d >= 0) {
+                current = d;
+            } else {
+                int unit = chineseUnit(cn.charAt(i));
+                if (unit >= 10000) {
+                    n = (n + current) * unit;
+                    if (n == 0) n = unit; // bare "万" or "亿"
+                    current = 0;
+                } else if (unit > 0) {
+                    current = (current == 0 ? 1 : current) * unit;
+                    n += current;
+                    current = 0;
+                }
+            }
+        }
+        // 隐含单位: "一千五" → 1500, "三百五" → 350, "一万五" → 15000
+        if (current > 0 && current < 10 && n > 0) {
+            if (n % 10000 == 0) current *= 1000;
+            else if (n % 1000 == 0) current *= 100;
+            else if (n % 100 == 0) current *= 10;
+        }
+        return n + current;
+    }
+
+    private static int chineseDigit(char c) {
+        return switch (c) {
+            case '零' -> 0; // 零
+            case '一' -> 1; // 一
+            case '二' -> 2; // 二
+            case '两' -> 2; // 两
+            case '三' -> 3; // 三
+            case '四' -> 4; // 四
+            case '五' -> 5; // 五
+            case '六' -> 6; // 六
+            case '七' -> 7; // 七
+            case '八' -> 8; // 八
+            case '九' -> 9; // 九
+            default -> -1;
+        };
+    }
+
+    private static int chineseUnit(char c) {
+        return switch (c) {
+            case '十' -> 10;        // 十
+            case '百' -> 100;       // 百
+            case '千' -> 1000;      // 千
+            case '万' -> 10000;     // 万
+            case '亿' -> 100000000; // 亿
+            default -> 0;
+        };
     }
 
     private boolean containsAny(String text, String... tokens) {

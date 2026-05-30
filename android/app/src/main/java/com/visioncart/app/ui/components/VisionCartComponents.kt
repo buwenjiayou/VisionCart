@@ -1,8 +1,10 @@
 package com.visioncart.app.ui.components
 
 import androidx.compose.foundation.clickable
+import java.util.Locale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,9 +12,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -492,11 +496,6 @@ fun ProductCardView(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        ratingText(product),
-                        color = Color(0xFF687A75),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
                         salesText(product),
                         color = Color(0xFF687A75),
                         style = MaterialTheme.typography.bodySmall
@@ -520,14 +519,6 @@ fun ProductCardView(
     }
 }
 
-private fun ratingText(product: ProductCard): String {
-    return when {
-        product.rating > 0.0 && product.ratingSource == "shop_dsr" -> "店铺 ${"%.1f".format(product.rating)}"
-        product.rating > 0.0 -> "⭐ ${"%.1f".format(product.rating)}"
-        else -> "暂无评分"
-    }
-}
-
 private fun salesText(product: ProductCard): String {
     return product.salesLabel?.takeIf { it.isNotBlank() }
         ?: if (product.sales > 0) "销量 ${formatSales(product.sales)}" else "销量未知"
@@ -535,8 +526,8 @@ private fun salesText(product: ProductCard): String {
 
 private fun formatSales(sales: Long): String {
     return when {
-        sales >= 10000 -> "${"%,.1f".format(sales / 10000.0)}万"
-        sales >= 1000 -> "${"%,.1f".format(sales / 1000.0)}千"
+        sales >= 10000 -> String.format(Locale.US, "%,.1f万", sales / 10000.0)
+        sales >= 1000 -> String.format(Locale.US, "%,.1f千", sales / 1000.0)
         else -> sales.toString()
     }
 }
@@ -548,7 +539,15 @@ fun SuggestionChipsRow(
     cards: List<SuggestionCard>,
     onCardClick: (SuggestionCard) -> Unit
 ) {
-    if (cards.isEmpty()) return
+    val displayCards = cards
+        .asSequence()
+        .filter { it.title.isNotBlank() }
+        .distinctBy { it.action.ifBlank { it.title } }
+        .sortedByDescending { it.priority }
+        .take(4)
+        .toList()
+    if (displayCards.isEmpty()) return
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Tune, contentDescription = null, tint = Color(0xFF0A7C66), modifier = Modifier.size(18.dp))
@@ -559,10 +558,28 @@ fun SuggestionChipsRow(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            cards.forEach { card ->
+            displayCards.forEach { card ->
+                val iconLabel = suggestionIconLabel(card.icon)
+                val label = suggestionChipLabel(card)
                 AssistChip(
                     onClick = { onCardClick(card) },
-                    label = { Text("${card.icon} ${card.title}") },
+                    leadingIcon = {
+                        Text(
+                            iconLabel,
+                            color = Color(0xFF0A7C66),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    label = {
+                        Text(
+                            label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    },
+                    modifier = Modifier.widthIn(max = 176.dp),
                     shape = RoundedCornerShape(999.dp),
                     colors = AssistChipDefaults.assistChipColors(
                         containerColor = Color.White,
@@ -571,6 +588,25 @@ fun SuggestionChipsRow(
                 )
             }
         }
+    }
+}
+
+private fun suggestionChipLabel(card: SuggestionCard): String {
+    val title = card.title.trim()
+    val subtitle = card.subtitle?.trim().orEmpty()
+    if (subtitle.isBlank() || subtitle == title) return title
+    return "$title · $subtitle"
+}
+
+private fun suggestionIconLabel(icon: String): String {
+    return when (icon.trim().lowercase()) {
+        "money", "price", "coupon" -> "省"
+        "shield", "official" -> "正"
+        "palette", "similar" -> "似"
+        "star", "rating" -> "评"
+        "filter", "tune" -> "筛"
+        "" -> "筛"
+        else -> icon.trim().take(2).ifBlank { "筛" }
     }
 }
 
@@ -592,8 +628,7 @@ fun NlpInputBar(
             onValueChange = onValueChange,
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             leadingIcon = { Icon(Icons.Outlined.FilterAlt, contentDescription = null, tint = Color(0xFF0A7C66)) },
-            label = { Text("追加筛选") },
-            placeholder = { Text("1000元以内黑色款，要评价4.8分以上") },
+            placeholder = { Text("追加筛选") },
             trailingIcon = {
                 if (value.isNotBlank()) {
                     IconButton(onClick = onSubmit) {
@@ -622,7 +657,10 @@ fun AttributeCorrectionDialog(
         onDismissRequest = onDismiss,
         title = { Text("修正「$attributeName」") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(
+                modifier = Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 options.forEach { option ->
                     val isSelected = option == currentValue
                     TextButton(

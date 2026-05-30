@@ -52,6 +52,7 @@ public class RecognitionOrchestrator {
     private final ObjectMapper objectMapper;
     private final ExecutorService recognitionExecutor;
     private final VisionCartProperties properties;
+    private final RecognitionImageStorage imageStorage;
     private final SearchOrchestrator searchOrchestrator;
     private final RegionResolver regionResolver;
 
@@ -63,6 +64,7 @@ public class RecognitionOrchestrator {
                                    ObjectMapper objectMapper,
                                    @Qualifier("recognitionExecutor") ExecutorService recognitionExecutor,
                                    VisionCartProperties properties,
+                                   RecognitionImageStorage imageStorage,
                                    SearchOrchestrator searchOrchestrator,
                                    RegionResolver regionResolver) {
         this.imageProcessor = imageProcessor;
@@ -73,6 +75,7 @@ public class RecognitionOrchestrator {
         this.objectMapper = objectMapper;
         this.recognitionExecutor = recognitionExecutor;
         this.properties = properties;
+        this.imageStorage = imageStorage;
         this.searchOrchestrator = searchOrchestrator;
         this.regionResolver = regionResolver;
     }
@@ -175,7 +178,7 @@ public class RecognitionOrchestrator {
                     log.error("Async recognition failed after retries for session {}, using fallback", sessionId, error);
                     result = fallbackResult(originalFilename, sessionId);
                 }
-                completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic);
+                completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic, processed);
             }
 
         } catch (ImageQualityException e) {
@@ -204,7 +207,15 @@ public class RecognitionOrchestrator {
                                         boolean domestic) throws Exception {
         List<RecognitionCandidate> detected = executeWithRetry(sessionId, "detect",
                 () -> visionClient.detectProducts(processed, contentType, region));
+        log.info("Session {} detection: raw={} candidates, minConfidence={}", sessionId,
+                detected != null ? detected.size() : 0, properties.getRecognition().getMinDetectionConfidence());
+        if (detected != null) {
+            for (RecognitionCandidate c : detected) {
+                log.info("  detected: category={}, brand={}, confidence={}", c.category(), c.brand(), c.confidence());
+            }
+        }
         List<CandidateWork> candidates = prepareCandidates(processed, detected);
+        log.info("Session {} after filtering: {} candidates passed threshold", sessionId, candidates.size());
         if (candidates.isEmpty()) {
             throw new IllegalStateException("未检测到商品，请重新拍照或裁剪后再试");
         }
@@ -223,7 +234,7 @@ public class RecognitionOrchestrator {
 
         CandidateWork selected = candidates.get(0);
         RecognitionResult result = extractAttributesWithFallback(sessionId, selected.cropBytes(), contentType, selected.candidate());
-        completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic);
+        completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic, selected.cropBytes());
         return false;
     }
 
@@ -237,7 +248,7 @@ public class RecognitionOrchestrator {
                                          boolean domestic) {
         try {
             RecognitionResult result = extractAttributesWithFallback(sessionId, crop, "image/jpeg", candidate);
-            completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic);
+            completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic, crop);
         } catch (Exception e) {
             log.error("Selected product recognition failed for session {}", sessionId, e);
             taskManager.markFailed(sessionId, "识别失败: " + e.getMessage());
@@ -267,9 +278,10 @@ public class RecognitionOrchestrator {
                                      long imageSize,
                                      String imageHash,
                                      Long userId,
-                                     boolean domestic) {
+                                     boolean domestic,
+                                     byte[] historyImageBytes) {
         RecognitionResult withSession = withSessionId(result, sessionId);
-        saveHistory(withSession, originalFilename, imageSize, imageHash, userId);
+        saveHistory(withSession, originalFilename, imageSize, imageHash, userId, historyImageBytes);
         RecognitionResult enriched = enrichWithPlatformStats(withSession, domestic);
         taskManager.markCompleted(sessionId, enriched);
         messagingTemplate.convertAndSend(WS_TOPIC + sessionId, new RecognitionTaskResult(
@@ -401,11 +413,18 @@ public class RecognitionOrchestrator {
         );
     }
 
-    private void saveHistory(RecognitionResult result, String filename, long size, String imageHash, Long userId) {
+    private void saveHistory(RecognitionResult result, String filename, long size, String imageHash, Long userId, byte[] historyImageBytes) {
         try {
+            String imageUrl = imageStorage.historyImageUrl(result.sessionId());
+            try {
+                imageStorage.saveHistoryImage(result.sessionId(), historyImageBytes);
+            } catch (Exception imageError) {
+                log.warn("Failed to save recognition history image for session {}: {}", result.sessionId(), imageError.getMessage());
+            }
+
             RecognitionHistory history = new RecognitionHistory();
             history.setSessionId(result.sessionId());
-            history.setImageUrl("upload://" + result.sessionId());
+            history.setImageUrl(imageUrl);
             history.setImageHash(imageHash != null ? imageHash : HashUtils.sha256Hex(filename + ":" + size));
             history.setCategoryJson(objectMapper.writeValueAsString(result.category()));
             history.setAttributesJson(objectMapper.writeValueAsString(result.attributes()));

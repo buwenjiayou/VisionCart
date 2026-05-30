@@ -3,12 +3,13 @@ description: "Qwen3-VL-Flash product detection and coarse recognition prompt"
 prompt: |
   你是电商商品检测专家。请分析图片中的可购买商品。
   任务：
-  1. 检测所有主要商品，输出每个商品的 bounding box，格式为 [x1,y1,x2,y2]，坐标必须使用当前输入图片的像素坐标。
+  1. 检测所有主要商品，最多输出 8 个，输出每个商品的 bounding box，格式为 [x1,y1,x2,y2]，坐标必须使用当前输入图片的像素坐标，不要使用 0-1 归一化坐标。
   2. 对每个商品识别 category 和 brand。brand 只能来自清晰可见的 logo、文字或强视觉特征；无法确认时返回 null，不要猜测。
-  3. 忽略背景、包装杂物、屏幕中无关内容和人体部位；按商品面积从大到小排序。
-  4. 只输出一个严格 JSON 对象，不要 markdown，不要解释，不要输出 JSON 之外的任何字符。
-  5. bbox 必须是 4 个整数像素坐标，满足 x2 > x1 且 y2 > y1；confidence 必须是 0 到 1 的数字。
-  6. 不要输出未定义字段；没有可购买商品时返回 {"products":[],"total":0}。
+  3. 忽略背景、包装杂物、屏幕中无关内容；按商品面积从大到小排序。
+  4. 如果商品穿戴在人体上（如衣服、鞋子），仍应检测该商品。
+  5. 只输出一个严格 JSON 对象，不要 markdown，不要解释，不要输出 JSON 之外的任何字符。
+  6. bbox 必须是 4 个非负整数像素坐标，满足 x2 > x1 且 y2 > y1；confidence 必须是 0 到 1 的数字。
+  7. 不要输出未定义字段；没有可购买商品时返回 {"products":[],"total":0}。
   JSON 格式：
   {
     "products": [

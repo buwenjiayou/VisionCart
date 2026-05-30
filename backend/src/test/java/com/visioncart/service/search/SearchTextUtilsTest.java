@@ -90,6 +90,9 @@ class SearchTextUtilsTest {
         assertEquals(false, SearchTextUtils.relevantToCoreProduct(
                 "肩颈按摩仪热敷捶打腰部按摩器",
                 Map.of("类目", "无线鼠标", "关键词", "白色无线鼠标")));
+        assertEquals(false, SearchTextUtils.relevantToCoreProduct(
+                "舒适鞋垫透气减震",
+                Map.of("类目", "运动鞋", "关键词", "Nike 运动鞋")));
     }
 
     @Test
@@ -101,8 +104,43 @@ class SearchTextUtilsTest {
                 "关键词", "白色无线鼠标"
         );
 
-        assertEquals(true, SearchQueryBuilder.taobaoQueries(attributes, emptyFilter(), "商品").contains("白色 无线鼠标"));
+        assertEquals(true, SearchQueryBuilder.taobaoQueries(attributes, emptyFilter(), "商品").contains("白色无线鼠标"));
         assertEquals(true, SearchQueryBuilder.pddQueries(attributes, emptyFilter(), "商品").contains("鼠标"));
+    }
+
+    @Test
+    void buildsPreciseModelQueriesBeforeBroadQueries() {
+        Map<String, String> attributes = Map.of(
+                "品牌", "罗技",
+                "型号", "M650",
+                "类目", "无线鼠标",
+                "关键词", "罗技 M650 鼠标"
+        );
+
+        List<String> queries = SearchQueryBuilder.taobaoQueries(attributes, emptyFilter(), "商品");
+
+        assertEquals("罗技 M650 鼠标", queries.get(0));
+        assertEquals(true, queries.contains("罗技 M650 无线鼠标"));
+    }
+
+    @Test
+    void multipleKeywordsParticipateInIntentQueries() {
+        Map<String, String> attributes = Map.of(
+                "品牌", "罗技",
+                SearchTextUtils.ATTR_KEYWORDS, "罗技 M650 鼠标,白色无线鼠标",
+                "类目", "无线鼠标"
+        );
+
+        List<String> queries = SearchQueryBuilder.pddQueries(attributes, emptyFilter(), "商品");
+
+        assertEquals(true, queries.contains("罗技 M650 鼠标"));
+        assertEquals(true, queries.contains("罗技 白色无线鼠标"));
+    }
+
+    @Test
+    void platformFetchSizeExpandsCandidatePool() {
+        assertEquals(60, SearchQueryBuilder.platformFetchSize(20));
+        assertEquals(100, SearchQueryBuilder.platformFetchSize(50));
     }
 
     private SearchFilter emptyFilter() {

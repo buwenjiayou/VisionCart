@@ -1,0 +1,15 @@
+[Unit]
+Description=VisionCart Docker Compose
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/VisionCart/deploy
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker compose --env-file ../.env up -d --build
+ExecStop=/usr/bin/docker compose --env-file ../.env down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

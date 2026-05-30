@@ -7,6 +7,10 @@ plugins {
 group = "com.visioncart"
 version = "0.1.0"
 
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}
+
 ext {
     springAiVersion = "1.1.6"
 }

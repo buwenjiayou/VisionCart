@@ -180,6 +180,9 @@ object ApiClient {
     @Volatile
     var authToken: String? = null
 
+    @Volatile
+    var currentUserId: Long? = null
+
     private val authInterceptor = Interceptor { chain ->
         val original: Request = chain.request()
         val builder: Request.Builder = original.newBuilder()
@@ -198,7 +201,8 @@ object ApiClient {
 
     val api: VisionCartApi by lazy {
         val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
+                    else HttpLoggingInterceptor.Level.NONE
         }
         val okHttp = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)

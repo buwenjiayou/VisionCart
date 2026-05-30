@@ -5,6 +5,7 @@ import com.visioncart.api.dto.RecognitionResult;
 import com.visioncart.service.search.SearchTextUtils;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class RecognitionSearchMapper {
@@ -24,7 +25,15 @@ public final class RecognitionSearchMapper {
                     firstUseful(result.category().level3(), result.category().level2(), result.category().level1()));
         }
         if (result.keywords() != null && !result.keywords().isEmpty()) {
-            putIfUseful(attributes, SearchTextUtils.ATTR_KEYWORD, result.keywords().get(0));
+            List<String> keywords = result.keywords().stream()
+                    .map(SearchTextUtils::useful)
+                    .filter(value -> !value.isBlank())
+                    .distinct()
+                    .toList();
+            if (!keywords.isEmpty()) {
+                putIfUseful(attributes, SearchTextUtils.ATTR_KEYWORD, keywords.get(0));
+                attributes.put(SearchTextUtils.ATTR_KEYWORDS, String.join(",", keywords));
+            }
         }
         return attributes;
     }

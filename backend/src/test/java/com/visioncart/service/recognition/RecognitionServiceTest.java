@@ -43,33 +43,6 @@ class RecognitionServiceTest {
     }
 
     @Test
-    void analyzeSavesHistoryAndReturnsResult() {
-        Map<String, AttributeValue> attributes = new LinkedHashMap<>();
-        attributes.put("品牌", new AttributeValue("Nike", 0.9, false));
-        attributes.put("颜色", new AttributeValue("黑色", 0.8, false));
-
-        RecognitionResult expectedResult = new RecognitionResult(
-                "session-1",
-                new CategoryDto("鞋靴", "运动鞋", "跑步鞋", 0.85),
-                attributes,
-                List.of("Nike", "运动鞋"),
-                0.82
-        );
-        when(visionClient.analyze(any(), any())).thenReturn(expectedResult);
-
-        MockMultipartFile image = new MockMultipartFile(
-                "image", "test.jpg", "image/jpeg", new byte[]{1, 2, 3});
-
-        RecognitionResult result = recognitionService.analyze(image, "整张图");
-
-        assertThat(result.sessionId()).isNotBlank();
-        assertThat(result.sessionId()).isNotEqualTo("session-1");
-        assertThat(result.overallConfidence()).isEqualTo(0.82);
-        assertThat(result.attributes()).containsKey("品牌");
-        verify(historyRepository).save(any(RecognitionHistory.class));
-    }
-
-    @Test
     void correctUpdatesHistoryAndSavesFeedback() {
         RecognitionHistory history = new RecognitionHistory();
         history.setSessionId("session-1");

@@ -13,7 +13,8 @@ data class RecognitionResult(
     val category: CategoryDto,
     val attributes: Map<String, AttributeValue>,
     val keywords: List<String>,
-    @Json(name = "overall_confidence") val overallConfidence: Double
+    @Json(name = "overall_confidence") val overallConfidence: Double,
+    @Json(name = "platform_stats") val platformStats: List<PlatformPriceStat> = emptyList()
 )
 
 data class CategoryDto(
@@ -120,15 +121,27 @@ data class RecognitionCandidate(
     @Json(name = "preview_image_url") val previewImageUrl: String?
 )
 
+data class NlpContext(
+    @Json(name = "product_name") val productName: String? = null,
+    val category: String? = null,
+    val history: List<NlpTurn>? = null
+)
+
+data class NlpTurn(
+    @Json(name = "user_input") val userInput: String,
+    val filter: SearchFilter? = null
+)
+
 data class NlpParseRequest(
     @Json(name = "session_id") val sessionId: String?,
     @Json(name = "user_input") val userInput: String,
-    val context: Map<String, Any?> = emptyMap()
+    val context: NlpContext? = null
 )
 
 data class NlpParseResult(
     val filter: SearchFilter,
     val confidence: Double,
     @Json(name = "from_cache") val fromCache: Boolean,
-    val decision: String
+    val decision: String,
+    val message: String? = null
 )

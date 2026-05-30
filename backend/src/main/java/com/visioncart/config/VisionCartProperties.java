@@ -182,8 +182,9 @@ public class VisionCartProperties {
         private int queueCapacity = 50;
         private long retryBaseDelayMs = 1000;
         private int multiProductThreshold = 2;
-        private double minDetectionConfidence = 0.7;
-        private int maxProducts = 5;
+        private double minDetectionConfidence = 0.55;
+        private int maxProducts = 8;
+        private String historyImageDir = "data/recognition-history";
         private Map<String, List<String>> attributeOptions = Map.of(
                 "颜色", List.of("黑色", "白色", "红色", "蓝色", "深蓝色", "藏青", "灰色", "绿色", "黄色", "粉色", "棕色", "米白色"),
                 "品牌", List.of("罗技", "雷蛇", "卓威", "富勒", "雷神", "英菲克", "Apple", "华为", "小米", "未知"),
@@ -234,6 +235,9 @@ public class VisionCartProperties {
 
         public int getMaxProducts() { return maxProducts; }
         public void setMaxProducts(int maxProducts) { this.maxProducts = maxProducts; }
+
+        public String getHistoryImageDir() { return historyImageDir; }
+        public void setHistoryImageDir(String historyImageDir) { this.historyImageDir = historyImageDir; }
 
         public Map<String, List<String>> getAttributeOptions() { return attributeOptions; }
         public void setAttributeOptions(Map<String, List<String>> attributeOptions) { this.attributeOptions = attributeOptions; }

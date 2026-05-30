@@ -38,6 +38,7 @@ class RecognitionOrchestratorTest {
     private ObjectMapper objectMapper;
     private ExecutorService executorService;
     private VisionCartProperties properties;
+    private RecognitionImageStorage imageStorage;
     private SearchOrchestrator searchOrchestrator;
     private RegionResolver regionResolver;
     private RecognitionOrchestrator orchestrator;
@@ -54,13 +55,16 @@ class RecognitionOrchestratorTest {
         properties = new VisionCartProperties();
         properties.getRecognition().setTimeoutMs(5000L);
         properties.getRecognition().setRetryCount(1);
+        imageStorage = mock(RecognitionImageStorage.class);
+        when(imageStorage.historyImageUrl(anyString())).thenAnswer(invocation ->
+                "/api/v1/history/" + invocation.getArgument(0, String.class) + "/image");
         searchOrchestrator = mock(SearchOrchestrator.class);
         regionResolver = mock(RegionResolver.class);
         when(regionResolver.isDomestic()).thenReturn(true);
 
         orchestrator = new RecognitionOrchestrator(
                 imageProcessor, visionClient, taskManager, historyRepository,
-                messagingTemplate, objectMapper, executorService, properties, searchOrchestrator, regionResolver
+                messagingTemplate, objectMapper, executorService, properties, imageStorage, searchOrchestrator, regionResolver
         );
     }
 

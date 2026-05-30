@@ -1,68 +1,134 @@
-# 部署指南
+# VisionCart 阿里云 Docker 部署指南
 
-## 后端服务
+以下步骤以 Ubuntu/Debian 系统为准，推荐使用 Docker Compose 部署后端、MySQL 和 Redis。真实密码、JWT 密钥、平台 API Key 只放服务器 `.env`，不要提交到 Git。
 
-1. 新建后端运行环境，例如云服务器、Railway、Render 或其他 Java 17 运行平台。
-2. 准备 MySQL 8.x 和 Redis 7.x。
-3. 将仓库连接到部署平台。
-4. 设置构建命令：
+## 1. 安装 Docker
 
 ```bash
-./gradlew :backend:bootJar
+curl -fsSL https://get.docker.com | sh
+systemctl enable docker
+systemctl start docker
+docker version
 ```
 
-5. 设置启动命令：
+## 2. 拉取代码
 
 ```bash
-java -jar backend/build/libs/backend-0.1.0.jar --spring.profiles.active=prod
+git clone https://github.com/buwenjiayou/VisionCart.git
+cd VisionCart
 ```
 
-6. 配置环境变量：
+## 3. 配置环境变量
+
+```bash
+cp .env.example .env
+chmod 600 .env
+vim .env
+```
+
+生产建议至少修改：
 
 ```text
-PORT=8080
-PUBLIC_BASE_URL=https://your-api-domain.example.com
-MYSQL_URL=jdbc:mysql://...
-MYSQL_USERNAME=...
-MYSQL_PASSWORD=...
-MYSQL_DRIVER=com.mysql.cj.jdbc.Driver
-REDIS_HOST=...
-REDIS_PORT=6379
-REDIS_PASSWORD=...
-JWT_SECRET=...
-JWT_EXPIRATION=604800000
-MAIL_HOST=smtp.qq.com
-MAIL_PORT=587
-MAIL_USERNAME=...
-MAIL_PASSWORD=...
-ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-ARK_API_KEY=...
-ARK_LLM_MODEL=your-llm-endpoint-id
-ARK_VISION_API_KEY=...
-ARK_VISION_MODEL=your-vision-endpoint-id
-PDD_API_URL=https://gw-api.pinduoduo.com/api/router
-PDD_CLIENT_ID=...
-PDD_CLIENT_SECRET=...
-PDD_PID=...
-TAOBAO_API_URL=https://eco.taobao.com/router/rest
-TAOBAO_APP_KEY=...
-TAOBAO_APP_SECRET=...
-TAOBAO_ADZONE_ID=...
-EBAY_APP_ID=...
-EBAY_CERT_ID=...
-EBAY_DEV_ID=...
-EBAY_MARKETPLACE_ID=EBAY_US
+PUBLIC_BASE_URL=http://47.94.4.31:8080
+JWT_SECRET=<至少32位随机字符串>
+MYSQL_PASSWORD=<强密码>
+MYSQL_ROOT_PASSWORD=<强密码>
+ALIYUN_BAILIAN_API_KEY=<真实百炼Key>
+PDD_CLIENT_ID=<真实值>
+PDD_CLIENT_SECRET=<真实值>
+PDD_PID=<真实值>
+TAOBAO_APP_KEY=<真实值>
+TAOBAO_APP_SECRET=<真实值>
+TAOBAO_ADZONE_ID=<真实值>
+VISIONCART_ALLOWED_ORIGINS=http://47.94.4.31:8080
 ```
 
-## Web 控制台
+Docker Compose 默认会让后端连接 compose 内的 `mysql` 服务；只有使用外部数据库时才需要设置 `DOCKER_MYSQL_URL`。
 
-1. 将 `web/` 目录发布到静态站点服务。
-2. 打开页面后，将 API Base URL 设置为后端公网地址。
-3. 登录后复制 JWT 到页面中，再进行真实识别和搜索验证。
+首次部署可以保留 `JPA_DDL_AUTO=update` 自动建表。数据库稳定后再改成 `validate` 或 `none`。
 
-## Android 安装包
+## 4. 启动后端、MySQL、Redis
 
-1. 用 Android Studio 打开项目。
-2. 在 `local.properties` 中设置 `VISIONCART_API_BASE_URL` 为后端公网地址。
-3. 选择 `Build > Generate Signed Bundle / APK`。
-4. 使用安全的签名证书生成发布包，证书不要提交到仓库。
+```bash
+cd deploy
+docker compose --env-file ../.env up -d --build
+docker compose --env-file ../.env ps
+docker compose --env-file ../.env logs -f backend
+```
+
+验证：
+
+```bash
+curl http://127.0.0.1:8080/api/v1/health
+curl http://47.94.4.31:8080/api/v1/health
+```
+
+## 5. 防火墙和安全组
+
+阿里云安全组放行：
+
+- TCP 8080：临时直接访问后端。
+- TCP 80/443：配置 Nginx/HTTPS 后使用。
+
+服务器本机如果启用 `ufw`：
+
+```bash
+ufw allow 8080/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+```
+
+MySQL 和 Redis 在 compose 中只绑定 `127.0.0.1`，不对公网开放。
+
+## 6. Android 真机包
+
+本地 `local.properties`：
+
+```properties
+VISIONCART_API_BASE_URL=http://47.94.4.31:8080/
+```
+
+重新构建并安装：
+
+```powershell
+.\gradlew.bat :android:app:assembleDebug --no-daemon
+adb install -r android\app\build\outputs\apk\debug\app-debug.apk
+```
+
+## 7. 可选：Nginx + HTTPS
+
+有域名后，先将域名 A 记录解析到服务器公网 IP，然后执行：
+
+```bash
+apt update
+apt install -y nginx
+cp deploy/nginx-visioncart.conf /etc/nginx/sites-available/visioncart
+sed -i 's/visioncart.example.com/你的域名/g' /etc/nginx/sites-available/visioncart
+ln -sf /etc/nginx/sites-available/visioncart /etc/nginx/sites-enabled/visioncart
+nginx -t && systemctl reload nginx
+sudo bash scripts/setup-ssl.sh 你的域名
+```
+
+HTTPS 启用后，把 `.env` 中：
+
+```text
+PUBLIC_BASE_URL=https://你的域名
+VISIONCART_ALLOWED_ORIGINS=https://你的域名
+```
+
+Android 改为：
+
+```properties
+VISIONCART_API_BASE_URL=https://你的域名/
+```
+
+## 8. 常用运维命令
+
+```bash
+cd VisionCart/deploy
+docker compose --env-file ../.env logs -f backend
+docker compose --env-file ../.env restart backend
+docker compose --env-file ../.env pull
+docker compose --env-file ../.env up -d --build
+docker compose --env-file ../.env down
+```

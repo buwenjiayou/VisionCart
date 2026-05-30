@@ -84,8 +84,9 @@ public class PriceMonitorService {
                     null, List.of(platform), null, List.of(), List.of(),
                     null, null, null, null
             );
+            Map<String, String> attributes = Map.of("关键词", title);
             SearchRequest request = new SearchRequest(
-                    "price-monitor", Map.of(), filter, 1, 10, "server"
+                    "price-monitor", attributes, filter, 1, 10, "server"
             );
 
             SearchResult result = searchOrchestrator.search(request);

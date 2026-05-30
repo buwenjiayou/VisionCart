@@ -61,9 +61,10 @@ public class EbaySearchService implements PlatformSearchService {
             }
 
             // Build search URL
+            int fetchSize = SearchQueryBuilder.platformFetchSize(pageSize);
             StringBuilder url = new StringBuilder(ebay.getBrowseUrl());
             url.append("?q=").append(java.net.URLEncoder.encode(keyword(attributes, filter), StandardCharsets.UTF_8));
-            url.append("&limit=").append(Math.min(50, pageSize));
+            url.append("&limit=").append(Math.min(100, fetchSize));
             url.append("&offset=").append((page - 1) * pageSize);
 
             // Price filter
@@ -151,7 +152,9 @@ public class EbaySearchService implements PlatformSearchService {
     }
 
     private String keyword(Map<String, String> attributes, SearchFilter filter) {
-        return SearchTextUtils.searchKeyword(attributes, filter, "shopping item");
+        return SearchQueryBuilder.taobaoQueries(attributes, filter, "shopping item").stream()
+                .findFirst()
+                .orElse("shopping item");
     }
 
     private List<ProductCard> mapResponse(String body) throws Exception {
@@ -182,6 +185,7 @@ public class EbaySearchService implements PlatformSearchService {
 
             String condition = item.path("condition").asText("");
             String shopName = item.path("seller").path("username").asText("eBay Seller");
+            String brand = SearchTextUtils.inferBrand(title, shopName);
             double rating = 0.0;
             JsonNode sellerNode = item.path("seller");
             if (sellerNode.has("feedbackPercentage")) {
@@ -208,9 +212,12 @@ public class EbaySearchService implements PlatformSearchService {
                     shopName,
                     rating,
                     sales,
-                    0.75,
+                    0.0,
                     tags,
-                    detailUrl
+                    detailUrl,
+                    brand,
+                    "none",
+                    null
             ));
         }
 

@@ -37,13 +37,15 @@ class VisionCartRepository(private val context: Context) {
         const val MAX_UPLOAD_BYTES = 1_500_000
         const val INITIAL_JPEG_QUALITY = 88
         const val MIN_JPEG_QUALITY = 68
+        const val RECOGNITIONS_DIR = "recognitions"
     }
 
     // ==================== Recognition ====================
 
     class MultiProductPendingException(
         val sessionId: String,
-        val candidates: List<RecognitionCandidate>
+        val candidates: List<RecognitionCandidate>,
+        val imageUrl: String? = null
     ) : Exception("请选择要识别的商品")
 
     suspend fun analyzeImage(imageUri: Uri): Result<RecognitionResult> {
@@ -68,11 +70,15 @@ class VisionCartRepository(private val context: Context) {
             }
 
             val sessionId = response.data.sessionId
+            val persistentImageUrl = persistRecognitionImage(file, sessionId)
             Log.i(TAG, "Recognition task accepted: sessionId=$sessionId")
-            // Poll for result
-            val result = pollRecognitionResult(sessionId)
+            val result = try {
+                pollRecognitionResult(sessionId)
+            } catch (e: MultiProductPendingException) {
+                throw MultiProductPendingException(e.sessionId, e.candidates, persistentImageUrl)
+            }
             // Save to local DB
-            saveRecognitionToLocal(result, imageUrl ?: file.toURI().toString())
+            saveRecognitionToLocal(result, persistentImageUrl)
             Result.success(result)
         } catch (e: Exception) {
             Log.e(TAG, "Recognition request failed for file=${file.name}, size=${file.length()}", e)
@@ -106,6 +112,13 @@ class VisionCartRepository(private val context: Context) {
                     TAG,
                     "Recognition poll rejected: sessionId=$sessionId, attempt=${i + 1}, code=${statusResponse.code}, message=${statusResponse.message}"
                 )
+                // Fail fast on non-retryable errors
+                if (statusResponse.code == 401 || statusResponse.code == 403) {
+                    throw Exception("登录已过期，请重新登录")
+                }
+                if (statusResponse.code == 404) {
+                    throw Exception("识别任务不存在或已过期")
+                }
             }
             kotlinx.coroutines.delay(intervalMs)
         }
@@ -123,7 +136,10 @@ class VisionCartRepository(private val context: Context) {
                 return Result.failure(Exception(response.message))
             }
             val result = pollRecognitionResult(sessionId)
-            saveRecognitionToLocal(result, imageUrl ?: "upload://$sessionId")
+            saveRecognitionToLocal(
+                result,
+                preferredLocalImageUrl(sessionId, imageUrl) ?: "upload://$sessionId"
+            )
             Result.success(result)
         } catch (e: Exception) {
             Result.failure(e)
@@ -267,7 +283,8 @@ class VisionCartRepository(private val context: Context) {
                 rating = product.rating,
                 sales = product.sales,
                 detailUrl = product.detailUrl,
-                sessionId = sessionId
+                sessionId = sessionId,
+                brand = product.brand
             )
         )
     }
@@ -310,7 +327,8 @@ class VisionCartRepository(private val context: Context) {
                             sales = existing?.sales ?: 0L,
                             detailUrl = card.detail_url ?: existing?.detailUrl ?: "",
                             sessionId = existing?.sessionId ?: "",
-                            updatedAt = card.updated_at ?: System.currentTimeMillis()
+                            updatedAt = card.updated_at ?: System.currentTimeMillis(),
+                            brand = existing?.brand
                         )
                     )
                 }
@@ -341,39 +359,73 @@ class VisionCartRepository(private val context: Context) {
 
     // ==================== History ====================
 
-    fun getHistoryFlow(): Flow<List<RecognitionRecordEntity>> = recognitionDao.getAllFlow()
+    fun getHistoryFlow(): Flow<List<RecognitionRecordEntity>> {
+        val userId = ApiClient.currentUserId ?: 0L
+        return recognitionDao.getAllFlow(userId)
+    }
 
     suspend fun syncHistoryFromBackend() {
         try {
+            val userId = ApiClient.currentUserId ?: return
             val response = api.getHistory(page = 1, size = 100)
             if (response.code == 200 && response.data != null) {
                 val items = response.data.items
-                for (item in items) {
-                    recognitionDao.insert(
-                        RecognitionRecordEntity(
+                val existingBySession = recognitionDao.getAllForUser(userId).associateBy { it.sessionId }
+                val entities = items.map { item ->
+                    val existing = existingBySession[item.session_id]
+                    RecognitionRecordEntity(
+                        sessionId = item.session_id,
+                        imageUrl = mergedHistoryImageUrl(
+                            userId = userId,
                             sessionId = item.session_id,
-                            imageUrl = item.image_url ?: "",
-                            categoryJson = item.category?.let { moshi.adapter(CategoryDto::class.java).toJson(it) } ?: "{}",
-                            attributesJson = item.attributes?.let {
-                                moshi.adapter<Map<String, AttributeValue>>(
-                                    Types.newParameterizedType(Map::class.java, String::class.java, AttributeValue::class.java)
-                                ).toJson(it)
-                            } ?: "{}",
-                            keywords = item.keywords?.joinToString(",") ?: "",
-                            confidence = item.confidence ?: 0.0,
-                            createdAt = item.created_at?.toLongOrNull() ?: System.currentTimeMillis()
-                        )
+                            remoteImageUrl = item.image_url,
+                            existingImageUrl = existing?.imageUrl
+                        ),
+                        categoryJson = item.category?.let { moshi.adapter(CategoryDto::class.java).toJson(it) } ?: "{}",
+                        attributesJson = item.attributes?.let {
+                            moshi.adapter<Map<String, AttributeValue>>(
+                                Types.newParameterizedType(Map::class.java, String::class.java, AttributeValue::class.java)
+                            ).toJson(it)
+                        } ?: "{}",
+                        keywords = item.keywords?.joinToString(",") ?: "",
+                        confidence = item.confidence ?: 0.0,
+                        createdAt = parseCreatedAt(item.created_at),
+                        nlpQuery = existing?.nlpQuery ?: "",
+                        filterJson = existing?.filterJson ?: "{}",
+                        userId = userId
                     )
                 }
+                // Insert new data first (REPLACE updates existing), then remove stale records
+                recognitionDao.insertAll(entities)
+                val keepIds = entities.map { it.sessionId }
+                if (keepIds.isNotEmpty()) {
+                    recognitionDao.deleteByUserIdExcept(userId, keepIds)
+                }
             }
-        } catch (_: Exception) {
-            // 静默失败，本地缓存仍可用
+        } catch (e: Exception) {
+            Log.w(TAG, "syncHistoryFromBackend failed, local cache still usable", e)
         }
+    }
+
+    private fun parseCreatedAt(value: String?): Long {
+        if (value == null) return System.currentTimeMillis()
+        // Try parsing as ISO-8601 string (e.g., "2026-05-28T10:30:00Z")
+        try {
+            return java.time.Instant.parse(value).toEpochMilli()
+        } catch (_: Exception) {}
+        // Try parsing as epoch millis
+        value.toLongOrNull()?.let { return it }
+        return System.currentTimeMillis()
     }
 
     // ==================== Local DB Helpers ====================
 
-    private suspend fun saveRecognitionToLocal(result: RecognitionResult, imageUrl: String) {
+    private suspend fun saveRecognitionToLocal(
+        result: RecognitionResult,
+        imageUrl: String,
+        nlpQuery: String = "",
+        filterJson: String = "{}"
+    ) {
         val categoryAdapter = moshi.adapter(CategoryDto::class.java)
         val attributesAdapter = moshi.adapter<Map<String, AttributeValue>>(
             Types.newParameterizedType(
@@ -389,10 +441,77 @@ class VisionCartRepository(private val context: Context) {
                 categoryJson = categoryAdapter.toJson(result.category),
                 attributesJson = attributesAdapter.toJson(result.attributes),
                 keywords = result.keywords.joinToString(","),
-                confidence = result.overallConfidence
+                confidence = result.overallConfidence,
+                nlpQuery = nlpQuery,
+                filterJson = filterJson,
+                userId = ApiClient.currentUserId
             )
         )
     }
+
+    suspend fun updateRecognitionNlp(sessionId: String, nlpQuery: String, filterJson: String) {
+        recognitionDao.updateNlpAndFilter(sessionId, nlpQuery, filterJson)
+    }
+
+    suspend fun clearLocalDataOnLogout() {
+        try {
+            db.clearAllTables()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to clear local database on logout", e)
+        }
+        try {
+            File(context.filesDir, RECOGNITIONS_DIR).deleteRecursively()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to clear local recognition images on logout", e)
+        }
+    }
+
+    private fun persistRecognitionImage(file: File, sessionId: String): String {
+        val target = recognitionImageFile(currentUserIdForStorage(), sessionId)
+        file.copyTo(target, overwrite = true)
+        return Uri.fromFile(target).toString()
+    }
+
+    private fun preferredLocalImageUrl(sessionId: String, candidate: String?): String? {
+        if (isUsableLocalImageUrl(candidate)) return candidate
+        return localRecognitionImageUrl(currentUserIdForStorage(), sessionId)
+    }
+
+    private fun mergedHistoryImageUrl(
+        userId: Long,
+        sessionId: String,
+        remoteImageUrl: String?,
+        existingImageUrl: String?
+    ): String {
+        if (isUsableLocalImageUrl(existingImageUrl)) return existingImageUrl.orEmpty()
+        localRecognitionImageUrl(userId, sessionId)?.let { return it }
+        return remoteImageUrl.orEmpty()
+    }
+
+    private fun localRecognitionImageUrl(userId: Long, sessionId: String): String? {
+        val file = recognitionImageFile(userId, sessionId, createDir = false)
+        return if (file.isFile) Uri.fromFile(file).toString() else null
+    }
+
+    private fun isUsableLocalImageUrl(value: String?): Boolean {
+        if (value.isNullOrBlank() || !value.startsWith("file://")) return false
+        return try {
+            val path = Uri.parse(value).path ?: return false
+            File(path).isFile
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun recognitionImageFile(userId: Long, sessionId: String, createDir: Boolean = true): File {
+        val dir = File(File(context.filesDir, RECOGNITIONS_DIR), userId.toString())
+        if (createDir) dir.mkdirs()
+        return File(dir, "${safeFileName(sessionId)}.jpg")
+    }
+
+    private fun currentUserIdForStorage(): Long = ApiClient.currentUserId ?: 0L
+
+    private fun safeFileName(value: String): String = value.replace(Regex("[^A-Za-z0-9_-]"), "_")
 
     private fun uriToFile(uri: Uri): File {
         val decoded = decodeUploadBitmap(uri)
@@ -401,17 +520,20 @@ class VisionCartRepository(private val context: Context) {
         } else {
             applyExifRotation(uri, decoded)
         }
-        val constrained = resizeIfNeeded(normalized, MAX_UPLOAD_DIMENSION)
-        val jpegBytes = compressJpegToLimit(constrained)
-
-        val tempFile = File.createTempFile("visioncart_", ".jpg", context.cacheDir)
-        tempFile.outputStream().use { output -> output.write(jpegBytes) }
-
-        if (constrained !== normalized) constrained.recycle()
-        if (normalized !== decoded) normalized.recycle()
-        decoded.recycle()
-
-        return tempFile
+        try {
+            val constrained = resizeIfNeeded(normalized, MAX_UPLOAD_DIMENSION)
+            try {
+                val jpegBytes = compressJpegToLimit(constrained)
+                val tempFile = File.createTempFile("visioncart_", ".jpg", context.cacheDir)
+                tempFile.outputStream().use { output -> output.write(jpegBytes) }
+                return tempFile
+            } finally {
+                if (constrained !== normalized) constrained.recycle()
+            }
+        } finally {
+            if (normalized !== decoded) normalized.recycle()
+            decoded.recycle()
+        }
     }
 
     private fun decodeUploadBitmap(uri: Uri): Bitmap {

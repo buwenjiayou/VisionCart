@@ -31,15 +31,28 @@ public class ImageProcessor {
     }
 
     public byte[] process(byte[] original) {
-        byte[] compressed = compress(original, config.getImageMaxDimension(), config.getImageJpegQuality());
-        QualityCheckResult check = checkQuality(compressed);
+        BufferedImage image = decodeAndTransform(original, config.getImageMaxDimension());
+        QualityCheckResult check = checkQuality(image);
         if (!check.passed()) {
             throw new ImageQualityException(check.reason());
         }
-        return compressed;
+        try {
+            return encodeJpeg(image, config.getImageJpegQuality());
+        } catch (IOException e) {
+            throw new ImageQualityException("encode_failed");
+        }
     }
 
     public byte[] compress(byte[] original, int maxDimension, float jpegQuality) {
+        BufferedImage image = decodeAndTransform(original, maxDimension);
+        try {
+            return encodeJpeg(image, jpegQuality);
+        } catch (IOException e) {
+            throw new ImageQualityException("encode_failed");
+        }
+    }
+
+    private BufferedImage decodeAndTransform(byte[] original, int maxDimension) {
         try (ImageInputStream iis = ImageIO.createImageInputStream(new ByteArrayInputStream(original))) {
             if (iis == null) {
                 throw new ImageQualityException("unsupported_format");
@@ -65,7 +78,7 @@ public class ImageProcessor {
                 int origH = image.getHeight();
 
                 if (origW <= maxDimension && origH <= maxDimension) {
-                    return encodeJpeg(image, jpegQuality);
+                    return image;
                 }
 
                 double scale = (double) maxDimension / Math.max(origW, origH);
@@ -80,7 +93,7 @@ public class ImageProcessor {
                 g.drawImage(image, 0, 0, newW, newH, null);
                 g.dispose();
 
-                return encodeJpeg(resized, jpegQuality);
+                return resized;
             } finally {
                 reader.dispose();
             }
@@ -148,24 +161,27 @@ public class ImageProcessor {
             if (image == null) {
                 return new QualityCheckResult(false, "decode_failed");
             }
-
-            double laplacianVariance = computeLaplacianVariance(image);
-            if (laplacianVariance < config.getBlurThreshold()) {
-                return new QualityCheckResult(false, "blurry");
-            }
-
-            double meanBrightness = computeMeanBrightness(image);
-            if (meanBrightness < config.getBrightnessMin()) {
-                return new QualityCheckResult(false, "too_dark");
-            }
-            if (meanBrightness > config.getBrightnessMax()) {
-                return new QualityCheckResult(false, "too_bright");
-            }
-
-            return new QualityCheckResult(true, null);
+            return checkQuality(image);
         } catch (IOException e) {
             return new QualityCheckResult(false, "decode_failed");
         }
+    }
+
+    public QualityCheckResult checkQuality(BufferedImage image) {
+        double laplacianVariance = computeLaplacianVariance(image);
+        if (laplacianVariance < config.getBlurThreshold()) {
+            return new QualityCheckResult(false, "blurry");
+        }
+
+        double meanBrightness = computeMeanBrightness(image);
+        if (meanBrightness < config.getBrightnessMin()) {
+            return new QualityCheckResult(false, "too_dark");
+        }
+        if (meanBrightness > config.getBrightnessMax()) {
+            return new QualityCheckResult(false, "too_bright");
+        }
+
+        return new QualityCheckResult(true, null);
     }
 
     private double computeLaplacianVariance(BufferedImage image) {

@@ -38,6 +38,12 @@ public final class AiOutputValidator {
             Double max = priceRange.max();
             if (min != null && min < 0) min = null;
             if (max != null && max < 0) max = null;
+            // Swap if inverted
+            if (min != null && max != null && min > max) {
+                Double temp = min;
+                min = max;
+                max = temp;
+            }
             priceRange = new PriceRange(min, max);
         }
 

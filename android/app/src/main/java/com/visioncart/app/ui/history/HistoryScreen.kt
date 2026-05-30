@@ -1,7 +1,9 @@
 package com.visioncart.app.ui.history
 
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,8 +17,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ImageSearch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -31,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.visioncart.app.data.db.RecognitionRecordEntity
+import com.visioncart.app.ui.components.rememberAuthenticatedImageModel
 import com.visioncart.app.ui.viewmodel.MainViewModel
 import androidx.compose.ui.tooling.preview.Preview
 import org.json.JSONObject
@@ -59,8 +65,6 @@ fun HistoryScreen(
     modifier: Modifier = Modifier
 ) {
     val history by viewModel.history.collectAsState()
-
-    LaunchedEffect(Unit) { viewModel.syncHistory() }
 
     if (history.isEmpty()) {
         Text(
@@ -103,17 +107,8 @@ internal fun HistoryItemView(
         colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
         Row(modifier = Modifier.padding(12.dp)) {
-            if (record.imageUrl.isNotBlank()) {
-                AsyncImage(
-                    model = record.imageUrl,
-                    contentDescription = "识物图片",
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(MaterialTheme.shapes.small),
-                    contentScale = ContentScale.Crop
-                )
-                Spacer(Modifier.width(12.dp))
-            }
+            HistoryThumbnail(record.imageUrl)
+            Spacer(Modifier.width(12.dp))
             Column(
                 Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -149,6 +144,34 @@ internal fun HistoryItemView(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun HistoryThumbnail(imageUrl: String) {
+    val imageModel = rememberAuthenticatedImageModel(imageUrl)
+    Box(
+        modifier = Modifier
+            .size(64.dp)
+            .clip(MaterialTheme.shapes.small)
+            .background(Color(0xFFEAF3F0)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageModel != null) {
+            AsyncImage(
+                model = imageModel,
+                contentDescription = "识物图片",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Icon(
+                Icons.Outlined.ImageSearch,
+                contentDescription = null,
+                tint = Color(0xFF7A8A85),
+                modifier = Modifier.size(24.dp)
+            )
         }
     }
 }

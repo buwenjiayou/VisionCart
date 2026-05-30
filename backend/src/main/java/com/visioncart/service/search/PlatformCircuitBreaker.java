@@ -68,6 +68,7 @@ public class PlatformCircuitBreaker {
         }
 
         synchronized (state) {
+            recordCall(state, platform);
             if (durationMs > slowCallThresholdMs) {
                 recordSlowCall(state, platform);
             }
@@ -122,7 +123,18 @@ public class PlatformCircuitBreaker {
 
     private void recordSlowCall(CircuitState state, String platform) {
         state.slowCalls.incrementAndGet();
+        checkSlowCallRate(state, platform);
+    }
+
+    private void recordCall(CircuitState state, String platform) {
         int total = state.totalCalls.incrementAndGet();
+        if (total >= SLIDING_WINDOW_SIZE) {
+            checkSlowCallRate(state, platform);
+        }
+    }
+
+    private void checkSlowCallRate(CircuitState state, String platform) {
+        int total = state.totalCalls.get();
         if (total >= SLIDING_WINDOW_SIZE) {
             double slowRate = (double) state.slowCalls.get() / total;
             if (slowRate >= slowCallRateThreshold) {

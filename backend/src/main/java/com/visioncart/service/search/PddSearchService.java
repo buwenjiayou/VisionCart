@@ -58,18 +58,18 @@ public class PddSearchService implements PlatformSearchService {
 
         try {
             Map<String, ProductCard> byId = new LinkedHashMap<>();
+            int fetchSize = SearchQueryBuilder.platformFetchSize(pageSize);
             for (String query : SearchQueryBuilder.pddQueries(attributes, filter, "商品")) {
-                mapResponse(executeSearch(query, page, pageSize)).forEach(product -> byId.putIfAbsent(product.id(), product));
-                List<ProductCard> relevant = relevantProducts(byId, attributes, pageSize);
-                if (relevant.size() >= Math.min(3, Math.max(1, pageSize))) {
-                    return relevant;
+                mapResponse(executeSearch(query, page, fetchSize)).forEach(product -> byId.putIfAbsent(product.id(), product));
+                if (byId.size() >= fetchSize) {
+                    break;
                 }
             }
-            List<ProductCard> relevant = relevantProducts(byId, attributes, pageSize);
+            List<ProductCard> relevant = relevantProducts(byId, attributes, fetchSize);
             if (!relevant.isEmpty()) {
                 return relevant;
             }
-            return byId.values().stream().limit(pageSize).toList();
+            return byId.values().stream().limit(fetchSize).toList();
         } catch (Exception error) {
             log.warn("PDD search failed: {}", error.toString());
             return List.of();
@@ -346,7 +346,7 @@ public class PddSearchService implements PlatformSearchService {
                 shopName,
                 rating.value(),
                 sales,
-                0.82,
+                0.0,
                 tags(item),
                 fallbackDetailUrl(goodsId, title),
                 brand,

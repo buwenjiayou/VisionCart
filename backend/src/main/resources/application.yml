@@ -32,6 +32,11 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
       timeout: 1500ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
   # AI 配置说明：
   # spring.ai.openai.* 用于 Spring AI ChatClient.Builder 自动配置（NLP LLM 调用）
   # visioncart.ai.* 用于视觉模型和自定义配置（豆包 Vision API + 推理参数）
@@ -55,6 +60,8 @@ spring:
           auth: true
           ssl:
             enable: true
+          starttls:
+            enable: false
           connectiontimeout: 5000
           timeout: 5000
           writetimeout: 5000
@@ -144,8 +151,9 @@ visioncart:
     queue-capacity: ${RECOGNITION_QUEUE_CAPACITY:50}
     retry-base-delay-ms: ${RECOGNITION_RETRY_BASE_DELAY_MS:1000}
     multi-product-threshold: ${RECOGNITION_MULTI_PRODUCT_THRESHOLD:2}
-    min-detection-confidence: ${RECOGNITION_MIN_DETECTION_CONFIDENCE:0.7}
-    max-products: ${RECOGNITION_MAX_PRODUCTS:5}
+    min-detection-confidence: ${RECOGNITION_MIN_DETECTION_CONFIDENCE:0.55}
+    max-products: ${RECOGNITION_MAX_PRODUCTS:8}
+    history-image-dir: ${RECOGNITION_HISTORY_IMAGE_DIR:data/recognition-history}
 
 springdoc:
   swagger-ui:

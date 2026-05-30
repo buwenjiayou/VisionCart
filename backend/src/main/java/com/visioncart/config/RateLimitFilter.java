@@ -67,6 +67,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
         if (path.equals("/api/v1/recognition/analyze")) {
             return new LimitSpec("recognition", cfg.getRecognitionLimit(), cfg.getRecognitionWindowSeconds());
         }
+        if (path.equals("/api/v1/nlp/parse")) {
+            return new LimitSpec("nlp", cfg.getRecognitionLimit(), cfg.getRecognitionWindowSeconds());
+        }
         return new LimitSpec("api", cfg.getDefaultLimit(), cfg.getDefaultWindowSeconds());
     }
 
@@ -75,10 +78,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         if (auth != null && auth.getPrincipal() instanceof JwtAuthenticationFilter.AuthPrincipal principal) {
             return "user:" + principal.getUserId();
         }
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return "ip:" + forwarded.split(",")[0].trim();
-        }
+        // Always use remoteAddr for rate limiting (not spoofable by client)
         return "ip:" + request.getRemoteAddr();
     }
 

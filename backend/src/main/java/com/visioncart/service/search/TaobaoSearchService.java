@@ -75,14 +75,15 @@ public class TaobaoSearchService implements PlatformSearchService {
     private List<ProductCard> doSearch(Map<String, String> attributes, SearchFilter filter, int page, int pageSize,
                                        VisionCartProperties.Taobao tb) throws Exception {
         Map<String, ProductCard> byId = new LinkedHashMap<>();
+        int fetchSize = SearchQueryBuilder.platformFetchSize(pageSize);
         for (String query : SearchQueryBuilder.taobaoQueries(attributes, filter, "商品")) {
-            Map<String, String> params = buildParams(query, filter, page, pageSize, tb);
+            Map<String, String> params = buildParams(query, filter, page, fetchSize, tb);
             mapResponse(executeSearch(tb, params)).forEach(product -> byId.putIfAbsent(product.id(), product));
-            if (byId.size() >= Math.min(DETAIL_ENRICH_LIMIT, Math.max(10, pageSize))) {
+            if (byId.size() >= fetchSize) {
                 break;
             }
         }
-        return enrichWithDetails(new ArrayList<>(byId.values()), tb);
+        return enrichWithDetails(new ArrayList<>(byId.values()).stream().limit(fetchSize).toList(), tb);
     }
 
     private Map<String, String> buildParams(String query,
@@ -269,7 +270,7 @@ public class TaobaoSearchService implements PlatformSearchService {
                     shopName,
                     rating,
                     salesInfo.sales(),
-                    0.85,
+                    0.0,
                     tags,
                     detailUrl,
                     brand,

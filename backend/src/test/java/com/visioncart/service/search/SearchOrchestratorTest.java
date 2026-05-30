@@ -233,7 +233,8 @@ class SearchOrchestratorTest {
         RecognitionHistory history = new RecognitionHistory();
         history.setSessionId("s1");
         history.setCategoryJson("{\"level1\":\"电脑配件\",\"level2\":\"鼠标\",\"level3\":\"无线鼠标\"}");
-        history.setKeywords("白色无线鼠标");
+        history.setKeywords("罗技 M650 鼠标,白色无线鼠标");
+        history.setAttributesJson("{\"品牌\":{\"value\":\"罗技\",\"confidence\":0.95,\"verified\":true},\"型号\":{\"value\":\"M650\",\"confidence\":0.9,\"verified\":true}}");
         when(recognitionHistoryRepository.findById("s1")).thenReturn(Optional.of(history));
         when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
                 product("1", "白色无线鼠标", "淘宝", BigDecimal.valueOf(99))
@@ -256,7 +257,9 @@ class SearchOrchestratorTest {
         verify(taobao).search(attributesCaptor.capture(), any(), anyInt(), anyInt());
         assertThat(attributesCaptor.getValue())
                 .containsEntry("类目", "无线鼠标")
-                .containsEntry("关键词", "白色无线鼠标");
+                .containsEntry("关键词", "罗技 M650 鼠标")
+                .containsEntry(SearchTextUtils.ATTR_KEYWORDS, "罗技 M650 鼠标,白色无线鼠标")
+                .containsEntry(SearchTextUtils.ATTR_BRAND_RELIABLE, "true");
     }
 
     @Test
@@ -282,14 +285,80 @@ class SearchOrchestratorTest {
                 .containsExactly("白色无线办公鼠标");
     }
 
+    @Test
+    void filtersConflictingBrandsWhenRecognitionBrandIsReliable() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "Adidas UltraBoost 运动鞋", "淘宝", BigDecimal.valueOf(599), "Adidas"),
+                product("2", "Nike Pegasus 41 男子公路跑步鞋", "淘宝", BigDecimal.valueOf(499), "Nike"),
+                product("3", "Pegasus 41 运动鞋同款缓震跑鞋", "淘宝", BigDecimal.valueOf(399), null)
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of(
+                        "品牌", "耐克",
+                        "型号", "Pegasus 41",
+                        "类目", "运动鞋",
+                        "关键词", "Nike Pegasus 41 运动鞋",
+                        SearchTextUtils.ATTR_BRAND_RELIABLE, "true"
+                ),
+                null,
+                1,
+                20,
+                "app"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products())
+                .extracting(ProductCard::title)
+                .doesNotContain("Adidas UltraBoost 运动鞋")
+                .contains("Nike Pegasus 41 男子公路跑步鞋");
+    }
+
+    @Test
+    void ranksSameBrandSameModelAboveGenericSameCategory() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "Nike 运动鞋男款缓震跑鞋", "淘宝", BigDecimal.valueOf(299), "Nike"),
+                product("2", "Nike Pegasus 41 男子公路跑步鞋", "淘宝", BigDecimal.valueOf(499), "Nike")
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of(
+                        "品牌", "Nike",
+                        "型号", "Pegasus 41",
+                        "类目", "运动鞋",
+                        "关键词", "Nike Pegasus 41 运动鞋",
+                        SearchTextUtils.ATTR_BRAND_RELIABLE, "true"
+                ),
+                null,
+                1,
+                20,
+                "app"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products()).isNotEmpty();
+        assertThat(result.products().get(0).title()).contains("Pegasus 41");
+    }
+
     private SearchRequest defaultRequest() {
         return new SearchRequest("s1", Map.of(), null, 1, 20, "app");
     }
 
     private ProductCard product(String id, String title, String platform, BigDecimal price) {
+        return product(id, title, platform, price, null);
+    }
+
+    private ProductCard product(String id, String title, String platform, BigDecimal price, String brand) {
         return new ProductCard(
                 id, title, "", price, null, platform, false, "官方旗舰店",
-                4.8, 100, 0.9, List.of(platform), "https://example.com/" + id
+                4.8, 100, 0.9, List.of(platform), "https://example.com/" + id,
+                brand, "shop_dsr", "30天销量 100+"
         );
     }
 }

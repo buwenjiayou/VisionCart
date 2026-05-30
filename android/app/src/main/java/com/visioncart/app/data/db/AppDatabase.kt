@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [RecognitionRecordEntity::class, FavoriteProductEntity::class],
-    version = 2,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -20,13 +20,32 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        // Migration template: when changing schema, bump version and add migration here.
-        // Example for v1 → v2:
-        // private val MIGRATION_1_2 = object : Migration(1, 2) {
-        //     override fun migrate(db: SupportSQLiteDatabase) {
-        //         db.execSQL("ALTER TABLE favorite_products ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'")
-        //     }
-        // }
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE recognition_history ADD COLUMN nlpQuery TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE recognition_history ADD COLUMN filterJson TEXT NOT NULL DEFAULT '{}'")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE recognition_history ADD COLUMN userId INTEGER")
+            }
+        }
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE favorite_products ADD COLUMN brand TEXT")
+            }
+        }
+
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_recognition_history_userId ON recognition_history(userId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_recognition_history_createdAt ON recognition_history(createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_recognition_history_userId_createdAt ON recognition_history(userId, createdAt)")
+            }
+        }
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -35,6 +54,8 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "visioncart_db"
                 )
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .fallbackToDestructiveMigration()
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build().also { INSTANCE = it }
             }

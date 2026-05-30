@@ -48,26 +48,6 @@ public class RecognitionService {
     }
 
     @Transactional
-    public RecognitionResult analyze(MultipartFile image, String region) {
-        RecognitionResult result = withSessionId(visionClient.analyze(image, region), UUID.randomUUID().toString());
-        RecognitionHistory history = new RecognitionHistory();
-        history.setSessionId(result.sessionId());
-        history.setImageUrl("upload://" + result.sessionId());
-        try {
-            history.setImageHash(HashUtils.sha256Hex(image.getBytes()));
-        } catch (Exception ignored) {
-            history.setImageHash(HashUtils.sha256Hex(image.getOriginalFilename() + ":" + image.getSize()));
-        }
-        history.setCategoryJson(toJson(result.category()));
-        history.setAttributesJson(toJson(result.attributes()));
-        history.setKeywords(String.join(",", result.keywords()));
-        history.setConfidence(result.overallConfidence());
-        history.setCreatedAt(Instant.now());
-        historyRepository.save(history);
-        return result;
-    }
-
-    @Transactional
     public AttributeCorrectionResult correct(AttributeCorrectionRequest request, Long userId) {
         RecognitionHistory history = (userId == null
                 ? historyRepository.findById(request.sessionId())

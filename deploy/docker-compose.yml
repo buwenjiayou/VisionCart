@@ -1,20 +1,64 @@
 services:
+  backend:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: visioncart-backend
+    env_file:
+      - ../.env
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_ADDRESS: 0.0.0.0
+      PORT: ${PORT:-8080}
+      MYSQL_URL: ${DOCKER_MYSQL_URL:-jdbc:mysql://mysql:3306/visioncart?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:-visioncart}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-visioncart}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
+    ports:
+      - "${PORT:-8080}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
   mysql:
     image: mysql:8.4
+    container_name: visioncart-mysql
     environment:
       MYSQL_DATABASE: visioncart
-      MYSQL_USER: visioncart
-      MYSQL_PASSWORD: visioncart
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: ${MYSQL_USERNAME:-visioncart}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-visioncart}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-this-root-password}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
 
   redis:
     image: redis:7
+    container_name: visioncart-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    command: >
+      sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
+      redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
+      else redis-server --appendonly yes; fi'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
 
 volumes:
   mysql-data:
+  redis-data:

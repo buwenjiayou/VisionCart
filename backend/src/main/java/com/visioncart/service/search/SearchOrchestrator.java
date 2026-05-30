@@ -10,7 +10,9 @@ import com.visioncart.api.dto.SearchFilter;
 import com.visioncart.api.dto.SearchRequest;
 import com.visioncart.api.dto.SearchResult;
 import com.visioncart.api.dto.SuggestionCard;
+import com.visioncart.api.dto.AttributeValue;
 import com.visioncart.config.VisionCartProperties;
+import com.visioncart.domain.RecognitionHistory;
 import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.ai.HashUtils;
 import com.visioncart.service.suggestion.SuggestionService;
@@ -29,7 +31,6 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -40,7 +41,7 @@ import java.util.stream.Collectors;
 public class SearchOrchestrator {
     private static final Logger log = LoggerFactory.getLogger(SearchOrchestrator.class);
     private static final Duration CACHE_TTL = Duration.ofMinutes(5);
-    private static final String CACHE_PREFIX = "visioncart:search:cache:";
+    private static final String CACHE_PREFIX = "visioncart:search:cache:v2:";
 
     private final List<PlatformSearchService> platformServices;
     private final ProductDeduplicator deduplicator;
@@ -93,6 +94,7 @@ public class SearchOrchestrator {
     public SearchResult search(SearchRequest request, boolean domestic, Long userId) {
         Map<String, String> attributes = enrichAttributes(request, userId);
         SearchFilter filter = request.effectiveFilter();
+        SearchIntent intent = SearchIntent.from(attributes, filter);
 
         // Check cache (cache full ranked list, paginate on hit)
         String cacheKey = buildCacheKey(attributes, filter, domestic);
@@ -142,13 +144,11 @@ public class SearchOrchestrator {
                 .flatMap(future -> future.join().stream())
                 .collect(Collectors.toCollection(ArrayList::new));
 
-        // Fill similarity fallback
-        fillSimilarity(all, attributes);
-
-        List<ProductCard> filtered = applyCoreProductFilter(
-                applyFilter(deduplicator.deduplicate(all), filter),
-                attributes);
-        List<ProductCard> ranked = applySort(ranker.rank(filtered, attributes), filter);
+        List<ProductCard> scored = ranker.withSimilarity(all, intent);
+        List<ProductCard> filtered = applyIntentFilter(
+                applyFilter(deduplicator.deduplicate(scored), filter),
+                intent);
+        List<ProductCard> ranked = applySort(ranker.rank(filtered, intent), filter);
         List<ProductCard> page = diversifyPlatforms(ranked, request.effectivePageSize());
         List<SuggestionCard> cards = suggestionService.cards(request.clientType(), page);
 
@@ -167,21 +167,53 @@ public class SearchOrchestrator {
 
         boolean needsCategory = StringUtils.isBlank(SearchTextUtils.useful(attributes.get("类目")));
         boolean needsKeyword = StringUtils.isBlank(SearchTextUtils.useful(attributes.get("关键词")));
-        if (!needsCategory && !needsKeyword) {
-            return attributes;
-        }
 
         (userId == null
                 ? recognitionHistoryRepository.findById(request.sessionId())
                 : recognitionHistoryRepository.findBySessionIdAndUserId(request.sessionId(), userId)).ifPresent(history -> {
+            mergeHistoryAttributes(attributes, history);
             if (needsCategory) {
                 putIfUsefulMissing(attributes, "类目", categoryName(history.getCategoryJson()));
             }
-            if (needsKeyword && StringUtils.isNotBlank(history.getKeywords())) {
-                putIfUsefulMissing(attributes, "关键词", history.getKeywords().split(",")[0]);
+            List<String> keywords = SearchTextUtils.splitSearchTerms(history.getKeywords());
+            if (!keywords.isEmpty()) {
+                attributes.put(SearchTextUtils.ATTR_KEYWORDS, String.join(",", keywords));
+                if (needsKeyword) {
+                    putIfUsefulMissing(attributes, "关键词", keywords.get(0));
+                }
             }
         });
         return attributes;
+    }
+
+    private void mergeHistoryAttributes(Map<String, String> attributes, RecognitionHistory history) {
+        readAttributes(history.getAttributesJson()).forEach((key, value) -> {
+            if (value == null) {
+                return;
+            }
+            putIfUsefulMissing(attributes, key, value.value());
+            if (SearchTextUtils.ATTR_BRAND.equals(key)
+                    && StringUtils.isNotBlank(SearchTextUtils.useful(value.value()))
+                    && (value.verified() || value.confidence() >= 0.7)) {
+                attributes.put(SearchTextUtils.ATTR_BRAND_RELIABLE, "true");
+            }
+        });
+        String categoryChain = categoryChain(history.getCategoryJson());
+        if (StringUtils.isNotBlank(categoryChain)) {
+            attributes.putIfAbsent(SearchTextUtils.ATTR_CATEGORY_CHAIN, categoryChain);
+        }
+    }
+
+    private Map<String, AttributeValue> readAttributes(String json) {
+        if (StringUtils.isBlank(json)) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<LinkedHashMap<String, AttributeValue>>() {});
+        } catch (Exception e) {
+            log.warn("Failed to parse recognition attributes for search: {}", e.getMessage());
+            return Map.of();
+        }
     }
 
     private String categoryName(String categoryJson) {
@@ -196,6 +228,27 @@ public class SearchOrchestrator {
                     category.path("level1").asText(""));
         } catch (Exception e) {
             log.warn("Failed to parse recognition category for search: {}", e.getMessage());
+            return "";
+        }
+    }
+
+    private String categoryChain(String categoryJson) {
+        if (StringUtils.isBlank(categoryJson)) {
+            return "";
+        }
+        try {
+            JsonNode category = objectMapper.readTree(categoryJson);
+            return List.of(
+                            category.path("level3").asText(""),
+                            category.path("level2").asText(""),
+                            category.path("level1").asText(""))
+                    .stream()
+                    .map(SearchTextUtils::useful)
+                    .filter(StringUtils::isNotBlank)
+                    .distinct()
+                    .collect(Collectors.joining(","));
+        } catch (Exception e) {
+            log.warn("Failed to parse recognition category chain for search: {}", e.getMessage());
             return "";
         }
     }
@@ -253,38 +306,6 @@ public class SearchOrchestrator {
         }
     }
 
-    // --- Similarity fallback ---
-
-    private void fillSimilarity(List<ProductCard> products, Map<String, String> attributes) {
-        Set<String> keywords = attributes.values().stream()
-                .map(SearchTextUtils::useful)
-                .filter(v -> v != null && !v.isBlank())
-                .collect(Collectors.toSet());
-        if (keywords.isEmpty()) return;
-
-        for (int i = 0; i < products.size(); i++) {
-            ProductCard p = products.get(i);
-            if (p.similarity() > 0) continue;
-            double jaccard = jaccardSimilarity(p.title(), keywords);
-            products.set(i, new ProductCard(
-                    p.id(), p.title(), p.imageUrl(), p.price(), p.originalPrice(),
-                    p.platform(), p.selfOperated(), p.shopName(), p.rating(), p.sales(),
-                    jaccard, p.tags(), p.detailUrl(), p.brand(), p.ratingSource(), p.salesLabel()
-            ));
-        }
-    }
-
-    private double jaccardSimilarity(String title, Set<String> keywords) {
-        if (title == null || title.isBlank()) return 0;
-        String normalizedTitle = title.toLowerCase();
-        long matches = keywords.stream()
-                .filter(kw -> normalizedTitle.contains(kw.toLowerCase()))
-                .count();
-        // union = keywords + title tokens not in keywords (approximate with keyword count)
-        int union = Math.max(keywords.size(), 1);
-        return (double) matches / union;
-    }
-
     // --- Filter / Sort / Diversify / Stats (unchanged) ---
 
     private List<ProductCard> diversifyPlatforms(List<ProductCard> products, int pageSize) {
@@ -324,18 +345,33 @@ public class SearchOrchestrator {
             return true;
         }
         String productBrand = SearchTextUtils.useful(product.brand());
-        return useful.equalsIgnoreCase(productBrand)
-                || (product.title() != null && product.title().toLowerCase().contains(useful.toLowerCase()));
+        return BrandMatcher.sameBrand(useful, productBrand)
+                || BrandMatcher.productMatchesExpectedBrand(product, useful);
     }
 
-    private List<ProductCard> applyCoreProductFilter(List<ProductCard> products, Map<String, String> attributes) {
-        if (StringUtils.isBlank(SearchTextUtils.useful(attributes.get("类目")))) {
+    private List<ProductCard> applyIntentFilter(List<ProductCard> products, SearchIntent intent) {
+        if (!intent.hasSpecificSignals()) {
             return products;
         }
-        List<ProductCard> relevant = products.stream()
-                .filter(product -> SearchTextUtils.relevantToCoreProduct(product.title(), attributes))
+        List<ProductCard> brandSafe = applyStrictBrandFilter(products, intent);
+        List<ProductCard> relevant = brandSafe.stream()
+                .filter(product -> ranker.isRelevant(product, intent))
                 .toList();
-        return relevant.isEmpty() ? products : relevant;
+        if (!relevant.isEmpty()) {
+            return relevant;
+        }
+        return intent.hasReliableBrand() ? brandSafe : products;
+    }
+
+    private List<ProductCard> applyStrictBrandFilter(List<ProductCard> products, SearchIntent intent) {
+        if (!intent.hasReliableBrand()) {
+            return products;
+        }
+        return products.stream()
+                .filter(product -> BrandMatcher.productMatchesExpectedBrand(product, intent.brand())
+                        || (!BrandMatcher.hasConflictingBrand(product, intent.brand())
+                        && ranker.similarity(product, intent) >= 0.45))
+                .toList();
     }
 
     private List<ProductCard> applySort(List<ProductCard> products, SearchFilter filter) {

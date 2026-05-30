@@ -11,18 +11,26 @@ import com.visioncart.repository.FavoriteProductRepository;
 import com.visioncart.repository.PriceHistoryRepository;
 import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.price.PriceMonitorService;
+import com.visioncart.service.recognition.RecognitionImageStorage;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.io.Resource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.CacheControl;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,19 +49,22 @@ public class UserDataController {
     private final PriceMonitorService priceMonitorService;
     private final ExecutorService searchExecutor;
     private final ObjectMapper objectMapper;
+    private final RecognitionImageStorage imageStorage;
 
     public UserDataController(FavoriteProductRepository favoriteRepository,
                               RecognitionHistoryRepository historyRepository,
                               PriceHistoryRepository priceHistoryRepository,
                               PriceMonitorService priceMonitorService,
                               @Qualifier("searchExecutor") ExecutorService searchExecutor,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              RecognitionImageStorage imageStorage) {
         this.favoriteRepository = favoriteRepository;
         this.historyRepository = historyRepository;
         this.priceHistoryRepository = priceHistoryRepository;
         this.priceMonitorService = priceMonitorService;
         this.searchExecutor = searchExecutor;
         this.objectMapper = objectMapper;
+        this.imageStorage = imageStorage;
     }
 
     @Transactional
@@ -130,6 +141,19 @@ public class UserDataController {
         return ApiResponse.ok(new PagedResult<>(result.getTotalElements(), page, clampedSize, items));
     }
 
+    @GetMapping("/history/{sessionId}/image")
+    public ResponseEntity<Resource> historyImage(@PathVariable String sessionId) {
+        Long userId = SecurityUtils.currentUserId();
+        historyRepository.findBySessionIdAndUserId(sessionId, userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "识别历史不存在"));
+        Resource resource = imageStorage.loadHistoryImage(sessionId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "识别图片不存在"));
+        return ResponseEntity.ok()
+                .contentType(MediaType.IMAGE_JPEG)
+                .cacheControl(CacheControl.maxAge(Duration.ofDays(7)).cachePrivate())
+                .body(resource);
+    }
+
     private FavoriteCard toCard(FavoriteProduct f) {
         Long updatedMillis = f.getUpdatedAt() != null ? f.getUpdatedAt().toEpochMilli() : null;
         return new FavoriteCard(f.getProductId(), f.getPlatform(), f.getTitle(),
@@ -164,8 +188,16 @@ public class UserDataController {
         CategoryDto category = parseJson(h.getCategoryJson(), CategoryDto.class);
         Map<String, AttributeValue> attributes = parseAttributes(h.getAttributesJson());
         List<String> keywords = h.getKeywords() != null ? List.of(h.getKeywords().split(",")) : List.of();
-        return new HistoryItem(h.getSessionId(), h.getImageUrl(), category, attributes,
+        return new HistoryItem(h.getSessionId(), displayableHistoryImageUrl(h), category, attributes,
                 keywords, h.getConfidence(), h.getCreatedAt());
+    }
+
+    private String displayableHistoryImageUrl(RecognitionHistory h) {
+        String imageUrl = h.getImageUrl();
+        if (imageUrl == null || imageUrl.isBlank() || imageUrl.startsWith("upload://")) {
+            return imageStorage.historyImageUrl(h.getSessionId());
+        }
+        return imageUrl;
     }
 
     private <T> T parseJson(String json, Class<T> type) {

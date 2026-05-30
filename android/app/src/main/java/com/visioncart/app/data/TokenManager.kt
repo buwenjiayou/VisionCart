@@ -1,41 +1,65 @@
 package com.visioncart.app.data
 
 import android.content.Context
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
-
-private val Context.tokenDataStore: DataStore<Preferences> by preferencesDataStore(name = "auth")
+import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 object TokenManager {
 
-    private val TOKEN_KEY = stringPreferencesKey("jwt_token")
-    private val USER_ID_KEY = stringPreferencesKey("user_id")
-    private val EMAIL_KEY = stringPreferencesKey("email")
+    private const val PREFS_NAME = "auth_encrypted"
+    private const val TOKEN_KEY = "jwt_token"
+    private const val USER_ID_KEY = "user_id"
+    private const val EMAIL_KEY = "email"
+
+    @Volatile
+    private var cachedPrefs: SharedPreferences? = null
+
+    private fun getPrefs(context: Context): SharedPreferences {
+        return cachedPrefs ?: synchronized(this) {
+            cachedPrefs ?: run {
+                val masterKey = MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                EncryptedSharedPreferences.create(
+                    context,
+                    PREFS_NAME,
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                ).also { cachedPrefs = it }
+            }
+        }
+    }
 
     suspend fun saveToken(context: Context, token: String, userId: Long, email: String) {
-        context.tokenDataStore.edit { prefs ->
-            prefs[TOKEN_KEY] = token
-            prefs[USER_ID_KEY] = userId.toString()
-            prefs[EMAIL_KEY] = email
+        withContext(Dispatchers.IO) {
+            getPrefs(context).edit()
+                .putString(TOKEN_KEY, token)
+                .putString(USER_ID_KEY, userId.toString())
+                .putString(EMAIL_KEY, email)
+                .apply()
         }
     }
 
     suspend fun getToken(context: Context): String? {
-        return context.tokenDataStore.data.first()[TOKEN_KEY]
-    }
-
-    fun getTokenFlow(context: Context): Flow<String?> {
-        return context.tokenDataStore.data.map { it[TOKEN_KEY] }
+        return withContext(Dispatchers.IO) {
+            getPrefs(context).getString(TOKEN_KEY, null)
+        }
     }
 
     suspend fun getEmail(context: Context): String? {
-        return context.tokenDataStore.data.first()[EMAIL_KEY]
+        return withContext(Dispatchers.IO) {
+            getPrefs(context).getString(EMAIL_KEY, null)
+        }
+    }
+
+    suspend fun getUserId(context: Context): Long? {
+        return withContext(Dispatchers.IO) {
+            getPrefs(context).getString(USER_ID_KEY, null)?.toLongOrNull()
+        }
     }
 
     suspend fun isLoggedIn(context: Context): Boolean {
@@ -43,6 +67,8 @@ object TokenManager {
     }
 
     suspend fun clearToken(context: Context) {
-        context.tokenDataStore.edit { it.clear() }
+        withContext(Dispatchers.IO) {
+            getPrefs(context).edit().clear().apply()
+        }
     }
 }

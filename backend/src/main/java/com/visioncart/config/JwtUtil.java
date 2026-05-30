@@ -3,18 +3,23 @@ package com.visioncart.config;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
 
 @Component
 public class JwtUtil {
 
+    private static final Logger log = LoggerFactory.getLogger(JwtUtil.class);
     private static final String BLACKLIST_PREFIX = "jwt:blacklist:";
 
     private final SecretKey key;
@@ -26,10 +31,11 @@ public class JwtUtil {
             @Value("${visioncart.jwt.expiration:86400000}") long expirationMs,
             StringRedisTemplate redisTemplate
     ) {
-        if (secret.length() < 32) {
-            throw new IllegalStateException("JWT secret must be at least 32 characters, got " + secret.length());
+        byte[] secretBytes = secret.getBytes(StandardCharsets.UTF_8);
+        if (secretBytes.length < 32) {
+            throw new IllegalStateException("JWT secret must be at least 32 bytes, got " + secretBytes.length);
         }
-        this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+        this.key = Keys.hmacShaKeyFor(secretBytes);
         this.expirationMs = expirationMs;
         this.redisTemplate = redisTemplate;
     }
@@ -78,20 +84,35 @@ public class JwtUtil {
         try {
             claims = parseToken(token);
         } catch (Exception e) {
-            // Token already expired or invalid, no need to blacklist
             return;
         }
         long ttlMs = claims.getExpiration().getTime() - System.currentTimeMillis();
         if (ttlMs > 0) {
-            redisTemplate.opsForValue().set(BLACKLIST_PREFIX + token, "1", ttlMs, TimeUnit.MILLISECONDS);
+            redisTemplate.opsForValue().set(BLACKLIST_PREFIX + hashToken(token), "1", ttlMs, TimeUnit.MILLISECONDS);
         }
     }
 
     private boolean isBlacklisted(String token) {
         try {
-            return Boolean.TRUE.equals(redisTemplate.hasKey(BLACKLIST_PREFIX + token));
+            return Boolean.TRUE.equals(redisTemplate.hasKey(BLACKLIST_PREFIX + hashToken(token)));
         } catch (Exception e) {
-            throw new IllegalStateException("Token blacklist is unavailable", e);
+            // Fail-closed: if Redis is unavailable, treat token as blacklisted
+            log.error("Redis unavailable for blacklist check, failing closed", e);
+            return true;
+        }
+    }
+
+    private static String hashToken(String token) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(token.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
         }
     }
 }

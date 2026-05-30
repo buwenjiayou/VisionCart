@@ -58,7 +58,13 @@ fun ProductDetailScreen(
                 )
             },
             navigationIcon = {
-                IconButton(onClick = onBack) {
+                IconButton(onClick = {
+                    if (webViewRef?.canGoBack() == true) {
+                        webViewRef?.goBack()
+                    } else {
+                        onBack()
+                    }
+                }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                 }
             }
@@ -93,7 +99,7 @@ fun ProductDetailScreen(
                         }
                     }
                     webChromeClient = WebChromeClient()
-                    loadUrl(url)
+                    if (url.isNotBlank()) loadUrl(url) else loadUrl("about:blank")
                 }
             },
             modifier = Modifier.fillMaxSize()

@@ -12,46 +12,55 @@ public final class SearchQueryBuilder {
 
     private SearchQueryBuilder() {}
 
+    public static int platformFetchSize(int pageSize) {
+        return Math.min(100, Math.max(pageSize * 3, 60));
+    }
+
     public static List<String> taobaoQueries(Map<String, String> attributes, SearchFilter filter, String fallback) {
         String explicit = explicitKeyword(filter);
         if (StringUtils.isNotBlank(explicit)) {
-            return List.of(explicit);
+            return explicitQueries(explicit, attributes, fallback);
         }
 
-        String brand = attr(attributes, SearchTextUtils.ATTR_BRAND);
-        String color = attr(attributes, SearchTextUtils.ATTR_COLOR);
-        String category = attr(attributes, SearchTextUtils.ATTR_CATEGORY);
-        String keyword = attr(attributes, SearchTextUtils.ATTR_KEYWORD);
-
-        List<String> candidates = new ArrayList<>();
-        add(candidates, brand, category);
-        add(candidates, color, category);
-        add(candidates, keyword);
-        add(candidates, category);
-        add(candidates, brand, keyword);
-        add(candidates, color, SearchTextUtils.coreProductToken(attributes));
-        add(candidates, fallback);
-        return unique(candidates);
+        return precisionQueries(SearchIntent.from(attributes, filter), fallback);
     }
 
     public static List<String> pddQueries(Map<String, String> attributes, SearchFilter filter, String fallback) {
         String explicit = explicitKeyword(filter);
         if (StringUtils.isNotBlank(explicit)) {
-            return unique(List.of(explicit, SearchTextUtils.coreProductToken(explicit), fallback));
+            return explicitQueries(explicit, attributes, fallback);
         }
 
-        String brand = attr(attributes, SearchTextUtils.ATTR_BRAND);
-        String category = attr(attributes, SearchTextUtils.ATTR_CATEGORY);
-        String keyword = attr(attributes, SearchTextUtils.ATTR_KEYWORD);
-        String core = SearchTextUtils.coreProductToken(attributes);
+        return precisionQueries(SearchIntent.from(attributes, filter), fallback);
+    }
 
+    private static List<String> precisionQueries(SearchIntent intent, String fallback) {
         List<String> candidates = new ArrayList<>();
+        String brand = intent.brand();
+        String category = intent.category();
+        String core = intent.coreProduct();
+
+        for (String exact : intent.exactTerms()) {
+            add(candidates, brand, exact, core);
+            add(candidates, brand, exact, category);
+            add(candidates, exact, core);
+        }
+        for (String keyword : intent.keywords()) {
+            add(candidates, keyword);
+            if (!SearchTextUtils.containsNormalized(keyword, brand)) {
+                add(candidates, brand, keyword);
+            }
+        }
         add(candidates, brand, core);
-        add(candidates, keyword);
-        add(candidates, category);
-        add(candidates, core);
-        add(candidates, fallback);
-        return unique(candidates);
+        add(candidates, brand, category);
+        add(candidates, core, first(intent.descriptiveTerms()));
+        add(candidates, category, first(intent.descriptiveTerms()));
+
+        List<String> unique = unique(candidates);
+        if (unique.isEmpty()) {
+            add(unique, fallback);
+        }
+        return unique.stream().limit(10).toList();
     }
 
     public static String defaultQuery(Map<String, String> attributes, SearchFilter filter, String fallback) {
@@ -62,8 +71,16 @@ public final class SearchQueryBuilder {
         return filter == null ? "" : SearchTextUtils.useful(filter.keyword());
     }
 
-    private static String attr(Map<String, String> attributes, String key) {
-        return SearchTextUtils.useful(attributes == null ? null : attributes.get(key));
+    private static List<String> explicitQueries(String explicit, Map<String, String> attributes, String fallback) {
+        SearchIntent intent = SearchIntent.from(attributes, null);
+        List<String> candidates = new ArrayList<>();
+        if (!SearchTextUtils.containsNormalized(explicit, intent.brand())) {
+            add(candidates, intent.brand(), explicit);
+        }
+        add(candidates, explicit);
+        add(candidates, explicit, intent.coreProduct());
+        add(candidates, fallback);
+        return unique(candidates).stream().limit(4).toList();
     }
 
     private static void add(List<String> candidates, String... parts) {
@@ -83,5 +100,9 @@ public final class SearchQueryBuilder {
                 .filter(StringUtils::isNotBlank)
                 .forEach(unique::add);
         return new ArrayList<>(unique);
+    }
+
+    private static String first(List<String> values) {
+        return values == null || values.isEmpty() ? "" : values.get(0);
     }
 }

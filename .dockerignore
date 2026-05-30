@@ -1,0 +1,17 @@
+.git
+.gradle
+.idea
+.vscode
+**/build
+android
+web
+logs
+tmp
+data
+.env
+.env.*
+!.env.example
+*.apk
+*.aab
+*.jks
+*.keystore

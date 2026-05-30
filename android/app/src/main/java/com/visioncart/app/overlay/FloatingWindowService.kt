@@ -10,15 +10,18 @@ import android.content.pm.ServiceInfo
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color as AndroidColor
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
@@ -89,7 +92,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -122,8 +124,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileOutputStream
 
 class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner {
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -143,12 +145,19 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     private var screenWidth = 0
     private var screenHeight = 0
     private var density = 1f
-    private var currentX = 32  // 悬浮球当前 X 位置，用于菜单展开方向
+    private var currentX = 32
     private var currentY = 160
+    private var ballX = 32
+    private var ballY = 160
 
     // MediaProjection for screenshot
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
+    private var captureImageReader: ImageReader? = null
+    private var mediaProjectionCallback: MediaProjection.Callback? = null
+    private var captureCompleted = false
+    private var frameRetryScheduled = false
+    private var captureStartedAtMs = 0L
 
     // Coroutine scope for async operations
     private val serviceScope = kotlinx.coroutines.CoroutineScope(
@@ -160,9 +169,18 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
 
     companion object {
         private const val ACTION_SCREENSHOT = "com.visioncart.ACTION_SCREENSHOT"
+        private const val ACTION_SCREENSHOT_FAILED = "com.visioncart.ACTION_SCREENSHOT_FAILED"
         private const val EXTRA_RESULT_CODE = "resultCode"
         private const val EXTRA_RESULT_DATA = "resultData"
+        private const val EXTRA_ERROR_MESSAGE = "errorMessage"
         private const val TAG = "FloatingWindowService"
+        private const val CAPTURE_TIMEOUT_MS = 2_000L
+        private const val FRAME_RETRY_DELAY_MS = 120L
+        private const val HIDE_OVERLAY_DELAY_MS = 450L
+        private const val MAX_SCREENSHOT_DIMENSION = 1280
+        private const val MAX_SCREENSHOT_BYTES = 1_500_000
+        private const val INITIAL_JPEG_QUALITY = 88
+        private const val MIN_JPEG_QUALITY = 68
 
         val isRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
 
@@ -171,6 +189,18 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
                 action = ACTION_SCREENSHOT
                 putExtra(EXTRA_RESULT_CODE, resultCode)
                 putExtra(EXTRA_RESULT_DATA, data)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun reportScreenshotFailure(context: Context, message: String) {
+            val intent = Intent(context, FloatingWindowService::class.java).apply {
+                action = ACTION_SCREENSHOT_FAILED
+                putExtra(EXTRA_ERROR_MESSAGE, message)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -247,16 +277,26 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_SCREENSHOT) {
-            val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-            val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(EXTRA_RESULT_DATA)
+        when (intent?.action) {
+            ACTION_SCREENSHOT -> {
+                val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
+                val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(EXTRA_RESULT_DATA)
+                }
+                if (resultData != null) {
+                    startScreenCapture(resultCode, resultData)
+                } else {
+                    showPanel(initialError = "屏幕捕获授权无效，请重试")
+                }
             }
-            if (resultData != null) {
-                startScreenCapture(resultCode, resultData)
+
+            ACTION_SCREENSHOT_FAILED -> {
+                val message = intent.getStringExtra(EXTRA_ERROR_MESSAGE)
+                    ?: "屏幕捕获授权失败，请重试"
+                showPanel(initialError = message)
             }
         }
         return START_STICKY
@@ -269,10 +309,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         serviceScope.cancel()
         overlayView?.let { windowManager.removeView(it) }
         overlayView = null
-        virtualDisplay?.release()
-        virtualDisplay = null
-        mediaProjection?.stop()
-        mediaProjection = null
+        releaseCaptureResources()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         super.onDestroy()
     }
@@ -285,23 +322,51 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
 
     private fun showCollapsed() {
         onStateChange?.invoke(OverlayState.COLLAPSED)
-        replaceView(52, 52, draggable = true) {
-            CollapsedFloatingBall(
-                onClick = { showMenu() }
-            )
+        replaceView(
+            52,
+            52,
+            draggable = true,
+            initialX = ballX,
+            initialY = ballY,
+            onClick = { showMenu() },
+            onPositionChanged = { x, y ->
+                ballX = x
+                ballY = y
+            }
+        ) {
+            CollapsedFloatingBall()
         }
     }
 
     private fun showMenu() {
         onStateChange?.invoke(OverlayState.MENU)
-        // 半圆形菜单，大小限制在悬浮球周围区域
-        replaceView(220, 220, draggable = false) {
+        val menuWidthDp = 176
+        val menuHeightDp = 136
+        val menuWidthPx = (menuWidthDp * density).toInt()
+        val menuHeightPx = (menuHeightDp * density).toInt()
+        val ballSizePx = (52 * density).toInt()
+        val ballCenterX = ballX + ballSizePx / 2
+        val ballCenterY = ballY + ballSizePx / 2
+        val isOnLeftEdge = ballCenterX < screenWidth / 2
+        val menuX = if (isOnLeftEdge) {
+            ballX
+        } else {
+            ballX + ballSizePx - menuWidthPx
+        }
+        val menuY = ballCenterY - menuHeightPx / 2
+
+        replaceView(
+            menuWidthDp,
+            menuHeightDp,
+            draggable = false,
+            initialX = menuX,
+            initialY = menuY
+        ) {
             SemiCircleMenuOverlay(
-                currentX = currentX,
-                screenWidthPx = screenWidth,
+                isOnLeftEdge = isOnLeftEdge,
                 onCamera = {
-                    launchMainToCamera()
                     showCollapsed()
+                    launchMainToCamera()
                 },
                 onScreenshot = {
                     showCollapsed()
@@ -326,10 +391,19 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         initialError: String? = null
     ) {
         onStateChange?.invoke(OverlayState.PANEL)
-        replaceView(320, 500, draggable = true, focusable = true) {
+        val panelPosition = anchoredPanelPosition(320, 500)
+        replaceView(
+            320,
+            500,
+            draggable = false,
+            focusable = true,
+            initialX = panelPosition.first,
+            initialY = panelPosition.second
+        ) {
             OverlayPanel(
                 onMinimize = { showCollapsed() },
                 onClose = { stopSelf() },
+                onRetakeScreenshot = { requestScreenshot() },
                 initialResult = initialResult,
                 pendingImageFile = pendingImageFile,
                 initialError = initialError
@@ -338,16 +412,28 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     }
 
     private fun requestScreenshot() {
-        // Navigate to MainActivity which holds the MediaProjection launcher
-        val intent = Intent(this, com.visioncart.app.MainActivity::class.java).apply {
-            putExtra("navigate", "screenshot")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        overlayView?.let { windowManager.removeView(it) }
+        overlayView = null
+        val intent = Intent(this, MediaProjectionPermissionActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
         }
-        startActivity(intent)
+        try {
+            startActivity(intent)
+        } catch (error: Exception) {
+            Log.w(TAG, "Failed to launch screenshot permission activity", error)
+            showPanel(initialError = "无法打开屏幕捕获授权，请重试")
+        }
     }
 
     private fun startScreenCapture(resultCode: Int, resultData: Intent) {
         startForegroundWithNotification(includeMediaProjection = true)
+        releaseCaptureResources()
+        captureCompleted = false
+        frameRetryScheduled = false
 
         // 1. 先隐藏悬浮球，避免截进去
         overlayView?.let { windowManager.removeView(it) }
@@ -357,76 +443,288 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         val handler = android.os.Handler(mainLooper)
         handler.postDelayed({
             startCaptureInternal(resultCode, resultData)
-        }, 300)
+        }, HIDE_OVERLAY_DELAY_MS)
     }
 
     private fun startCaptureInternal(resultCode: Int, resultData: Intent) {
-        val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
-
-        val metrics = DisplayMetrics()
-        @Suppress("DEPRECATION")
-        windowManager.defaultDisplay.getMetrics(metrics)
-
-        val imageReader = ImageReader.newInstance(
-            metrics.widthPixels, metrics.heightPixels,
-            PixelFormat.RGBA_8888, 2
-        )
-
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "ScreenCapture",
-            metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader.surface, null, null
-        )
-
         val handler = android.os.Handler(mainLooper)
-        handler.postDelayed({
-            val image = imageReader.acquireLatestImage()
-            if (image != null) {
-                val planes = image.planes
-                val buffer = planes[0].buffer
-                val pixelStride = planes[0].pixelStride
-                val rowStride = planes[0].rowStride
-                val rowPadding = rowStride - pixelStride * metrics.widthPixels
-
-                val bitmap = Bitmap.createBitmap(
-                    metrics.widthPixels + rowPadding / pixelStride,
-                    metrics.heightPixels,
-                    Bitmap.Config.ARGB_8888
-                )
-                bitmap.copyPixelsFromBuffer(buffer)
-                image.close()
-
-                // Crop to screen size
-                val cropped = Bitmap.createBitmap(bitmap, 0, 0, metrics.widthPixels, metrics.heightPixels)
-                bitmap.recycle()
-
-                // Save to temp file
-                val file = File(cacheDir, "screenshot_${System.currentTimeMillis()}.jpg")
-                FileOutputStream(file).use { out ->
-                    cropped.compress(Bitmap.CompressFormat.JPEG, 90, out)
+        try {
+            val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val projection = projectionManager.getMediaProjection(resultCode, resultData)
+                ?: run {
+                    failScreenCapture("屏幕捕获授权无效，请重试")
+                    return
                 }
-                cropped.recycle()
+            mediaProjection = projection
 
-                // Release capture resources
-                virtualDisplay?.release()
-                virtualDisplay = null
-                mediaProjection?.stop()
-                mediaProjection = null
-                imageReader.close()
-
-                showPanel(pendingImageFile = file)
-            } else {
-                virtualDisplay?.release()
-                virtualDisplay = null
-                mediaProjection?.stop()
-                mediaProjection = null
-                imageReader.close()
-
-                showPanel(initialError = "未能获取截图，请重试")
+            val callback = object : MediaProjection.Callback() {
+                override fun onStop() {
+                    handler.post {
+                        if (!captureCompleted) {
+                            failScreenCapture("屏幕捕获已停止，请重试")
+                        }
+                    }
+                }
             }
-        }, 500)
+            mediaProjectionCallback = callback
+            projection.registerCallback(callback, handler)
+
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            val width = metrics.widthPixels.coerceAtLeast(1)
+            val height = metrics.heightPixels.coerceAtLeast(1)
+
+            val imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
+            captureImageReader = imageReader
+            captureStartedAtMs = SystemClock.elapsedRealtime()
+
+            imageReader.setOnImageAvailableListener({ reader ->
+                tryAcquireFrame(reader, width, height)
+            }, handler)
+
+            virtualDisplay = projection.createVirtualDisplay(
+                "VisionCartScreenCapture",
+                width,
+                height,
+                metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader.surface,
+                null,
+                handler
+            )
+
+            scheduleFrameRetry(imageReader, width, height)
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Unable to start screen capture", error)
+            failScreenCapture("系统拒绝屏幕捕获，请重新授权")
+        } catch (error: IllegalStateException) {
+            Log.w(TAG, "Invalid screen capture state", error)
+            failScreenCapture("屏幕捕获状态异常，请重试")
+        } catch (error: Exception) {
+            Log.w(TAG, "Failed to start screen capture", error)
+            failScreenCapture("无法启动屏幕捕获，请重试")
+        }
+    }
+
+    private fun tryAcquireFrame(reader: ImageReader, width: Int, height: Int) {
+        if (captureCompleted || reader != captureImageReader) return
+        frameRetryScheduled = false
+
+        val image = try {
+            reader.acquireLatestImage()
+        } catch (error: IllegalStateException) {
+            Log.w(TAG, "Failed to acquire screen frame", error)
+            null
+        }
+
+        if (image == null) {
+            scheduleFrameRetry(reader, width, height, "未能获取截图，请重试")
+            return
+        }
+
+        val bitmap = try {
+            bitmapFromImage(image, width, height)
+        } catch (error: Exception) {
+            Log.w(TAG, "Failed to decode screen frame", error)
+            null
+        } finally {
+            image.close()
+        }
+
+        if (bitmap == null) {
+            scheduleFrameRetry(reader, width, height, "截图解析失败，请重试")
+            return
+        }
+
+        if (!isUsableScreenshot(bitmap)) {
+            bitmap.recycle()
+            scheduleFrameRetry(reader, width, height, "截图画面为空或受保护，请换个页面重试")
+            return
+        }
+
+        completeScreenCapture(bitmap)
+    }
+
+    private fun scheduleFrameRetry(
+        reader: ImageReader,
+        width: Int,
+        height: Int,
+        timeoutMessage: String = "截图超时，请重试"
+    ) {
+        if (captureCompleted || frameRetryScheduled || reader != captureImageReader) return
+        val elapsed = SystemClock.elapsedRealtime() - captureStartedAtMs
+        if (elapsed >= CAPTURE_TIMEOUT_MS) {
+            failScreenCapture(timeoutMessage)
+            return
+        }
+        frameRetryScheduled = true
+        android.os.Handler(mainLooper).postDelayed({
+            tryAcquireFrame(reader, width, height)
+        }, FRAME_RETRY_DELAY_MS)
+    }
+
+    private fun bitmapFromImage(image: Image, width: Int, height: Int): Bitmap {
+        val plane = image.planes.first()
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+        val rowPadding = rowStride - pixelStride * width
+        val paddedWidth = width + rowPadding / pixelStride
+
+        val paddedBitmap = Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.ARGB_8888)
+        paddedBitmap.copyPixelsFromBuffer(buffer)
+        if (paddedWidth == width) {
+            return paddedBitmap
+        }
+
+        val cropped = Bitmap.createBitmap(paddedBitmap, 0, 0, width, height)
+        paddedBitmap.recycle()
+        return cropped
+    }
+
+    private fun isUsableScreenshot(bitmap: Bitmap): Boolean {
+        if (bitmap.width < 32 || bitmap.height < 32) return false
+
+        val stepX = (bitmap.width / 12).coerceAtLeast(1)
+        val stepY = (bitmap.height / 12).coerceAtLeast(1)
+        var samples = 0
+        var alphaSum = 0
+        var brightnessSum = 0
+        var minBrightness = 255
+        var maxBrightness = 0
+
+        var y = 0
+        while (y < bitmap.height) {
+            var x = 0
+            while (x < bitmap.width) {
+                val pixel = bitmap.getPixel(x, y)
+                val alpha = AndroidColor.alpha(pixel)
+                val brightness = (
+                        AndroidColor.red(pixel) +
+                                AndroidColor.green(pixel) +
+                                AndroidColor.blue(pixel)
+                        ) / 3
+                alphaSum += alpha
+                brightnessSum += brightness
+                minBrightness = minOf(minBrightness, brightness)
+                maxBrightness = maxOf(maxBrightness, brightness)
+                samples++
+                x += stepX
+            }
+            y += stepY
+        }
+
+        if (samples == 0) return false
+        val averageAlpha = alphaSum / samples
+        val averageBrightness = brightnessSum / samples
+        val brightnessRange = maxBrightness - minBrightness
+        return averageAlpha >= 8 && averageBrightness >= 4 && brightnessRange > 2
+    }
+
+    private fun completeScreenCapture(bitmap: Bitmap) {
+        if (captureCompleted) {
+            bitmap.recycle()
+            return
+        }
+        captureCompleted = true
+        releaseCaptureResources()
+        serviceScope.launch(Dispatchers.Default) {
+            val result = runCatching { saveScreenshotBitmap(bitmap) }
+            bitmap.recycle()
+            android.os.Handler(mainLooper).post {
+                result
+                    .onSuccess { file -> showPanel(pendingImageFile = file) }
+                    .onFailure { error ->
+                        Log.w(TAG, "Failed to save screenshot", error)
+                        showPanel(initialError = "截图保存失败，请重试")
+                    }
+            }
+        }
+    }
+
+    private fun failScreenCapture(message: String) {
+        if (captureCompleted) return
+        captureCompleted = true
+        releaseCaptureResources()
+        showPanel(initialError = message)
+    }
+
+    private fun releaseCaptureResources(stopProjection: Boolean = true) {
+        captureImageReader?.setOnImageAvailableListener(null, null)
+        captureImageReader?.close()
+        captureImageReader = null
+        virtualDisplay?.release()
+        virtualDisplay = null
+
+        val projection = mediaProjection
+        val callback = mediaProjectionCallback
+        if (projection != null && callback != null) {
+            try {
+                projection.unregisterCallback(callback)
+            } catch (_: Exception) {
+            }
+        }
+        if (stopProjection) {
+            try {
+                projection?.stop()
+            } catch (_: Exception) {
+            }
+        }
+        mediaProjectionCallback = null
+        mediaProjection = null
+        frameRetryScheduled = false
+    }
+
+    private fun saveScreenshotBitmap(bitmap: Bitmap): File {
+        val constrained = resizeScreenshotIfNeeded(bitmap)
+        val bytes = compressScreenshotToLimit(constrained)
+        val file = File(cacheDir, "screenshot_${System.currentTimeMillis()}.jpg")
+        file.outputStream().use { output -> output.write(bytes) }
+        if (constrained !== bitmap) constrained.recycle()
+        return file
+    }
+
+    private fun resizeScreenshotIfNeeded(bitmap: Bitmap): Bitmap {
+        val maxDimension = maxOf(bitmap.width, bitmap.height)
+        if (maxDimension <= MAX_SCREENSHOT_DIMENSION) return bitmap
+        val scale = MAX_SCREENSHOT_DIMENSION.toFloat() / maxDimension
+        return Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * scale).toInt().coerceAtLeast(1),
+            (bitmap.height * scale).toInt().coerceAtLeast(1),
+            true
+        )
+    }
+
+    private fun compressScreenshotToLimit(bitmap: Bitmap): ByteArray {
+        var working = bitmap
+        var quality = INITIAL_JPEG_QUALITY
+        while (true) {
+            val output = ByteArrayOutputStream()
+            working.compress(Bitmap.CompressFormat.JPEG, quality, output)
+            val bytes = output.toByteArray()
+            if (bytes.size <= MAX_SCREENSHOT_BYTES ||
+                (quality <= MIN_JPEG_QUALITY && maxOf(working.width, working.height) <= 768)
+            ) {
+                if (working !== bitmap) working.recycle()
+                return bytes
+            }
+
+            if (quality > MIN_JPEG_QUALITY) {
+                quality -= 8
+            } else {
+                val scaled = Bitmap.createScaledBitmap(
+                    working,
+                    (working.width * 0.85f).toInt().coerceAtLeast(1),
+                    (working.height * 0.85f).toInt().coerceAtLeast(1),
+                    true
+                )
+                if (working !== bitmap) working.recycle()
+                working = scaled
+                quality = INITIAL_JPEG_QUALITY
+            }
+        }
     }
 
     private fun launchMainToCamera() {
@@ -445,6 +743,21 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         startActivity(intent)
     }
 
+    private fun anchoredPanelPosition(widthDp: Int, heightDp: Int): Pair<Int, Int> {
+        val widthPx = (widthDp * density).toInt()
+        val heightPx = (heightDp * density).toInt()
+        val margin = (12 * density).toInt()
+        val ballSizePx = (52 * density).toInt()
+        val ballCenterX = ballX + ballSizePx / 2
+        val x = if (ballCenterX < screenWidth / 2) {
+            margin
+        } else {
+            screenWidth - widthPx - margin
+        }
+        val y = ballY.coerceIn(margin, (screenHeight - heightPx - margin).coerceAtLeast(margin))
+        return x to y
+    }
+
     // ==================== View Management ====================
 
     private fun replaceView(
@@ -452,13 +765,17 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         heightDp: Int,
         draggable: Boolean,
         focusable: Boolean = false,
+        initialX: Int? = null,
+        initialY: Int? = null,
+        onClick: (() -> Unit)? = null,
+        onPositionChanged: ((Int, Int) -> Unit)? = null,
         content: @Composable () -> Unit
     ) {
         overlayView?.let { windowManager.removeView(it) }
         val widthPx = (widthDp * density).toInt()
         val heightPx = (heightDp * density).toInt()
-        val savedX = currentParams?.x ?: currentX
-        val savedY = currentParams?.y ?: currentY
+        val savedX = initialX ?: currentParams?.x ?: currentX
+        val savedY = initialY ?: currentParams?.y ?: currentY
 
         val params = WindowManager.LayoutParams(
             widthPx,
@@ -475,6 +792,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         currentParams = params
         currentX = params.x
         currentY = params.y
+        onPositionChanged?.invoke(params.x, params.y)
 
         overlayView = ComposeView(this).apply {
             setViewTreeLifecycleOwner(this@FloatingWindowService)
@@ -482,7 +800,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
             setContent { MaterialTheme { content() } }
 
             if (draggable) {
-                setOnTouchListener(createDragTouchListener(params, this, widthDp))
+                setOnTouchListener(createDragTouchListener(params, this, widthDp, onClick, onPositionChanged))
             }
         }
         windowManager.addView(overlayView, params)
@@ -491,7 +809,9 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     private fun createDragTouchListener(
         params: WindowManager.LayoutParams,
         view: ComposeView,
-        widthDp: Int
+        widthDp: Int,
+        onClick: (() -> Unit)?,
+        onPositionChanged: ((Int, Int) -> Unit)?
     ): View.OnTouchListener {
         return object : View.OnTouchListener {
             override fun onTouch(v: View, event: MotionEvent): Boolean {
@@ -513,8 +833,9 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
                             val heightPx = (view.height).coerceAtLeast(widthPx)
                             params.x = (initialX + dx).toInt().coerceIn(0, (screenWidth - widthPx).coerceAtLeast(0))
                             params.y = (initialY + dy).toInt().coerceIn(0, (screenHeight - heightPx).coerceAtLeast(0))
-                            currentX = params.x  // 更新当前位置
+                            currentX = params.x
                             currentY = params.y
+                            onPositionChanged?.invoke(params.x, params.y)
                             windowManager.updateViewLayout(view, params)
                         }
                         true
@@ -522,8 +843,9 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
                     MotionEvent.ACTION_UP -> {
                         if (!isDragging) {
                             v.performClick()
+                            onClick?.invoke()
                         } else {
-                            snapToEdge(params, view, widthDp)
+                            snapToEdge(params, view, widthDp, onPositionChanged)
                         }
                         true
                     }
@@ -533,7 +855,12 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         }
     }
 
-    private fun snapToEdge(params: WindowManager.LayoutParams, view: ComposeView, widthDp: Int) {
+    private fun snapToEdge(
+        params: WindowManager.LayoutParams,
+        view: ComposeView,
+        widthDp: Int,
+        onPositionChanged: ((Int, Int) -> Unit)?
+    ) {
         val ballWidth = (widthDp * density).toInt()
         val centerX = params.x + ballWidth / 2
         val halfScreen = screenWidth / 2
@@ -548,8 +875,9 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         animator.interpolator = DecelerateInterpolator()
         animator.addUpdateListener { animation ->
             params.x = animation.animatedValue as Int
-            currentX = params.x  // 更新当前位置
+            currentX = params.x
             currentY = params.y
+            onPositionChanged?.invoke(params.x, params.y)
             try {
                 windowManager.updateViewLayout(view, params)
             } catch (error: Exception) {
@@ -563,7 +891,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
 // ==================== Collapsed Floating Ball ====================
 
 @Composable
-private fun CollapsedFloatingBall(onClick: () -> Unit) {
+private fun CollapsedFloatingBall() {
     val infiniteTransition = rememberInfiniteTransition(label = "breath")
 
     // Breathing glow effect
@@ -625,11 +953,6 @@ private fun CollapsedFloatingBall(onClick: () -> Unit) {
                     ),
                     shape = CircleShape
                 )
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onClick
-                )
         ) {
             Icon(
                 Icons.Default.ShoppingCart,
@@ -648,17 +971,13 @@ private fun CollapsedFloatingBall(onClick: () -> Unit) {
  */
 @Composable
 private fun SemiCircleMenuOverlay(
-    currentX: Int,
-    screenWidthPx: Int,
+    isOnLeftEdge: Boolean,
     onCamera: () -> Unit,
     onScreenshot: () -> Unit,
     onHistory: () -> Unit,
     onFavorites: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    // 获取悬浮球当前位置（左边缘或右边缘）
-    val isOnLeftEdge = currentX < screenWidthPx / 2
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -669,22 +988,24 @@ private fun SemiCircleMenuOverlay(
             ),
         contentAlignment = if (isOnLeftEdge) Alignment.CenterStart else Alignment.CenterEnd
     ) {
-        // 两个功能按钮：截图 + 拍照，向屏幕内侧展开
+        // 四个功能按钮：截图 + 拍照 + 历史 + 收藏
         val items = if (isOnLeftEdge) {
-            // 悬浮球在左边，向右展开
             listOf(
                 MenuItemData(Icons.Default.Screenshot, "截图", Color(0xFF1976D2), onScreenshot, 0f),
-                MenuItemData(Icons.Default.CameraAlt, "拍照", Color(0xFF0A7C66), onCamera, 45f)
+                MenuItemData(Icons.Default.CameraAlt, "拍照", Color(0xFF0A7C66), onCamera, 44f),
+                MenuItemData(Icons.Default.History, "历史", Color(0xFF7B61FF), onHistory, 88f),
+                MenuItemData(Icons.Default.Favorite, "收藏", Color(0xFFE91E63), onFavorites, 132f)
             )
         } else {
-            // 悬浮球在右边，向左展开
             listOf(
-                MenuItemData(Icons.Default.CameraAlt, "拍照", Color(0xFF0A7C66), onCamera, 135f),
+                MenuItemData(Icons.Default.Favorite, "收藏", Color(0xFFE91E63), onFavorites, 48f),
+                MenuItemData(Icons.Default.History, "历史", Color(0xFF7B61FF), onHistory, 92f),
+                MenuItemData(Icons.Default.CameraAlt, "拍照", Color(0xFF0A7C66), onCamera, 136f),
                 MenuItemData(Icons.Default.Screenshot, "截图", Color(0xFF1976D2), onScreenshot, 180f)
             )
         }
 
-        val radius = 70.dp
+        val radius = 56.dp
 
         items.forEachIndexed { index, item ->
             DualMenuItem(
@@ -762,6 +1083,8 @@ private fun DualMenuItem(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            .width(68.dp)
+            .height(78.dp)
             .offset {
                 IntOffset(
                     (offsetX.toPx() * animProgress).toInt(),
@@ -807,7 +1130,11 @@ private fun DualMenuItem(
             color = Color.White,
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
             modifier = Modifier
+                .width(52.dp)
                 .shadow(2.dp, RoundedCornerShape(4.dp))
                 .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
                 .padding(horizontal = 8.dp, vertical = 3.dp)
@@ -829,6 +1156,7 @@ private data class MenuItemData(
 private fun OverlayPanel(
     onMinimize: () -> Unit,
     onClose: () -> Unit,
+    onRetakeScreenshot: () -> Unit,
     initialResult: RecognitionResult? = null,
     pendingImageFile: File? = null,
     initialError: String? = null
@@ -969,6 +1297,11 @@ private fun OverlayPanel(
                                 }
                             ) {
                                 Text("重试", color = Color(0xFF0A7C66), fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        if (pendingImageFile == null) {
+                            TextButton(onClick = onRetakeScreenshot) {
+                                Text("重新截图", color = Color(0xFF0A7C66), fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
