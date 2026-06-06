@@ -33,8 +33,8 @@ public final class PromptSanitizer {
         // 英文无视指令
         Pattern.compile("(?i)disregard\\s+(all\\s+)?(previous|above|prior)\\s+(instructions?|rules?|prompts?)"),
         
-        // 角色切换 - 要求明确的角色定义
-        Pattern.compile("(?i)you\\s+are\\s+now\\s+\\w+"),
+        // 角色切换 - 要求明确的角色定义（带冠词，避免匹配自然英语）
+        Pattern.compile("(?i)you\\s+are\\s+now\\s+(a|an|the)\\s+\\w+"),
         
         // 系统/助手伪装 - 要求冒号后的内容
         Pattern.compile("(?i)^\\s*system\\s*:.+$", Pattern.MULTILINE),
@@ -61,7 +61,7 @@ public final class PromptSanitizer {
         
         // 角色扮演 - 要求明确的扮演目标
         Pattern.compile("(?i)pretend\\s+(you\\s+are|to\\s+be)\\s+\\w+"),
-        Pattern.compile("(?i)act\\s+as\\s+(if\\s+)?(a\\s+)?(you\\s+)?(are|were)?\\s*\\w+")
+        Pattern.compile("(?i)act\\s+as\\s+(if\\s+)?(a|an|the)\\s+\\w+")
     );
 
     private static final Pattern TRIPLE_BACKTICK = Pattern.compile("```");

@@ -47,14 +47,15 @@ Root `build.gradle` declares shared plugin versions. Each module has its own `bu
 ### Backend Structure (backend/src/main/java/com/visioncart/)
 
 ```
-api/controller/    REST controllers (Auth, Recognition, Search, Nlp, Suggestion, UserData, PriceAlert, Health)
+api/controller/    REST controllers (Auth, Recognition, Search, Nlp, Suggestion, UserData, PriceAlert, Health, Metrics)
 api/dto/           Request/Response DTOs (records)
-config/            Spring config (Security, JWT, WebSocket, Async, OpenAPI, VisionCartProperties)
+config/            Spring config (Security, JWT, WebSocket, Async, OpenAPI, VisionCartProperties, PlatformConfigProperties)
 domain/            JPA entities (User, RecognitionHistory, FavoriteProduct, PriceAlert, PriceHistory, RecognitionFeedback)
 repository/        Spring Data JPA repositories
 service/
 ├── ai/            AI infrastructure (PromptLoader, RetryPolicy, AiTraceService, HashUtils)
 ├── auth/          AuthService (email verification code + JWT)
+├── metrics/       Performance metrics collection (PerformanceMetricsService)
 ├── nlp/           NLP parsing (RuleBasedNlpParser + SpringAiNlpService with LLM fallback)
 ├── price/         PriceMonitorService + PriceAlertScheduler
 ├── recognition/   RecognitionOrchestrator, VisionModelService (Doubao Vision), ImageProcessor
@@ -66,6 +67,8 @@ service/
 
 - **异步识别**: 识别请求提交后返回 sessionId，客户端轮询 `/api/v1/recognition/status/{sessionId}` 或通过 WebSocket `/topic/recognition/{sessionId}` 获取结果
 - **多平台搜索**: SearchOrchestrator 并行调用各平台 PlatformSearchService，通过 PlatformCircuitBreaker 做熔断保护
+- **平台能力配置表**: 通过 `visioncart.platforms.*` 配置各平台的开关、超时、权重、降级策略、区域策略，支持环境变量覆盖
+- **统一性能指标**: 基于 Micrometer 收集识别延迟、视觉模型延迟、搜索延迟、NLP 延迟、缓存命中率、熔断器状态等指标，通过 `/api/v1/metrics/*` 和 Actuator 暴露
 - **NLP 双引擎**: RuleBasedNlpParser 规则优先，不完整时调 LLM 补全，LLM 不可用时降级到规则+历史
 - **价格监控**: 收藏商品时异步刷新价格，三种提醒（目标价格、历史低价30天、大幅降价15%+），WebSocket 推送
 - **环境变量**: 所有敏感配置通过 `.env` 文件注入，后端通过 `application.yml` 的 `${}` 语法读取
@@ -105,6 +108,68 @@ overlay/FloatingWindowService.kt   悬浮窗服务 (悬浮球、菜单、截图�
 1. 复制 `.env.example` 为 `.env`，填入真实配置
 2. 启动 MySQL 8.4 + Redis 7.x
 3. 后端需要 JDK 17，Android 需要 Android Studio
+
+## Monitoring & Metrics
+
+### Performance Metrics
+
+VisionCart 收集以下关键性能指标：
+
+| 指标类别 | 指标名称 | 说明 |
+|---------|---------|------|
+| 识别 | `recognition.latency` | 识别总延迟 |
+| 识别 | `vision_model.latency` | 视觉模型调用延迟 |
+| 搜索 | `search.total_latency` | 搜索总延迟 |
+| 搜索 | `search.platform_latency` | 各平台搜索延迟 |
+| 搜索 | `search.cache_hit_rate` | 搜索缓存命中率 |
+| NLP | `nlp.parse_latency` | NLP 解析延迟 |
+| NLP | `nlp.llm_fallback_rate` | NLP LLM 回退率 |
+| 候选 | `candidate.filter_latency` | 候选过滤延迟 |
+| 平台 | `platform.circuit_open_count` | 熔断器打开次数 |
+
+### Metrics API
+
+```bash
+# 获取所有指标摘要
+curl http://localhost:8080/api/v1/metrics/summary
+
+# 获取搜索指标
+curl http://localhost:8080/api/v1/metrics/search
+
+# 获取 NLP 指标
+curl http://localhost:8080/api/v1/metrics/nlp
+
+# 获取平台指标
+curl http://localhost:8080/api/v1/metrics/platforms
+
+# 打印指标到服务器日志
+curl http://localhost:8080/api/v1/metrics/log
+
+# Prometheus 格式（需要 Actuator）
+curl http://localhost:8080/actuator/prometheus
+```
+
+### Platform Configuration
+
+平台能力配置表支持以下配置项：
+
+```yaml
+visioncart:
+  platforms:
+    pdd:
+      enabled: true
+      timeout-ms: 2500
+      weight: 1.0
+      fallback-enabled: true
+      fallback-priority: 1
+      region-strategy: domestic
+      max-retries: 2
+      retry-delay-ms: 500
+      rate-limit-per-second: 10
+      circuit-breaker-enabled: true
+```
+
+详细配置说明见 `docs/performance-metrics-guide.md`。
 
 ## Conventions
 

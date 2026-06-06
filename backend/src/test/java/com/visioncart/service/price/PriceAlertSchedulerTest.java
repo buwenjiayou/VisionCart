@@ -7,8 +7,13 @@ import com.visioncart.repository.FavoriteProductRepository;
 import com.visioncart.repository.PriceAlertRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -35,7 +40,8 @@ class PriceAlertSchedulerTest {
     @Test
     void shouldRefreshPricesForActiveAlerts() {
         PriceAlert alert = createAlert("tb_123", 1L);
-        when(alertRepository.findAllByActiveTrue()).thenReturn(List.of(alert));
+        Page<PriceAlert> page = new PageImpl<>(List.of(alert));
+        when(alertRepository.findByActiveTrue(any(Pageable.class))).thenReturn(page);
 
         FavoriteProduct favorite = createFavorite("tb_123", 1L);
         when(favoriteRepository.findByProductIdAndUserId("tb_123", 1L))
@@ -50,7 +56,8 @@ class PriceAlertSchedulerTest {
 
     @Test
     void shouldSkipWhenNoActiveAlerts() {
-        when(alertRepository.findAllByActiveTrue()).thenReturn(List.of());
+        Page<PriceAlert> emptyPage = new PageImpl<>(List.of());
+        when(alertRepository.findByActiveTrue(any(Pageable.class))).thenReturn(emptyPage);
 
         scheduler.checkActiveAlerts();
 
@@ -60,7 +67,8 @@ class PriceAlertSchedulerTest {
     @Test
     void shouldSkipWhenFavoriteNotFound() {
         PriceAlert alert = createAlert("tb_123", 1L);
-        when(alertRepository.findAllByActiveTrue()).thenReturn(List.of(alert));
+        Page<PriceAlert> page = new PageImpl<>(List.of(alert));
+        when(alertRepository.findByActiveTrue(any(Pageable.class))).thenReturn(page);
         when(favoriteRepository.findByProductIdAndUserId("tb_123", 1L))
                 .thenReturn(Optional.empty());
 
@@ -72,11 +80,15 @@ class PriceAlertSchedulerTest {
     @Test
     void shouldLimitProductsPerRun() {
         // Create 60 active alerts, should only process 50
-        List<PriceAlert> alerts = new java.util.ArrayList<>();
+        List<PriceAlert> alerts = new ArrayList<>();
         for (int i = 0; i < 60; i++) {
             alerts.add(createAlert("tb_" + i, 1L));
         }
-        when(alertRepository.findAllByActiveTrue()).thenReturn(alerts);
+        // First page returns 50, second page returns remaining 10 but scheduler stops at limit
+        Page<PriceAlert> page1 = new PageImpl<>(alerts.subList(0, 50), PageRequest.of(0, 50), 60);
+        Page<PriceAlert> page2 = new PageImpl<>(alerts.subList(50, 60), PageRequest.of(1, 50), 60);
+        when(alertRepository.findByActiveTrue(eq(PageRequest.of(0, 50)))).thenReturn(page1);
+        when(alertRepository.findByActiveTrue(eq(PageRequest.of(1, 10)))).thenReturn(page2);
 
         FavoriteProduct favorite = createFavorite("tb_0", 1L);
         when(favoriteRepository.findByProductIdAndUserId(anyString(), eq(1L)))
@@ -93,7 +105,8 @@ class PriceAlertSchedulerTest {
     void shouldContinueOnIndividualFailure() {
         PriceAlert alert1 = createAlert("tb_1", 1L);
         PriceAlert alert2 = createAlert("tb_2", 1L);
-        when(alertRepository.findAllByActiveTrue()).thenReturn(List.of(alert1, alert2));
+        Page<PriceAlert> page = new PageImpl<>(List.of(alert1, alert2));
+        when(alertRepository.findByActiveTrue(any(Pageable.class))).thenReturn(page);
 
         FavoriteProduct fav1 = createFavorite("tb_1", 1L);
         FavoriteProduct fav2 = createFavorite("tb_2", 1L);

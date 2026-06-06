@@ -14,7 +14,9 @@ data class RecognitionResult(
     val attributes: Map<String, AttributeValue>,
     val keywords: List<String>,
     @Json(name = "overall_confidence") val overallConfidence: Double,
-    @Json(name = "platform_stats") val platformStats: List<PlatformPriceStat> = emptyList()
+    @Json(name = "platform_stats") val platformStats: List<PlatformPriceStat> = emptyList(),
+    // Client-only field: set from RecognitionTaskResult.confidenceHint, not from backend JSON
+    @Transient val confidenceHint: String? = null
 )
 
 data class CategoryDto(
@@ -35,7 +37,7 @@ data class SearchRequest(
     val attributes: Map<String, String>,
     val filter: SearchFilter = SearchFilter(),
     val page: Int = 1,
-    @Json(name = "page_size") val pageSize: Int = 20,
+    @Json(name = "page_size") val pageSize: Int = 50,
     @Json(name = "client_type") val clientType: String = "app"
 )
 
@@ -48,7 +50,10 @@ data class SearchFilter(
     @Json(name = "rating_min") val ratingMin: Double? = null,
     @Json(name = "sort_by") val sortBy: String? = null,
     @Json(name = "sort_order") val sortOrder: String = "desc",
-    val keyword: String? = null
+    val keyword: String? = null,
+    val attributes: Map<String, String> = emptyMap(),
+    @Json(name = "exclude_roles") val excludeRoles: List<String> = emptyList(),
+    val capabilities: Map<String, Boolean> = emptyMap()
 )
 
 data class PriceRange(val min: Double? = null, val max: Double? = null)
@@ -57,7 +62,8 @@ data class SearchResult(
     val total: Long,
     val products: List<ProductCard>,
     @Json(name = "platform_stats") val platformStats: List<PlatformPriceStat> = emptyList(),
-    @Json(name = "suggestion_cards") val suggestionCards: List<SuggestionCard> = emptyList()
+    @Json(name = "suggestion_cards") val suggestionCards: List<SuggestionCard> = emptyList(),
+    val relaxed: Boolean = false
 )
 
 data class ProductCard(
@@ -76,7 +82,10 @@ data class ProductCard(
     @Json(name = "detail_url") val detailUrl: String,
     val brand: String? = null,
     @Json(name = "rating_source") val ratingSource: String? = null,
-    @Json(name = "sales_label") val salesLabel: String? = null
+    @Json(name = "sales_label") val salesLabel: String? = null,
+    @Json(name = "main_category_code") val mainCategoryCode: String? = null,
+    @Json(name = "product_role") val productRole: String? = null,
+    @Json(name = "rating_display_label") val ratingDisplayLabel: String? = null
 )
 
 data class PlatformPriceStat(
@@ -92,8 +101,17 @@ data class SuggestionCard(
     val subtitle: String?,
     val icon: String,
     val action: String,
-    val priority: Int
-)
+    val priority: Int,
+    val badge: String? = null,
+    val reason: String? = null,
+    val metric: String? = null,
+    @Json(name = "action_label") val actionLabel: String? = null,
+    val tone: String? = null,
+    /** FILTER_ACTION = execute filter; FLOW_ACTION = open UI flow (e.g. price alert dialog) */
+    @Json(name = "action_type") val actionType: String? = null
+) {
+    val isFlowAction: Boolean get() = actionType == "FLOW_ACTION"
+}
 
 data class AsyncRecognitionResponse(
     @Json(name = "session_id") val sessionId: String,
@@ -109,7 +127,9 @@ data class RecognitionTaskResult(
     val error: String?,
     @Json(name = "created_at") val createdAt: String?,
     @Json(name = "completed_at") val completedAt: String?,
-    val candidates: List<RecognitionCandidate> = emptyList()
+    val candidates: List<RecognitionCandidate> = emptyList(),
+    @Json(name = "progress_step") val progressStep: String? = null,
+    @Json(name = "confidence_hint") val confidenceHint: String? = null
 )
 
 data class RecognitionCandidate(
@@ -145,3 +165,106 @@ data class NlpParseResult(
     val decision: String,
     val message: String? = null
 )
+
+data class NlpFilterRequest(
+    @Json(name = "session_id") val sessionId: String,
+    @Json(name = "user_input") val userInput: String,
+    val context: NlpContext? = null
+)
+
+data class NlpFilterResult(
+    val products: List<ProductCard>,
+    val filter: SearchFilter,
+    @Json(name = "filter_tags") val filterTags: List<String>,
+    @Json(name = "structured_filter_tags") val structuredFilterTags: List<FilterTag> = emptyList(),
+    @Json(name = "total_in_pool") val totalInPool: Int,
+    @Json(name = "result_count") val resultCount: Int,
+    @Json(name = "need_expand") val needExpand: Boolean,
+    @Json(name = "need_relax_hint") val needRelaxHint: Boolean,
+    @Json(name = "cache_expired") val cacheExpired: Boolean,
+    @Json(name = "new_search_intent") val newSearchIntent: Boolean,
+    @Json(name = "new_category") val newCategory: String? = null,
+    @Json(name = "keep_style_reference") val keepStyleReference: Boolean = false,
+    val message: String? = null,
+    // Semantic filter fields
+    @Json(name = "can_undo") val canUndo: Boolean = false,
+    @Json(name = "filter_applied") val filterApplied: Boolean = true,
+    @Json(name = "kept_previous_results") val keptPreviousResults: Boolean = false,
+    val warnings: List<String> = emptyList(),
+    val explanations: List<String> = emptyList()
+)
+
+/**
+ * Structured filter tag for precise deletion.
+ * Each tag carries its filterPath so the frontend can delete by ID
+ * instead of guessing from Chinese display text.
+ */
+data class FilterTag(
+    val id: String,
+    val label: String,
+    @Json(name = "filter_path") val filterPath: String? = null,
+    val source: String? = null,
+    @Json(name = "raw_text") val rawText: String? = null
+)
+
+data class UserActionRequest(
+    @Json(name = "action_id") val actionId: String? = null,
+    val source: String,
+    @Json(name = "session_id") val sessionId: String,
+    @Json(name = "raw_text") val rawText: String? = null,
+    val payload: UserActionPayload? = null,
+    @Json(name = "client_request_id") val clientRequestId: String? = null
+)
+
+data class UserActionPayload(
+    val action: String? = null,
+    val field: String? = null,
+    val value: String? = null,
+    @Json(name = "tag_id") val tagId: String? = null,
+    @Json(name = "filter_path") val filterPath: String? = null,
+    @Json(name = "sort_by") val sortBy: String? = null,
+    val context: Map<String, String>? = null,
+    @Json(name = "filter_spec") val filterSpec: Map<String, Any>? = null
+)
+
+/**
+ * Unified action result from backend. All user actions (NLP, suggestion,
+ * correction, tag delete, undo) return this format.
+ */
+data class ActionResult(
+    val products: List<ProductCard> = emptyList(),
+    @Json(name = "applied_filter") val appliedFilter: SearchFilter? = null,
+    @Json(name = "filter_tags") val filterTags: List<FilterTag> = emptyList(),
+    @Json(name = "filter_applied") val filterApplied: Boolean = true,
+    @Json(name = "kept_previous_results") val keptPreviousResults: Boolean = false,
+    @Json(name = "can_undo") val canUndo: Boolean = false,
+    val message: String? = null,
+    @Json(name = "message_code") val messageCode: String? = null,
+    val warnings: List<String> = emptyList(),
+    val explanations: List<String> = emptyList(),
+    @Json(name = "ui_action") val uiAction: UiAction? = null,
+    @Json(name = "total_in_pool") val totalInPool: Int = 0,
+    @Json(name = "suggestion_cards") val suggestionCards: List<SuggestionCard>? = null,
+    @Json(name = "updated_attributes") val updatedAttributes: Map<String, Any>? = null,
+    @Json(name = "action_source") val actionSource: String? = null,
+    @Json(name = "undo_token") val undoToken: String? = null,
+    @Json(name = "fallback_products") val fallbackProducts: List<ProductCard>? = null,
+    @Json(name = "display_mode") val displayMode: String? = null,
+    @Json(name = "attributes_updated") val attributesUpdated: Boolean? = null,
+    @Json(name = "products_updated") val productsUpdated: Boolean? = null
+) {
+    data class UiAction(
+        val type: String,
+        val payload: Map<String, Any>? = null
+    )
+
+    /** Whether this is a flow action (open dialog, navigate, etc.) */
+    val isFlowAction: Boolean get() = uiAction != null
+
+    /** Whether results are sparse and fallback products should be shown */
+    val isMixedResults: Boolean get() = displayMode == "MIXED_RESULTS" && !fallbackProducts.isNullOrEmpty()
+
+    /** All display products: primary + fallback (for mixed results) */
+    val allDisplayProducts: List<ProductCard>
+        get() = if (isMixedResults) products + (fallbackProducts ?: emptyList()) else products
+}

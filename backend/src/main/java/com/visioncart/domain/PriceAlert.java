@@ -33,9 +33,14 @@ public class PriceAlert {
     private Instant triggeredAt;
 
     @Column(name = "created_at")
-    private Instant createdAt = Instant.now();
+    private Instant createdAt;
 
-    @Column(name = "user_id")
+    @PrePersist
+    protected void onCreate() {
+        if (createdAt == null) createdAt = Instant.now();
+    }
+
+    @Column(name = "user_id", nullable = false)
     private Long userId;
 
     @Column(name = "notified_at")

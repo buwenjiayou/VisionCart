@@ -1,6 +1,8 @@
 package com.visioncart.repository;
 
 import com.visioncart.domain.PriceAlert;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.transaction.annotation.Transactional;
@@ -11,6 +13,8 @@ import java.util.Optional;
 public interface PriceAlertRepository extends JpaRepository<PriceAlert, Long> {
 
     List<PriceAlert> findAllByActiveTrue();
+
+    Page<PriceAlert> findByActiveTrue(Pageable pageable);
 
     List<PriceAlert> findAllByUserId(Long userId);
 

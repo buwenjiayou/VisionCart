@@ -149,7 +149,12 @@ public class AliyunQwenVisionClient implements VisionModelService {
         if (StringUtils.isBlank(content)) {
             throw new IllegalStateException("Qwen3-VL-Flash 返回为空");
         }
-        JsonNode parsed = objectMapper.readTree(AiJsonUtils.extractFirstJsonObject(content));
+        String json = AiJsonUtils.extractFirstJsonObject(content);
+        if (StringUtils.isBlank(json)) {
+            throw new IllegalStateException("Qwen3-VL-Flash 未返回合法 JSON，原始内容: " +
+                    (content.length() > 100 ? content.substring(0, 100) + "..." : content));
+        }
+        JsonNode parsed = objectMapper.readTree(json);
         JsonNode products = parsed.path("products");
         if (!products.isArray()) {
             return List.of();
@@ -181,7 +186,12 @@ public class AliyunQwenVisionClient implements VisionModelService {
         if (StringUtils.isBlank(content)) {
             throw new IllegalStateException("Qwen3-VL-Plus 返回为空");
         }
-        JsonNode parsed = objectMapper.readTree(AiJsonUtils.extractFirstJsonObject(content));
+        String json = AiJsonUtils.extractFirstJsonObject(content);
+        if (StringUtils.isBlank(json)) {
+            throw new IllegalStateException("Qwen3-VL-Plus 未返回合法 JSON，原始内容: " +
+                    (content.length() > 100 ? content.substring(0, 100) + "..." : content));
+        }
+        JsonNode parsed = objectMapper.readTree(json);
         CategoryDto category = parseCategory(parsed.path("category"), categoryHint);
 
         Map<String, AttributeValue> attributes = new LinkedHashMap<>();
@@ -223,6 +233,15 @@ public class AliyunQwenVisionClient implements VisionModelService {
     }
 
     private String call(String model, byte[] imageBytes, String contentType, String prompt) {
+        if (StringUtils.isBlank(model)) {
+            throw new IllegalStateException("未配置视觉模型名称，请检查 qwen-flash-model / qwen-plus-model 配置");
+        }
+        if (imageBytes == null || imageBytes.length == 0) {
+            throw new IllegalStateException("图片数据为空");
+        }
+        if (imageBytes.length > 20 * 1024 * 1024) {
+            throw new IllegalStateException("图片数据过大: " + (imageBytes.length / 1024 / 1024) + "MB (最大20MB)");
+        }
         String imageUrl = "data:" + contentType + ";base64," + Base64.getEncoder().encodeToString(imageBytes);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
@@ -251,17 +270,17 @@ public class AliyunQwenVisionClient implements VisionModelService {
     }
 
     private String flashPrompt(String region) {
-        return promptLoader.getPrompt("qwen-flash-detection")
-                .formatted(StringUtils.defaultIfBlank(region, "整张图"));
+        String safeRegion = StringUtils.defaultIfBlank(region, "整张图").replace("%", "%%");
+        return promptLoader.getPrompt("qwen-flash-detection").formatted(safeRegion);
     }
 
     private String plusPrompt(String categoryHint, String brandHint) {
-        String category = StringUtils.defaultIfBlank(categoryHint, "商品");
+        String category = StringUtils.defaultIfBlank(categoryHint, "商品").replace("%", "%%");
         String brandText = SearchBrandSanitizer.usefulBrand(brandHint);
         String brandInstruction = StringUtils.isBlank(brandText)
-                ? "未检测到可靠品牌；如果裁剪图中品牌不可见，品牌写\"未知\"。"
-                : "Flash 阶段检测到可能品牌【" + brandText + "】；只有裁剪图中能确认时才使用，否则写\"未知\"。";
-        return promptLoader.getPrompt("qwen-plus-attributes").formatted(category, brandInstruction);
+                ? "未检测到可靠品牌；请仔细查看图片中的文字和logo自行判断品牌。"
+                : "前置阶段检测到可能品牌【" + brandText + "】，仅供参考。请仔细查看图片中的文字、logo、标签，逐字核对品牌名，以你看到的内容为准。如果图片中的品牌文字与【" + brandText + "】不同，以图片为准。";
+        return promptLoader.getPrompt("qwen-plus-attributes").formatted(category, brandInstruction.replace("%", "%%"));
     }
 
     private boolean isConfigured() {
@@ -324,11 +343,39 @@ public class AliyunQwenVisionClient implements VisionModelService {
         if (raw.stream().anyMatch(value -> Double.isNaN(value))) {
             return List.of();
         }
-        boolean normalized = raw.stream().allMatch(value -> value >= 0.0 && value <= 1.0);
-        int x1 = toPixel(raw.get(0), normalized ? width : 1);
-        int y1 = toPixel(raw.get(1), normalized ? height : 1);
-        int x2 = toPixel(raw.get(2), normalized ? width : 1);
-        int y2 = toPixel(raw.get(3), normalized ? height : 1);
+        boolean normalized01 = raw.stream().allMatch(value -> value >= 0.0 && value <= 1.0);
+        if (normalized01) {
+            return List.of(
+                    toPixel(raw.get(0), width),
+                    toPixel(raw.get(1), height),
+                    toPixel(raw.get(2), width),
+                    toPixel(raw.get(3), height)
+            );
+        }
+
+        boolean normalized1000 = raw.stream().allMatch(value -> value >= 0.0 && value <= 1000.0);
+        boolean likelyThousandSpace = normalized1000
+                && raw.stream().anyMatch(value -> value > 1.0)
+                && (raw.get(2) > width || raw.get(3) > height);
+        if (likelyThousandSpace) {
+            return bboxFrom1000(raw, width, height);
+        }
+        return bboxFromPixels(raw);
+    }
+
+    private List<Integer> bboxFromPixels(List<Double> raw) {
+        int x1 = toPixel(raw.get(0), 1);
+        int y1 = toPixel(raw.get(1), 1);
+        int x2 = toPixel(raw.get(2), 1);
+        int y2 = toPixel(raw.get(3), 1);
+        return List.of(x1, y1, x2, y2);
+    }
+
+    private List<Integer> bboxFrom1000(List<Double> raw, int width, int height) {
+        int x1 = (int) Math.round(raw.get(0) / 1000.0 * width);
+        int y1 = (int) Math.round(raw.get(1) / 1000.0 * height);
+        int x2 = (int) Math.round(raw.get(2) / 1000.0 * width);
+        int y2 = (int) Math.round(raw.get(3) / 1000.0 * height);
         return List.of(x1, y1, x2, y2);
     }
 
@@ -337,29 +384,21 @@ public class AliyunQwenVisionClient implements VisionModelService {
     }
 
     private int[] imageSize(byte[] imageBytes) {
-        try {
-            var image = ImageIO.read(new ByteArrayInputStream(imageBytes));
+        try (var bais = new ByteArrayInputStream(imageBytes)) {
+            var image = ImageIO.read(bais);
             if (image != null) {
-                return new int[]{image.getWidth(), image.getHeight()};
+                int w = image.getWidth();
+                int h = image.getHeight();
+                image.flush();
+                return new int[]{w, h};
             }
         } catch (Exception ignored) {
         }
-        return new int[]{1, 1};
+        throw new ImageQualityException("无法解析图片尺寸，请检查图片格式");
     }
 
     private String normalizedContentType(String contentType, byte[] imageBytes) {
-        String normalized = StringUtils.defaultString(contentType).toLowerCase();
-        if (normalized.matches("image/(jpeg|jpg|png|webp)")) {
-            return "image/jpg".equals(normalized) ? "image/jpeg" : normalized;
-        }
-        if (imageBytes.length >= 4
-                && (imageBytes[0] & 0xFF) == 0x89
-                && imageBytes[1] == 0x50
-                && imageBytes[2] == 0x4E
-                && imageBytes[3] == 0x47) {
-            return "image/png";
-        }
-        return "image/jpeg";
+        return ImageProcessor.normalizedContentType(imageBytes, contentType);
     }
 
     private String textOrDefault(JsonNode node, String defaultValue) {

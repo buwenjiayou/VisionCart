@@ -11,6 +11,7 @@ data class EmailLoginRequest(
 
 data class LoginResponse(
     val token: String,
+    val refresh_token: String?,
     val user_id: Long,
     val email: String
 )

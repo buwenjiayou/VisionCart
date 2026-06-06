@@ -5,18 +5,24 @@ import com.visioncart.api.dto.*;
 import com.visioncart.config.VisionCartProperties;
 import com.visioncart.domain.RecognitionHistory;
 import com.visioncart.repository.RecognitionHistoryRepository;
+import com.visioncart.service.suggestion.DeepSuggestionService;
+import com.visioncart.service.suggestion.SuggestionCardCache;
 import com.visioncart.service.suggestion.SuggestionService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -31,6 +37,10 @@ class SearchOrchestratorTest {
     private SuggestionService suggestionService;
     private RecognitionHistoryRepository recognitionHistoryRepository;
     private ExecutorService executor;
+    private ExecutorService platformExecutor;
+    private ExecutorService aiSuggestionExecutor;
+    private ValueOperations<String, String> valueOps;
+    private CandidateSessionCache sessionCache;
     private VisionCartProperties properties;
     private SearchOrchestrator orchestrator;
 
@@ -47,27 +57,52 @@ class SearchOrchestratorTest {
         ranker = new RelevanceRanker();
         suggestionService = mock(SuggestionService.class);
         when(suggestionService.cards(any(), any())).thenReturn(List.of());
+        when(suggestionService.cards(any(), anyList(), anyMap(), any())).thenReturn(List.of());
 
         executor = Executors.newFixedThreadPool(4);
+        platformExecutor = Executors.newFixedThreadPool(2);
+        aiSuggestionExecutor = Executors.newFixedThreadPool(2);
 
         properties = new VisionCartProperties();
-        properties.getSearch().setPlatformTimeoutMs(5000);
+        properties.getSearch().setPlatformTimeoutMs(500);
 
         StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
-        ValueOperations<String, String> valueOps = mock(ValueOperations.class);
+        valueOps = mock(ValueOperations.class);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenReturn(true);
 
         ObjectMapper objectMapper = new ObjectMapper();
-        PlatformCircuitBreaker circuitBreaker = new PlatformCircuitBreaker(properties);
+        com.visioncart.service.metrics.PerformanceMetricsService metricsService =
+                mock(com.visioncart.service.metrics.PerformanceMetricsService.class);
+        PlatformCircuitBreaker circuitBreaker = new PlatformCircuitBreaker(properties, metricsService);
         RegionResolver regionResolver = mock(RegionResolver.class);
         when(regionResolver.isDomestic()).thenReturn(true);
         recognitionHistoryRepository = mock(RecognitionHistoryRepository.class);
         when(recognitionHistoryRepository.findById(anyString())).thenReturn(Optional.empty());
+        sessionCache = mock(CandidateSessionCache.class);
+        SuggestionCardCache suggestionCardCache = mock(SuggestionCardCache.class);
+        DeepSuggestionService deepSuggestionService = mock(DeepSuggestionService.class);
+        org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate =
+                mock(org.springframework.messaging.simp.SimpMessagingTemplate.class);
 
         orchestrator = new SearchOrchestrator(
-                List.of(taobao, pdd), deduplicator, ranker, suggestionService,
-                executor, properties, redisTemplate, objectMapper, circuitBreaker, regionResolver,
-                recognitionHistoryRepository);
+                List.of(taobao, pdd), deduplicator, ranker, suggestionService, deepSuggestionService,
+                platformExecutor, aiSuggestionExecutor, properties, redisTemplate, objectMapper, circuitBreaker, regionResolver,
+                recognitionHistoryRepository, sessionCache, suggestionCardCache, messagingTemplate, metricsService,
+                new ProductSortService(new ProductReputationService()), new ProductReputationService());
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+        if (platformExecutor != null) {
+            platformExecutor.shutdownNow();
+        }
+        if (aiSuggestionExecutor != null) {
+            aiSuggestionExecutor.shutdownNow();
+        }
     }
 
     @Test
@@ -146,7 +181,7 @@ class SearchOrchestratorTest {
         when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
 
         SearchFilter filter = new SearchFilter(
-                null, List.of(), null, List.of(), List.of(), null, "price", "desc", null);
+                null, List.of(), null, List.of(), List.of(), null, "price", "asc", null);
         SearchRequest request = new SearchRequest("s1", Map.of(), filter, 1, 20, "app");
 
         SearchResult result = orchestrator.search(request);
@@ -185,6 +220,34 @@ class SearchOrchestratorTest {
     }
 
     @Test
+    void platformFanOutDoesNotStarveNestedQueryExecutor() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenAnswer(invocation ->
+                CompletableFuture.supplyAsync(() ->
+                        List.of(product("nested-1", "嵌套查询商品", "淘宝", BigDecimal.valueOf(88))), executor)
+                        .get(1, TimeUnit.SECONDS));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchResult result = orchestrator.search(defaultRequest());
+
+        assertThat(result.products()).extracting(ProductCard::title)
+                .contains("嵌套查询商品");
+    }
+
+    @Test
+    void lockWaitFallsBackToRealSearchInsteadOfReturningEmpty() {
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenReturn(false);
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "Search result after lock wait", "淘宝", BigDecimal.valueOf(100))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchResult result = orchestrator.search(defaultRequest());
+
+        assertThat(result.products()).extracting(ProductCard::title)
+                .containsExactly("Search result after lock wait");
+    }
+
+    @Test
     void returnsEmptyWhenAllPlatformsFail() {
         when(taobao.search(any(), any(), anyInt(), anyInt())).thenThrow(new RuntimeException("fail"));
         when(pdd.search(any(), any(), anyInt(), anyInt())).thenThrow(new RuntimeException("fail"));
@@ -218,13 +281,13 @@ class SearchOrchestratorTest {
                 product("1", "商品", "淘宝", BigDecimal.valueOf(100))
         ));
         when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
-        when(suggestionService.cards(eq("app"), anyList())).thenReturn(List.of(
+        when(suggestionService.cards(eq("app"), anyList(), anyMap(), any())).thenReturn(List.of(
                 new SuggestionCard("test", "测试", "sub", "icon", "action", 5)
         ));
 
         SearchResult result = orchestrator.search(defaultRequest());
 
-        verify(suggestionService).cards(eq("app"), anyList());
+        verify(suggestionService).cards(eq("app"), anyList(), anyMap(), any());
         assertThat(result.suggestionCards()).hasSize(1);
     }
 
@@ -254,8 +317,8 @@ class SearchOrchestratorTest {
         @SuppressWarnings("unchecked")
         org.mockito.ArgumentCaptor<Map<String, String>> attributesCaptor =
                 org.mockito.ArgumentCaptor.forClass(Map.class);
-        verify(taobao).search(attributesCaptor.capture(), any(), anyInt(), anyInt());
-        assertThat(attributesCaptor.getValue())
+        verify(taobao, atLeastOnce()).search(attributesCaptor.capture(), any(), anyInt(), anyInt());
+        assertThat(attributesCaptor.getAllValues().get(0))
                 .containsEntry("类目", "无线鼠标")
                 .containsEntry("关键词", "罗技 M650 鼠标")
                 .containsEntry(SearchTextUtils.ATTR_KEYWORDS, "罗技 M650 鼠标,白色无线鼠标")
@@ -346,8 +409,198 @@ class SearchOrchestratorTest {
         assertThat(result.products().get(0).title()).contains("Pegasus 41");
     }
 
+    @Test
+    void fillsStrongResultsWithSafeCandidatesToThirty() {
+        List<ProductCard> products = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            products.add(product("strong-" + i, "罗技 M650 无线鼠标款" + suffix(i), "淘宝", BigDecimal.valueOf(99 + i), "Logitech"));
+        }
+        for (int i = 0; i < 40; i++) {
+            products.add(product("safe-" + i, "无线办公鼠标安全候选" + suffix(i), "淘宝", BigDecimal.valueOf(49 + i), null));
+        }
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(products);
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of(
+                        "品牌", "罗技",
+                        "型号", "M650",
+                        "类目", "无线鼠标",
+                        "关键词", "罗技 M650 鼠标",
+                        SearchTextUtils.ATTR_BRAND_RELIABLE, "true"
+                ),
+                null,
+                1,
+                30,
+                "app"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products()).hasSize(30);
+        assertThat(result.products()).allSatisfy(product ->
+                assertThat(product.title()).contains("鼠标"));
+        assertThat(result.products().get(0).title()).contains("M650");
+    }
+
+    @Test
+    void supplementalRecallFillsToThirtyWhenInitialRecallIsTooSmall() {
+        List<ProductCard> firstPass = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            firstPass.add(product("first-" + i, "缃楁妧 M650 鏃犵嚎榧犳爣 " + suffix(i), "娣樺疂", BigDecimal.valueOf(100 + i), "Logitech"));
+        }
+        List<ProductCard> supplemental = new ArrayList<>();
+        for (int i = 0; i < 40; i++) {
+            supplemental.add(product("supp-" + i, "鏃犵嚎榧犳爣瀹夊叏鍊欓€" + suffix(i), "娣樺疂", BigDecimal.valueOf(60 + i), null));
+        }
+        when(taobao.search(any(), any(), anyInt(), anyInt()))
+                .thenReturn(firstPass)
+                .thenReturn(supplemental);
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of(
+                        SearchTextUtils.ATTR_BRAND, "缃楁妧",
+                        "鍨嬪彿", "M650",
+                        SearchTextUtils.ATTR_CATEGORY, "鏃犵嚓榧犳爣",
+                        SearchTextUtils.ATTR_KEYWORD, "缃楁妧 M650 榧犳爣",
+                        SearchTextUtils.ATTR_BRAND_RELIABLE, "true"
+                ),
+                null,
+                1,
+                30,
+                "app"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products()).hasSize(30);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, String>> attributesCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(taobao, atLeast(2)).search(attributesCaptor.capture(), any(), anyInt(), anyInt());
+        assertThat(attributesCaptor.getAllValues().get(1))
+                .doesNotContainKeys(SearchTextUtils.ATTR_BRAND, SearchTextUtils.ATTR_BRAND_RELIABLE)
+                .containsEntry(SearchTextUtils.ATTR_CATEGORY, "鏃犵嚓榧犳爣")
+                .containsEntry(SearchTextUtils.ATTR_KEYWORD, "缃楁妧 M650 榧犳爣");
+    }
+
+    @Test
+    void unreliableBrandDoesNotHardFilterOtherwiseSafeProducts() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "Adidas UltraBoost 运动鞋", "淘宝", BigDecimal.valueOf(599), "Adidas"),
+                product("2", "缓震运动鞋通勤跑鞋", "淘宝", BigDecimal.valueOf(199), null)
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of(
+                        "品牌", "Nike",
+                        "类目", "运动鞋",
+                        "关键词", "运动鞋"
+                ),
+                null,
+                1,
+                30,
+                "app"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products()).isNotEmpty();
+    }
+
+    @Test
+    void appliesColorAndNegativeKeywordFiltersBeforeSafeFill() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "白色无线鼠标", "淘宝", BigDecimal.valueOf(99), null),
+                product("2", "黑色无线鼠标", "淘宝", BigDecimal.valueOf(89), null),
+                product("3", "白色无线鼠标支架", "淘宝", BigDecimal.valueOf(19), null)
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+        SearchFilter filter = new SearchFilter(
+                null, List.of(), null, List.of("白色"), List.of(), null, null, "desc", "!支架");
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of("类目", "无线鼠标", "关键词", "白色无线鼠标"),
+                filter,
+                1,
+                30,
+                "app"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products()).extracting(ProductCard::title)
+                .containsExactly("白色无线鼠标");
+    }
+
+    @Test
+    void returnsRelaxedProductsWhenIntentFilterRejectsAllPlatformResults() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "Travel mug", "娣樺疂", BigDecimal.valueOf(49)),
+                product("2", "Office mug", "娣樺疂", BigDecimal.valueOf(59))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "s1",
+                Map.of(
+                        SearchTextUtils.ATTR_CATEGORY, "wireless mouse",
+                        SearchTextUtils.ATTR_KEYWORD, "wireless mouse"
+                ),
+                null,
+                1,
+                30,
+                "app"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.relaxed()).isTrue();
+        assertThat(result.products()).extracting(ProductCard::title)
+                .containsExactly("Travel mug", "Office mug");
+    }
+
+    @Test
+    void strictIntentDoesNotFallbackToUnrelatedProducts() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "Travel mug", "淘宝", BigDecimal.valueOf(49)),
+                product("2", "Office mug", "淘宝", BigDecimal.valueOf(59))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "strict-session",
+                Map.of(
+                        SearchTextUtils.ATTR_CATEGORY, "wireless mouse",
+                        SearchTextUtils.ATTR_KEYWORD, "wireless mouse",
+                        SearchTextUtils.ATTR_STRICT_INTENT, "true"
+                ),
+                null,
+                1,
+                30,
+                "attribute_correction"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.relaxed()).isFalse();
+        assertThat(result.products()).isEmpty();
+    }
+
     private SearchRequest defaultRequest() {
         return new SearchRequest("s1", Map.of(), null, 1, 20, "app");
+    }
+
+    private String suffix(int value) {
+        char first = (char) ('A' + (value / 26));
+        char second = (char) ('A' + (value % 26));
+        return "" + first + second;
     }
 
     private ProductCard product(String id, String title, String platform, BigDecimal price) {
@@ -360,5 +613,133 @@ class SearchOrchestratorTest {
                 4.8, 100, 0.9, List.of(platform), "https://example.com/" + id,
                 brand, "shop_dsr", "30天销量 100+"
         );
+    }
+
+    // ==================== Regression: 192 products pagination ====================
+
+    @Test
+    void searchResultProductsNeverExceedsPageSize() {
+        // Simulate 192 raw products from platforms (the 192 bug scenario)
+        List<ProductCard> products = new ArrayList<>();
+        for (int i = 0; i < 192; i++) {
+            String platform = (i % 2 == 0) ? "淘宝" : "拼多多";
+            products.add(product("p" + i, "商品" + i, platform, BigDecimal.valueOf(10 + i)));
+        }
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(products.subList(0, 96));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(products.subList(96, 192));
+
+        // pageSize=50, recallSize=300
+        SearchRequest request = new SearchRequest("s1", Map.of(), null, 1, 50, "app");
+        SearchResult result = orchestrator.search(request);
+
+        // Products displayed must be <= 50
+        assertThat(result.products()).hasSizeLessThanOrEqualTo(50);
+        // Total should reflect full candidate count
+        assertThat(result.total()).isGreaterThanOrEqualTo(50);
+        // total != products.size means pagination is working
+        assertThat(result.total()).isGreaterThanOrEqualTo(result.products().size());
+    }
+
+    @Test
+    void webSocketFinalMessageProductsNeverExceedsPageSize() {
+        // This test verifies that the final WebSocket message sends page, not ranked
+        // We capture the message sent via messagingTemplate
+        org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate =
+                mock(org.springframework.messaging.simp.SimpMessagingTemplate.class);
+
+        // Rebuild orchestrator with capturable messaging template
+        com.visioncart.service.metrics.PerformanceMetricsService metricsService =
+                mock(com.visioncart.service.metrics.PerformanceMetricsService.class);
+        PlatformCircuitBreaker circuitBreaker = new PlatformCircuitBreaker(properties, metricsService);
+        RegionResolver regionResolver = mock(RegionResolver.class);
+        when(regionResolver.isDomestic()).thenReturn(true);
+        DeepSuggestionService deepSuggestionService = mock(DeepSuggestionService.class);
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> valueOps2 = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps2);
+        when(valueOps2.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenReturn(true);
+
+        SearchOrchestrator orchestratorWithCapture = new SearchOrchestrator(
+                List.of(taobao, pdd), deduplicator, ranker, suggestionService, deepSuggestionService,
+                platformExecutor, aiSuggestionExecutor, properties, redisTemplate, new ObjectMapper(),
+                circuitBreaker, regionResolver, recognitionHistoryRepository, sessionCache,
+                mock(SuggestionCardCache.class), messagingTemplate, metricsService,
+                new ProductSortService(new ProductReputationService()), new ProductReputationService());
+
+        // Simulate 192 products
+        List<ProductCard> products = new ArrayList<>();
+        for (int i = 0; i < 192; i++) {
+            String platform = (i % 2 == 0) ? "淘宝" : "拼多多";
+            products.add(product("ws" + i, "WebSocket商品" + i, platform, BigDecimal.valueOf(10 + i)));
+        }
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(products.subList(0, 96));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(products.subList(96, 192));
+
+        SearchRequest request = new SearchRequest("ws-session", Map.of(), null, 1, 50, "app");
+        orchestratorWithCapture.search(request);
+
+        // Capture the final WebSocket message
+        org.mockito.ArgumentCaptor<SearchProgressMessage> captor =
+                org.mockito.ArgumentCaptor.forClass(SearchProgressMessage.class);
+        verify(messagingTemplate, atLeastOnce()).convertAndSend(
+                eq("/topic/search/ws-session"), captor.capture());
+
+        // Find the final message (staging=false)
+        SearchProgressMessage finalMsg = captor.getAllValues().stream()
+                .filter(msg -> !msg.staging())
+                .reduce((a, b) -> b) // last one
+                .orElse(null);
+
+        assertThat(finalMsg).isNotNull();
+        assertThat(finalMsg.products()).hasSizeLessThanOrEqualTo(50);
+        assertThat(finalMsg.staging()).isFalse();
+        assertThat(finalMsg.totalCount()).isGreaterThanOrEqualTo(finalMsg.products().size());
+    }
+
+    @Test
+    void intermediateWebSocketProgressAlsoRespectsPageSize() {
+        org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate =
+                mock(org.springframework.messaging.simp.SimpMessagingTemplate.class);
+
+        com.visioncart.service.metrics.PerformanceMetricsService metricsService =
+                mock(com.visioncart.service.metrics.PerformanceMetricsService.class);
+        PlatformCircuitBreaker circuitBreaker = new PlatformCircuitBreaker(properties, metricsService);
+        RegionResolver regionResolver = mock(RegionResolver.class);
+        when(regionResolver.isDomestic()).thenReturn(true);
+        DeepSuggestionService deepSuggestionService = mock(DeepSuggestionService.class);
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> valueOps2 = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps2);
+        when(valueOps2.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenReturn(true);
+
+        SearchOrchestrator orchestratorWithCapture = new SearchOrchestrator(
+                List.of(taobao, pdd), deduplicator, ranker, suggestionService, deepSuggestionService,
+                platformExecutor, aiSuggestionExecutor, properties, redisTemplate, new ObjectMapper(),
+                circuitBreaker, regionResolver, recognitionHistoryRepository, sessionCache,
+                mock(SuggestionCardCache.class), messagingTemplate, metricsService,
+                new ProductSortService(new ProductReputationService()), new ProductReputationService());
+
+        // Platform 1 returns 100 products, platform 2 returns 92
+        List<ProductCard> batch1 = new ArrayList<>();
+        for (int i = 0; i < 100; i++) batch1.add(product("b1-" + i, "商品A" + i, "淘宝", BigDecimal.valueOf(i)));
+        List<ProductCard> batch2 = new ArrayList<>();
+        for (int i = 0; i < 92; i++) batch2.add(product("b2-" + i, "商品B" + i, "拼多多", BigDecimal.valueOf(i)));
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(batch1);
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(batch2);
+
+        SearchRequest request = new SearchRequest("prog-session", Map.of(), null, 1, 50, "app");
+        orchestratorWithCapture.search(request);
+
+        org.mockito.ArgumentCaptor<SearchProgressMessage> captor =
+                org.mockito.ArgumentCaptor.forClass(SearchProgressMessage.class);
+        verify(messagingTemplate, atLeastOnce()).convertAndSend(
+                eq("/topic/search/prog-session"), captor.capture());
+
+        // ALL WebSocket messages (including intermediate) must have products <= pageSize
+        for (SearchProgressMessage msg : captor.getAllValues()) {
+            assertThat(msg.products())
+                    .as("WebSocket message products.size must be <= 50, but was %d", msg.products().size())
+                    .hasSizeLessThanOrEqualTo(50);
+        }
     }
 }

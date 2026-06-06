@@ -31,6 +31,13 @@ public class ImageProcessor {
     }
 
     public byte[] process(byte[] original) {
+        if (original == null || original.length == 0) {
+            throw new ImageQualityException("empty_image");
+        }
+        // Internal defense: reject extremely large files even if controller check was bypassed
+        if (original.length > 30 * 1024 * 1024) {
+            throw new ImageQualityException("image_too_large");
+        }
         BufferedImage image = decodeAndTransform(original, config.getImageMaxDimension());
         QualityCheckResult check = checkQuality(image);
         if (!check.passed()) {
@@ -109,10 +116,11 @@ public class ImageProcessor {
             throw new ImageQualityException("invalid_bbox");
         }
         try {
-            BufferedImage image = ImageIO.read(new ByteArrayInputStream(imageBytes));
-            if (image == null) {
-                throw new ImageQualityException("decode_failed");
-            }
+            // Use a safe max dimension to prevent OOM on extremely large images.
+            // cropToJpeg needs the full image for accurate bbox cropping, but we cap
+            // at 2x the configured max dimension (or 4096, whichever is larger) as a safety limit.
+            int cropMaxDimension = Math.max(config.getImageMaxDimension() * 2, 4096);
+            BufferedImage image = decodeAndTransform(imageBytes, cropMaxDimension);
             image = toRgb(image);
             int imageWidth = image.getWidth();
             int imageHeight = image.getHeight();
@@ -140,8 +148,8 @@ public class ImageProcessor {
                 throw new ImageQualityException("invalid_bbox");
             }
 
-            int padX = Math.max(4, Math.round(width * 0.04f));
-            int padY = Math.max(4, Math.round(height * 0.04f));
+            int padX = Math.max(24, Math.round(width * 0.30f));
+            int padY = Math.max(24, Math.round(height * 0.30f));
             int cropX = Math.max(0, x1 - padX);
             int cropY = Math.max(0, y1 - padY);
             int cropRight = Math.min(imageWidth, x2 + padX);
@@ -242,10 +250,10 @@ public class ImageProcessor {
             ImageWriteParam param = writer.getDefaultWriteParam();
             param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
             param.setCompressionQuality(quality);
-            ImageOutputStream ios = ImageIO.createImageOutputStream(baos);
-            writer.setOutput(ios);
-            writer.write(null, new IIOImage(image, null, null), param);
-            ios.close();
+            try (ImageOutputStream ios = ImageIO.createImageOutputStream(baos)) {
+                writer.setOutput(ios);
+                writer.write(null, new IIOImage(image, null, null), param);
+            }
         } finally {
             writer.dispose();
         }
@@ -310,6 +318,29 @@ public class ImageProcessor {
         g.drawImage(image, 0, 0, null);
         g.dispose();
         return rotated;
+    }
+
+    /**
+     * Detect content type from magic bytes. Shared utility to avoid duplication.
+     */
+    public static String normalizedContentType(byte[] imageBytes, String declaredType) {
+        if (imageBytes == null || imageBytes.length < 4) {
+            return declaredType == null ? "image/jpeg" : declaredType;
+        }
+        // JPEG: FF D8 FF
+        if ((imageBytes[0] & 0xFF) == 0xFF && (imageBytes[1] & 0xFF) == 0xD8 && (imageBytes[2] & 0xFF) == 0xFF) {
+            return "image/jpeg";
+        }
+        // PNG: 89 50 4E 47
+        if (imageBytes[0] == (byte) 0x89 && imageBytes[1] == 0x50 && imageBytes[2] == 0x4E && imageBytes[3] == 0x47) {
+            return "image/png";
+        }
+        // WebP: RIFF....WEBP
+        if (imageBytes.length >= 12 && imageBytes[0] == 'R' && imageBytes[1] == 'I' && imageBytes[2] == 'F' && imageBytes[3] == 'F'
+                && imageBytes[8] == 'W' && imageBytes[9] == 'E' && imageBytes[10] == 'B' && imageBytes[11] == 'P') {
+            return "image/webp";
+        }
+        return declaredType == null || declaredType.isBlank() ? "image/jpeg" : declaredType;
     }
 
     public record QualityCheckResult(boolean passed, String reason) {

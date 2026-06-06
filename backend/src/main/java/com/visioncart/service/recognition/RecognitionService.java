@@ -84,8 +84,8 @@ public class RecognitionService {
         return correct(request, null);
     }
 
-    public List<RecognitionHistory> latestHistory() {
-        return historyRepository.findTop20ByOrderByCreatedAtDesc();
+    public List<RecognitionHistory> latestHistory(Long userId) {
+        return historyRepository.findTop20ByUserIdOrderByCreatedAtDesc(userId);
     }
 
     public List<String> attributeOptions(String category, String attribute, String sessionId, Long userId, List<String> defaults) {

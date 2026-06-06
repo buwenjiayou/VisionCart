@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -70,6 +71,7 @@ public class PriceMonitorService {
      * Refresh price for a single favorite product. Searches by title keywords on the product's platform.
      * If price changed: updates favorite, records history, checks alerts.
      */
+    @Transactional
     public BigDecimal refreshPrice(FavoriteProduct favorite, Long userId) {
         String productId = favorite.getProductId();
         String platform = favorite.getPlatform();
@@ -85,8 +87,9 @@ public class PriceMonitorService {
                     null, null, null, null
             );
             Map<String, String> attributes = Map.of("关键词", title);
+            // sessionId=null: price monitoring doesn't need session cache/lock
             SearchRequest request = new SearchRequest(
-                    "price-monitor", attributes, filter, 1, 10, "server"
+                    null, attributes, filter, 1, 10, 50, "server"
             );
 
             SearchResult result = searchOrchestrator.search(request);
@@ -103,8 +106,10 @@ public class PriceMonitorService {
             BigDecimal currentPrice = matched.price();
             BigDecimal oldPrice = favorite.getPrice();
 
-            // Record price history
-            recordHistory(productId, platform, currentPrice);
+            // Record price history only when price changes to avoid table bloat (Bug #21)
+            if (oldPrice == null || currentPrice.compareTo(oldPrice) != 0) {
+                recordHistory(productId, platform, currentPrice);
+            }
 
             // Update favorite price if changed
             if (oldPrice == null || currentPrice.compareTo(oldPrice) != 0) {
@@ -112,8 +117,8 @@ public class PriceMonitorService {
                 favoriteRepository.save(favorite);
             }
 
-            // Check alerts
-            checkAlerts(userId, favorite, currentPrice);
+            // Check alerts (pass oldPrice before it was overwritten)
+            checkAlerts(userId, favorite, oldPrice, currentPrice);
 
             return currentPrice;
         } catch (Exception e) {
@@ -137,41 +142,39 @@ public class PriceMonitorService {
                 productId, platform, since);
     }
 
-    public BigDecimal getLowestPrice30d(String productId, String platform) {
+    public BigDecimal getLowestPriceInHistory(String productId, String platform) {
         Instant since = Instant.now().minus(historyDays, ChronoUnit.DAYS);
         return historyRepository.findMinPriceSince(productId, platform, since);
     }
 
-    private void checkAlerts(Long userId, FavoriteProduct favorite, BigDecimal currentPrice) {
+    private void checkAlerts(Long userId, FavoriteProduct favorite, BigDecimal oldPrice, BigDecimal currentPrice) {
         String productId = favorite.getProductId();
         String platform = favorite.getPlatform();
-        BigDecimal favoritePrice = favorite.getPrice();
+        BigDecimal favoritePrice = oldPrice;
+
+        // Fetch alert once to avoid redundant DB calls
+        PriceAlert existingAlert = alertRepository.findByUserIdAndProductIdAndActiveTrue(userId, productId).orElse(null);
 
         // Check user-set target alerts
-        alertRepository.findByUserIdAndProductIdAndActiveTrue(userId, productId)
-                .ifPresent(alert -> {
-                    if (shouldNotify(alert) && currentPrice.compareTo(alert.getTargetPrice()) <= 0) {
-                        alert.setCurrentPrice(currentPrice);
-                        alert.setTriggeredAt(Instant.now());
-                        alert.setNotifiedAt(Instant.now());
-                        alert.setActive(false);
-                        alertRepository.save(alert);
-                        sendNotification(userId, "target_reached", favorite, currentPrice, alert.getTargetPrice());
-                    }
-                });
+        if (existingAlert != null && shouldNotify(existingAlert) && currentPrice.compareTo(existingAlert.getTargetPrice()) <= 0) {
+            existingAlert.setCurrentPrice(currentPrice);
+            existingAlert.setTriggeredAt(Instant.now());
+            existingAlert.setNotifiedAt(Instant.now());
+            existingAlert.setActive(false);
+            alertRepository.save(existingAlert);
+            sendNotification(userId, "target_reached", favorite, currentPrice, oldPrice, existingAlert.getTargetPrice());
+        }
 
         // Check history-low (only if we have enough data)
-        BigDecimal lowest30d = getLowestPrice30d(productId, platform);
+        BigDecimal lowest30d = getLowestPriceInHistory(productId, platform);
         if (lowest30d != null && currentPrice.compareTo(lowest30d) <= 0 && favoritePrice != null) {
-            // This is a history low — check if user has any alert for dedup
-            PriceAlert dedupAlert = alertRepository.findByUserIdAndProductIdAndActiveTrue(userId, productId).orElse(null);
-            if ((dedupAlert == null || shouldNotify(dedupAlert)) && markNotificationDedup(userId, productId, "history_low")) {
-                if (dedupAlert != null) {
-                    dedupAlert.setCurrentPrice(currentPrice);
-                    dedupAlert.setNotifiedAt(Instant.now());
-                    alertRepository.save(dedupAlert);
+            if ((existingAlert == null || shouldNotify(existingAlert)) && markNotificationDedup(userId, productId, "history_low")) {
+                if (existingAlert != null) {
+                    existingAlert.setCurrentPrice(currentPrice);
+                    existingAlert.setNotifiedAt(Instant.now());
+                    alertRepository.save(existingAlert);
                 }
-                sendNotification(userId, "history_low", favorite, currentPrice, null);
+                sendNotification(userId, "history_low", favorite, currentPrice, oldPrice, null);
             }
         }
 
@@ -180,14 +183,13 @@ public class PriceMonitorService {
             BigDecimal drop = favoritePrice.subtract(currentPrice)
                     .divide(favoritePrice, 4, RoundingMode.HALF_UP);
             if (drop.compareTo(LARGE_DROP_THRESHOLD) >= 0) {
-                PriceAlert dedupAlert = alertRepository.findByUserIdAndProductIdAndActiveTrue(userId, productId).orElse(null);
-                if ((dedupAlert == null || shouldNotify(dedupAlert)) && markNotificationDedup(userId, productId, "large_drop")) {
-                    if (dedupAlert != null) {
-                        dedupAlert.setCurrentPrice(currentPrice);
-                        dedupAlert.setNotifiedAt(Instant.now());
-                        alertRepository.save(dedupAlert);
+                if ((existingAlert == null || shouldNotify(existingAlert)) && markNotificationDedup(userId, productId, "large_drop")) {
+                    if (existingAlert != null) {
+                        existingAlert.setCurrentPrice(currentPrice);
+                        existingAlert.setNotifiedAt(Instant.now());
+                        alertRepository.save(existingAlert);
                     }
-                    sendNotification(userId, "large_drop", favorite, currentPrice, null);
+                    sendNotification(userId, "large_drop", favorite, currentPrice, oldPrice, null);
                 }
             }
         }
@@ -214,21 +216,26 @@ public class PriceMonitorService {
     }
 
     private void sendNotification(Long userId, String alertType, FavoriteProduct favorite,
-                                  BigDecimal currentPrice, BigDecimal targetPrice) {
-        String message = buildMessage(alertType, favorite.getTitle(), currentPrice, targetPrice, favorite.getPrice());
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("type", "price_alert");
-        payload.put("alertType", alertType);
-        payload.put("productId", favorite.getProductId());
-        payload.put("platform", favorite.getPlatform());
-        payload.put("title", favorite.getTitle());
-        payload.put("currentPrice", currentPrice);
-        payload.put("targetPrice", targetPrice);
-        payload.put("favoritePrice", favorite.getPrice());
-        payload.put("message", message);
+                                  BigDecimal currentPrice, BigDecimal oldPrice, BigDecimal targetPrice) {
+        try {
+            String message = buildMessage(alertType, favorite.getTitle(), currentPrice, targetPrice, oldPrice);
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("type", "price_alert");
+            payload.put("alertType", alertType);
+            payload.put("productId", favorite.getProductId());
+            payload.put("platform", favorite.getPlatform());
+            payload.put("title", favorite.getTitle());
+            payload.put("currentPrice", currentPrice);
+            payload.put("targetPrice", targetPrice);
+            payload.put("favoritePrice", oldPrice);
+            payload.put("message", message);
 
-        messagingTemplate.convertAndSend("/topic/price-alert/" + userId, payload);
-        log.info("Price alert sent to user {}: {} - {}", userId, alertType, favorite.getTitle());
+            messagingTemplate.convertAndSend("/topic/price-alert/" + userId, payload);
+            log.info("Price alert sent to user {}: {} - {}", userId, alertType, favorite.getTitle());
+        } catch (Exception e) {
+            log.warn("Failed to send price alert notification for user {} product {}: {}",
+                    userId, favorite.getProductId(), e.getMessage());
+        }
     }
 
     private String buildMessage(String alertType, String title, BigDecimal currentPrice,

@@ -9,7 +9,7 @@ public final class AiJsonUtils {
         String text = content == null ? "" : stripMarkdownFence(content.trim());
         int start = text.indexOf('{');
         if (start < 0) {
-            return text;
+            return null;
         }
         boolean inString = false;
         boolean escaped = false;
@@ -49,13 +49,19 @@ public final class AiJsonUtils {
     }
 
     private static String stripMarkdownFence(String content) {
-        if (!content.startsWith("```")) {
+        int firstFence = content.indexOf("```");
+        if (firstFence < 0) {
             return content;
         }
-        int firstNewline = content.indexOf('\n');
+        int firstNewline = content.indexOf('\n', firstFence);
         int lastFence = content.lastIndexOf("```");
         if (firstNewline >= 0 && lastFence > firstNewline) {
             return content.substring(firstNewline + 1, lastFence).trim();
+        }
+        // Only one fence found — strip from start
+        if (firstFence == 0) {
+            int nl = content.indexOf('\n');
+            if (nl >= 0) return content.substring(nl + 1).trim();
         }
         return content;
     }

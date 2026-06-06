@@ -93,4 +93,71 @@ class ApiDtoContractTest {
         assertThat(productJson.has("sales_label")).isTrue();
         assertThat(productJson.has("imageUrl")).isFalse();
     }
+
+    @Test
+    void semanticActionPlanKeepsOldAndNewJsonCompatible() throws Exception {
+        SemanticActionPlan oldPlan = objectMapper.readValue("""
+                {
+                  "intent": "filter_current_results",
+                  "execution_mode": "STRICT_FILTER",
+                  "hard_filters": [
+                    {"field": "price", "operator": "<=", "value": 300}
+                  ],
+                  "zero_result_policy": "KEEP_PREVIOUS_RESULTS"
+                }
+                """, SemanticActionPlan.class);
+
+        assertThat(oldPlan.hardFilters()).hasSize(1);
+        assertThat(oldPlan.criteria()).isNull();
+        assertThat(oldPlan.judge()).isNull();
+
+        SemanticActionPlan newPlan = objectMapper.readValue("""
+                {
+                  "intent": "filter_current_results",
+                  "execution_mode": "LLM_RERANK",
+                  "criteria": [
+                    {
+                      "name": "便携",
+                      "type": "evidence_or_score",
+                      "required": false,
+                      "weight": 0.6,
+                      "signals": [
+                        {"kind": "keyword", "field": "all_text", "operator": "contains_any", "values": ["小巧", "轻便"]}
+                      ]
+                    }
+                  ],
+                  "negative_criteria": [
+                    {
+                      "name": "配件",
+                      "action": "reject",
+                      "signals": [
+                        {"kind": "keyword", "field": "product_role", "operator": "contains_any", "values": ["accessory"]}
+                      ]
+                    }
+                  ],
+                  "judge": {
+                    "required": true,
+                    "user_meaning": "适合女生送礼",
+                    "positive_signals": ["礼盒", "外观精致"],
+                    "negative_signals": ["配件"],
+                    "candidate_limit": 80,
+                    "return_limit": 50,
+                    "min_score": 0.35
+                  },
+                  "ranking_goal": "优先展示适合作为礼物的商品",
+                  "result_strategy": {
+                    "unknown_policy": "KEEP_AS_SECONDARY",
+                    "fallback_policy": "KEEP_PREVIOUS_RESULTS",
+                    "preserve_previous_on_empty": true
+                  }
+                }
+                """, SemanticActionPlan.class);
+
+        assertThat(newPlan.criteria()).hasSize(1);
+        assertThat(newPlan.negativeCriteria()).hasSize(1);
+        assertThat(newPlan.judge().required()).isTrue();
+        assertThat(newPlan.judge().positiveSignals()).contains("礼盒");
+        assertThat(newPlan.rankingGoal()).contains("礼物");
+        assertThat(newPlan.resultStrategy().preservePreviousOnEmpty()).isTrue();
+    }
 }

@@ -13,6 +13,7 @@ import java.util.regex.Pattern;
 public final class BrandMatcher {
 
     private static final List<List<String>> BRAND_GROUPS = List.of(
+            // 手机/数码
             List.of("Apple", "苹果"),
             List.of("Huawei", "华为"),
             List.of("Xiaomi", "小米", "MI"),
@@ -20,25 +21,90 @@ public final class BrandMatcher {
             List.of("OPPO"),
             List.of("vivo"),
             List.of("Samsung", "三星"),
+            List.of("OnePlus", "一加"),
+            List.of("Realme", "真我"),
+            List.of("Meizu", "魅族"),
+            List.of("Google", "谷歌"),
+            // 电脑/外设
             List.of("Lenovo", "联想"),
             List.of("ThinkPad"),
             List.of("Dell", "戴尔"),
             List.of("HP", "惠普"),
             List.of("ASUS", "华硕"),
             List.of("Acer", "宏碁"),
+            List.of("MSI", "微星"),
             List.of("Logitech", "罗技"),
             List.of("Razer", "雷蛇"),
             List.of("ZOWIE", "卓威"),
             List.of("Microsoft", "微软"),
+            List.of("Rapoo", "雷柏"),
+            List.of("Corsair", "海盗船"),
+            // 音频
+            List.of("Sony", "索尼"),
+            List.of("Bose"),
+            List.of("JBL"),
+            List.of("Beats"),
+            List.of("Marshall"),
+            List.of("Sennheiser", "森海塞尔"),
+            List.of("Audio-Technica", "铁三角"),
+            List.of("Harman Kardon", "哈曼卡顿"),
+            List.of("Shure", "舒尔"),
+            List.of("Edifier", "漫步者"),
+            List.of("1MORE", "万魔"),
+            // 家电/个护
+            List.of("Dyson", "戴森"),
+            List.of("Philips", "飞利浦"),
+            List.of("Panasonic", "松下"),
+            List.of("Braun", "博朗"),
+            List.of("Gillette", "吉列"),
+            List.of("Midea", "美的"),
+            List.of("Gree", "格力"),
+            List.of("Haier", "海尔"),
+            List.of("Roborock", "石头"),
+            List.of("Dreame", "追觅"),
+            List.of("Ecovacs", "科沃斯"),
+            // 运动/服饰
             List.of("Nike", "耐克"),
             List.of("Adidas", "阿迪达斯"),
             List.of("Li-Ning", "李宁"),
             List.of("ANTA", "安踏"),
             List.of("Xtep", "特步"),
             List.of("PUMA", "彪马"),
-            List.of("New Balance", "新百伦", "NB"),
+            List.of("New Balance", "新百伦"),
             List.of("Under Armour", "安德玛"),
-            List.of("FILA", "斐乐")
+            List.of("FILA", "斐乐"),
+            List.of("Skechers", "斯凯奇"),
+            // 配件/充电
+            List.of("Anker", "安克"),
+            List.of("Baseus", "倍思"),
+            List.of("UGREEN", "绿联"),
+            List.of("Momax", "摩米士"),
+            List.of("Belkin", "贝尔金"),
+            // 美妆
+            List.of("L'Oreal", "欧莱雅"),
+            List.of("Estee Lauder", "雅诗兰黛"),
+            List.of("LANEIGE", "兰芝"),
+            List.of("Innisfree", "悦诗风吟"),
+            // 个护小家电（易混淆品牌）
+            List.of("Flyco", "飞科"),
+            List.of("FengErPu", "锋尔普"),
+            List.of("Povos", "奔腾"),
+            List.of("SID", "超人"),
+            List.of("Remington", "雷明顿"),
+            List.of("Wahl", "华尔"),
+            List.of("Conair"),
+            List.of("Andis"),
+            // 厨房小电
+            List.of("Supor", "苏泊尔"),
+            List.of("Joyoung", "九阳"),
+            List.of("Bear", "小熊"),
+            List.of("Aux", "奥克斯"),
+            List.of("Meling", "美菱"),
+            // 音频补充
+            List.of("QCY"),
+            List.of("Haylou"),
+            List.of("Soundcore", "声阔"),
+            List.of("Nothing")
     );
 
     private static final Map<String, String> ALIAS_TO_CANONICAL = buildAliasMap();
@@ -62,6 +128,15 @@ public final class BrandMatcher {
         String expected = canonical(expectedBrand);
         String candidate = canonical(candidateBrand);
         return !expected.isBlank() && expected.equals(candidate);
+    }
+
+    /**
+     * Check if a brand is in the known brand dictionary.
+     */
+    public static boolean isKnownBrand(String brand) {
+        if (StringUtils.isBlank(brand)) return false;
+        String normalized = normalize(brand);
+        return !normalized.isBlank() && ALIAS_TO_CANONICAL.containsKey(normalized);
     }
 
     public static boolean productMatchesExpectedBrand(ProductCard product, String expectedBrand) {
@@ -170,5 +245,46 @@ public final class BrandMatcher {
                     .find();
         }
         return normalizedText.contains(normalizedAlias);
+    }
+
+    /**
+     * Find the closest known brand to the given brand using Levenshtein distance.
+     * Returns null if no brand is close enough (threshold: 2 edits or 30% of length).
+     */
+    public static String findClosestBrand(String brand) {
+        if (StringUtils.isBlank(brand)) return null;
+        String normalized = normalize(brand);
+        if (normalized.isBlank()) return null;
+
+        String bestMatch = null;
+        int bestDistance = Integer.MAX_VALUE;
+
+        for (List<String> group : BRAND_GROUPS) {
+            for (String alias : group) {
+                String normalizedAlias = normalize(alias);
+                if (normalizedAlias.isBlank()) continue;
+                int distance = levenshtein(normalized, normalizedAlias);
+                // Threshold: max 2 edits, or 30% of the longer string
+                int threshold = Math.min(2, Math.max(1, (int) (Math.max(normalized.length(), normalizedAlias.length()) * 0.3)));
+                if (distance < bestDistance && distance <= threshold) {
+                    bestDistance = distance;
+                    bestMatch = group.get(0); // Return canonical form
+                }
+            }
+        }
+        return bestMatch;
+    }
+
+    private static int levenshtein(String a, String b) {
+        int[][] dp = new int[a.length() + 1][b.length() + 1];
+        for (int i = 0; i <= a.length(); i++) dp[i][0] = i;
+        for (int j = 0; j <= b.length(); j++) dp[0][j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            for (int j = 1; j <= b.length(); j++) {
+                int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+                dp[i][j] = Math.min(Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1), dp[i - 1][j - 1] + cost);
+            }
+        }
+        return dp[a.length()][b.length()];
     }
 }

@@ -1,0 +1,71 @@
+version: "1.0"
+description: "Semantic planner user prompt template"
+prompt: |
+  当前商品：%s
+  类目：%s
+  对话历史（最近几轮）：
+  %s
+  用户输入：%s
+
+  请只输出一个严格 JSON 对象，不要输出 markdown，不要解释。
+  输出格式：
+  {
+    "intent": "filter_current_results",
+    "execution_mode": "STRICT_FILTER",
+    "hard_filters": [],
+    "semantic_filters": [],
+    "preferences": [],
+    "exclusions": [],
+    "sort": null,
+    "zero_result_policy": "KEEP_PREVIOUS_RESULTS",
+    "criteria": [],
+    "negative_criteria": [],
+    "judge": null,
+    "ranking_goal": null,
+    "result_strategy": null
+  }
+
+  其中 hard_filters 每项格式：
+  {"field": "price", "operator": "<=", "value": 100}
+
+  semantic_filters 每项格式：
+  {"code": "airplane_allowed", "userMeaning": "可带上飞机", "matchLogic": "EVIDENCE_OR_SCORE"}
+
+  preferences 每项格式：
+  {"code": "cost_effective", "userMeaning": "性价比高", "weight": 0.8}
+
+  exclusions 每项格式：
+  {"code": "accessory", "userMeaning": "不要配件", "keywords": ["配件","手机壳"], "roles": ["accessory"]}
+
+  sort 格式：
+  {"field": "price", "order": "asc"}
+
+  criteria 每项格式：
+  {
+    "name": "可带上飞机",
+    "type": "evidence_or_score",
+    "required": false,
+    "weight": 0.8,
+    "userMeaning": "可随身携带上飞机",
+    "unknownPolicy": "KEEP_AS_SECONDARY",
+    "signals": [
+      {"kind": "keyword", "field": "all_text", "operator": "contains_any", "values": ["可登机", "民航允许"], "score": 0.95, "description": "明确标注可登机", "bucket": "EXPLICIT_MATCH"}
+    ]
+  }
+
+  negative_criteria 每项格式：
+  {"name": "户外电源", "action": "reject", "signals": [{"kind": "keyword", "field": "all_text", "operator": "contains_any", "values": ["户外电源", "220V", "AC输出"]}]}
+
+  judge 格式：
+  {
+    "required": true,
+    "userMeaning": "适合女生送礼",
+    "positive_signals": ["礼盒", "外观精致", "品牌感", "评分高", "价格适中"],
+    "negative_signals": ["配件", "替换装", "工业风", "廉价感"],
+    "candidate_limit": 80,
+    "return_limit": 50,
+    "min_score": 0.35
+  }
+
+  ranking_goal 示例：
+  "优先展示更适合作为礼物且不像配件的商品"

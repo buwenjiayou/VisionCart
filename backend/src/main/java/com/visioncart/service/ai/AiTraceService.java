@@ -72,9 +72,11 @@ public class AiTraceService {
         if (activeTraces.size() <= MAX_ACTIVE_TRACES) {
             return;
         }
+        long toRemove = Math.max(0, activeTraces.size() - MAX_ACTIVE_TRACES);
+        if (toRemove <= 0) return;
         activeTraces.entrySet().stream()
                 .sorted(Map.Entry.comparingByValue(java.util.Comparator.comparing(TraceEntry::started)))
-                .limit(activeTraces.size() - MAX_ACTIVE_TRACES)
+                .limit(toRemove)
                 .map(Map.Entry::getKey)
                 .toList()
                 .forEach(activeTraces::remove);

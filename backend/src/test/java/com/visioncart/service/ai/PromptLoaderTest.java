@@ -40,7 +40,7 @@ class PromptLoaderTest {
     @Test
     void returnsVersionMetadata() {
         String version = promptLoader.getVersion("vision-recognition");
-        assertThat(version).isEqualTo("1.0");
+        assertThat(version).isEqualTo("1.1");
     }
 
     @Test

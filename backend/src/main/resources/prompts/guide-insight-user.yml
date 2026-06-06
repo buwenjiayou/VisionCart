@@ -1,0 +1,9 @@
+version: "1.0"
+description: "Deep suggestion user prompt template for DeepSuggestionService"
+prompt: |
+  商品名称：{{product_name}}
+
+  以下是后端基于商品列表统计分析生成的结构化事实：
+  {{facts_json}}
+
+  请基于这些事实，改写为自然语言导购文案。输出严格 JSON。

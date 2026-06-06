@@ -9,11 +9,12 @@ import java.util.List;
 import java.util.Optional;
 
 public interface RecognitionHistoryRepository extends JpaRepository<RecognitionHistory, String> {
-    List<RecognitionHistory> findTop20ByOrderByCreatedAtDesc();
 
-    Page<RecognitionHistory> findByOrderByCreatedAtDesc(Pageable pageable);
+    List<RecognitionHistory> findTop20ByUserIdOrderByCreatedAtDesc(Long userId);
 
     Page<RecognitionHistory> findByUserIdOrderByCreatedAtDesc(Long userId, Pageable pageable);
 
     Optional<RecognitionHistory> findBySessionIdAndUserId(String sessionId, Long userId);
+
+    void deleteBySessionIdAndUserId(String sessionId, Long userId);
 }

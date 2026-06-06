@@ -36,6 +36,12 @@ data/
 # CodeGraph local index
 .codegraph/
 
+# Build artifacts
+BOOT-INF/
+
+# Generated files
+repomix-output.md
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

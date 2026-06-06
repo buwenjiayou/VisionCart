@@ -4,9 +4,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.visioncart.config.JwtAuthenticationFilter;
 import com.visioncart.domain.RecognitionHistory;
 import com.visioncart.repository.FavoriteProductRepository;
+import com.visioncart.repository.PriceAlertRepository;
 import com.visioncart.repository.PriceHistoryRepository;
+import com.visioncart.repository.RecognitionHistoryProductRepository;
 import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.price.PriceMonitorService;
+import com.visioncart.service.recognition.AsyncRecognitionTaskManager;
 import com.visioncart.service.recognition.RecognitionImageStorage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,20 +30,25 @@ import static org.mockito.Mockito.when;
 class UserDataControllerTest {
     private RecognitionHistoryRepository historyRepository;
     private RecognitionImageStorage imageStorage;
+    private AsyncRecognitionTaskManager taskManager;
     private UserDataController controller;
 
     @BeforeEach
     void setUp() {
         historyRepository = mock(RecognitionHistoryRepository.class);
         imageStorage = mock(RecognitionImageStorage.class);
+        taskManager = mock(AsyncRecognitionTaskManager.class);
         controller = new UserDataController(
                 mock(FavoriteProductRepository.class),
                 historyRepository,
                 mock(PriceHistoryRepository.class),
+                mock(PriceAlertRepository.class),
+                mock(RecognitionHistoryProductRepository.class),
                 mock(PriceMonitorService.class),
                 Executors.newSingleThreadExecutor(),
                 new ObjectMapper(),
-                imageStorage
+                imageStorage,
+                taskManager
         );
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(
@@ -76,5 +84,17 @@ class UserDataControllerTest {
         assertThatThrownBy(() -> controller.historyImage("session-2"))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("404");
+    }
+
+    @Test
+    void historyImageAllowsOwnedActiveTaskBeforeHistoryExists() {
+        when(taskManager.belongsToUser("pending-session", 7L)).thenReturn(true);
+        when(historyRepository.findBySessionIdAndUserId("pending-session", 7L)).thenReturn(Optional.empty());
+        when(imageStorage.loadHistoryImage("pending-session")).thenReturn(Optional.of(new ByteArrayResource(new byte[]{4, 5, 6})));
+
+        var response = controller.historyImage("pending-session");
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(response.getBody()).isNotNull();
     }
 }

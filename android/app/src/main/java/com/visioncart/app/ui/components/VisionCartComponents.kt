@@ -21,13 +21,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FilterAlt
 import androidx.compose.material.icons.outlined.ImageSearch
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
@@ -39,10 +44,16 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,6 +62,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -131,14 +143,28 @@ fun ErrorMessage(message: String, onRetry: (() -> Unit)? = null) {
 }
 
 @Composable
-fun EmptyState(message: String = "暂无数据") {
-    Text(
-        message,
+fun EmptyState(
+    message: String = "暂无数据",
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
+) {
+    Column(
         modifier = Modifier.fillMaxWidth().padding(32.dp),
-        color = Color(0xFF9E9E9E),
-        style = MaterialTheme.typography.bodyLarge,
-        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-    )
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            message,
+            color = Color(0xFF9E9E9E),
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+        if (actionLabel != null && onAction != null) {
+            androidx.compose.material3.OutlinedButton(onClick = onAction) {
+                Text(actionLabel)
+            }
+        }
+    }
 }
 
 // ==================== Recognition Panel ====================
@@ -149,7 +175,9 @@ fun RecognitionPanel(
     attributes: Map<String, AttributeValue>,
     state: UiState<com.visioncart.app.data.RecognitionResult>,
     onAttributeClick: (String, String) -> Unit,
-    onRetry: (() -> Unit)? = null
+    onRetry: (() -> Unit)? = null,
+    progressStep: String? = null,
+    confidenceHint: String? = null
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -177,7 +205,7 @@ fun RecognitionPanel(
                     Text(
                         when (state) {
                             is UiState.Idle -> "等待图片输入"
-                            is UiState.Loading -> "正在分析商品特征"
+                            is UiState.Loading -> progressStep ?: "正在分析商品特征"
                             is UiState.Error -> "识别遇到问题"
                             is UiState.Success -> categoryText.ifBlank { "已识别商品" }
                         },
@@ -199,7 +227,11 @@ fun RecognitionPanel(
                                 strokeWidth = 2.dp
                             )
                             Spacer(Modifier.width(10.dp))
-                            Text("正在识别中...", color = Color(0xFF53615E), style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                progressStep ?: "正在识别中...",
+                                color = Color(0xFF53615E),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
                         }
                     }
                 }
@@ -242,6 +274,26 @@ fun RecognitionPanel(
                             )
                         }
                     }
+                    // 置信度提示（中/低置信度时显示）
+                    if (!confidenceHint.isNullOrBlank()) {
+                        Surface(
+                            color = Color(0xFFFFF8E1),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("⚠", style = MaterialTheme.typography.bodyMedium)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    confidenceHint,
+                                    color = Color(0xFFE65100),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
                     attributes.forEach { (name, value) ->
                         Surface(
                             color = Color(0xFFFAFCFB),
@@ -251,26 +303,57 @@ fun RecognitionPanel(
                                 .clickable { onAttributeClick(name, value.value) }
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.Top
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(name, color = Color(0xFF53615E), style = MaterialTheme.typography.bodyMedium)
-                                    if (value.verified) {
-                                        Spacer(Modifier.width(5.dp))
-                                        Text("✓", color = Color(0xFF0A7C66), fontWeight = FontWeight.Bold)
+                                // 左侧：属性名 + ✓
+                                Column(
+                                    modifier = Modifier.width(80.dp),
+                                    horizontalAlignment = Alignment.Start
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            name,
+                                            color = Color(0xFF53615E),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (value.verified) {
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("✓", color = Color(0xFF0A7C66), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        }
                                     }
                                 }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        "${value.value}  ${(value.confidence * 100).toInt()}%",
-                                        color = Color(0xFF10201C),
-                                        fontWeight = FontWeight.Medium,
-                                        style = MaterialTheme.typography.bodyMedium
+                                Spacer(Modifier.width(12.dp))
+                                // 右侧：值 + 置信度 + 编辑
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            value.value,
+                                            color = Color(0xFF10201C),
+                                            fontWeight = FontWeight.Medium,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            maxLines = 3,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            "${(value.confidence * 100).toInt()}%",
+                                            color = Color(0xFF9EAAA6),
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = Icons.Outlined.Edit,
+                                        contentDescription = "编辑",
+                                        modifier = Modifier.size(16.dp),
+                                        tint = Color(0xFF9EAAA6)
                                     )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("✎", color = Color(0xFF9EAAA6), style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
@@ -327,8 +410,9 @@ fun MultiProductSelectionPanel(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val cropModel = rememberAuthenticatedImageModel(candidate.previewImageUrl)
                             AsyncImage(
-                                model = candidate.previewImageUrl,
+                                model = cropModel,
                                 contentDescription = candidate.category,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -368,10 +452,42 @@ fun MultiProductSelectionPanel(
 
 // ==================== Product Card ====================
 
+/**
+ * Format rating display text based on ratingSource.
+ * - item_rating: numeric score with "分" (e.g. "4.8 分")
+ * - shop_dsr: shop reputation level (高/中/低, already mapped by backend)
+ * - seller: seller feedback percentage (e.g. "98%")
+ * - none/other: raw numeric value
+ */
+private fun ratingDisplayText(rating: Double, ratingSource: String?): String {
+    return when (ratingSource) {
+        "item_rating" -> String.format(Locale.US, "%.1f 分", rating)
+        "shop_dsr" -> {
+            // PDD DSR levels mapped to numeric by backend: ≥4.4=高, ≥3.8=中, <3.8=低
+            when {
+                rating >= 4.4 -> "口碑 高"
+                rating >= 3.8 -> "口碑 中"
+                else -> "口碑 低"
+            }
+        }
+        "seller" -> String.format(Locale.US, "%.0f%%", rating)
+        else -> String.format(Locale.US, "%.1f", rating)
+    }
+}
+
+/** Icon for rating display: star for ratings, shield for seller reputation */
+private fun ratingIcon(ratingSource: String?): String {
+    return when (ratingSource) {
+        "seller" -> "✓"  // checkmark for seller feedback percentage
+        else -> "★"       // star for item rating and shop DSR
+    }
+}
+
 @Composable
 fun ProductCardView(
     product: ProductCard,
     isFavorite: Boolean = false,
+    showRating: Boolean = false,
     onFavoriteClick: () -> Unit = {},
     onClick: () -> Unit = {}
 ) {
@@ -383,9 +499,10 @@ fun ProductCardView(
     ) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             // Product image
-            if (product.imageUrl.isNotBlank()) {
+            val imageModel = rememberAuthenticatedImageModel(product.imageUrl)
+            if (imageModel != null) {
                 AsyncImage(
-                    model = product.imageUrl,
+                    model = imageModel,
                     contentDescription = product.title,
                     modifier = Modifier
                         .size(92.dp)
@@ -439,6 +556,26 @@ fun ProductCardView(
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.SemiBold
                     )
+                    if (showRating && product.rating > 0) {
+                        Spacer(Modifier.width(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                ratingIcon(product.ratingSource),
+                                color = Color(0xFFFFA726),
+                                fontSize = 12.sp
+                            )
+                            Spacer(Modifier.width(2.dp))
+                            // Prefer backend-sourced display label (e.g. "淘宝 · 商品评分 4.8")
+                            val displayText = product.ratingDisplayLabel
+                                ?: ratingDisplayText(product.rating, product.ratingSource)
+                            Text(
+                                displayText,
+                                color = Color(0xFFEF6C00),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                     Text(
                         " · ${product.shopName}",
                         color = Color(0xFF687A75),
@@ -532,19 +669,22 @@ private fun formatSales(sales: Long): String {
     }
 }
 
-// ==================== Suggestion Chips ====================
+// ==================== Decision Suggestions ====================
 
 @Composable
 fun SuggestionChipsRow(
     cards: List<SuggestionCard>,
-    onCardClick: (SuggestionCard) -> Unit
+    onCardClick: (SuggestionCard) -> Unit,
+    maxCards: Int = 6,
+    compact: Boolean = false
 ) {
     val displayCards = cards
         .asSequence()
         .filter { it.title.isNotBlank() }
+        .filterNot { it.id.startsWith("insight_") }
         .distinctBy { it.action.ifBlank { it.title } }
         .sortedByDescending { it.priority }
-        .take(4)
+        .take(maxCards)
         .toList()
     if (displayCards.isEmpty()) return
 
@@ -556,59 +696,289 @@ fun SuggestionChipsRow(
         }
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             displayCards.forEach { card ->
-                val iconLabel = suggestionIconLabel(card.icon)
-                val label = suggestionChipLabel(card)
-                AssistChip(
-                    onClick = { onCardClick(card) },
-                    leadingIcon = {
-                        Text(
-                            iconLabel,
-                            color = Color(0xFF0A7C66),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                    },
-                    label = {
-                        Text(
-                            label,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                    },
-                    modifier = Modifier.widthIn(max = 176.dp),
-                    shape = RoundedCornerShape(999.dp),
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = Color.White,
-                        labelColor = Color(0xFF0A7C66)
-                    )
+                DecisionSuggestionCard(
+                    card = card,
+                    compact = compact,
+                    onClick = { onCardClick(card) }
                 )
             }
         }
     }
 }
 
-private fun suggestionChipLabel(card: SuggestionCard): String {
-    val title = card.title.trim()
-    val subtitle = card.subtitle?.trim().orEmpty()
-    if (subtitle.isBlank() || subtitle == title) return title
-    return "$title · $subtitle"
+// ==================== AI Guide Insight Card ====================
+
+@Composable
+fun GuideInsightCard(
+    card: SuggestionCard,
+    onClick: (SuggestionCard) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FDFC)),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Header: badge + title
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = Color(0xFF0A7C66).copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text(
+                        card.badge?.takeIf { it.isNotBlank() } ?: "AI 导购分析",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF0A7C66),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    card.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF10201C),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // Body: reason / subtitle
+            Text(
+                card.reason?.takeIf { it.isNotBlank() } ?: card.subtitle ?: "",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF53615E),
+                lineHeight = 18.sp
+            )
+
+            // Action button
+            androidx.compose.material3.Button(
+                onClick = { onClick(card) },
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF0A7C66)
+                ),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text(
+                    card.actionLabel?.takeIf { it.isNotBlank() } ?: "应用建议",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DecisionSuggestionCard(
+    card: SuggestionCard,
+    compact: Boolean,
+    onClick: () -> Unit
+) {
+    val colors = suggestionToneColors(card.tone)
+    val width = if (compact) 178.dp else 224.dp
+    val minHeight = if (compact) 108.dp else 132.dp
+    Surface(
+        modifier = Modifier
+            .width(width)
+            .heightIn(min = minHeight)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = colors.container
+    ) {
+        Column(
+            modifier = Modifier.padding(if (compact) 10.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Box(
+                        modifier = Modifier
+                            .size(if (compact) 26.dp else 30.dp)
+                            .clip(CircleShape)
+                            .background(colors.accent.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            suggestionIconLabel(card.icon),
+                            color = colors.accent,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        card.title,
+                        color = Color(0xFF10201C),
+                        style = if (compact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                card.badge?.takeIf { it.isNotBlank() }?.let { badge ->
+                    Text(
+                        badge,
+                        color = colors.accent,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .widthIn(max = if (compact) 42.dp else 54.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(Color.White.copy(alpha = 0.72f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Text(
+                card.reason?.takeIf { it.isNotBlank() } ?: card.subtitle.orEmpty(),
+                color = Color(0xFF53615E),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = if (compact) 2 else 2,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    card.metric?.takeIf { it.isNotBlank() } ?: card.subtitle.orEmpty(),
+                    color = colors.accent,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    card.actionLabel?.takeIf { it.isNotBlank() } ?: "应用",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(colors.accent)
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+private data class SuggestionToneColors(
+    val container: Color,
+    val accent: Color
+)
+
+private fun suggestionToneColors(tone: String?): SuggestionToneColors {
+    return when (tone?.trim()?.lowercase()) {
+        "saving" -> SuggestionToneColors(Color(0xFFFFF7E8), Color(0xFFB66100))
+        "trust" -> SuggestionToneColors(Color(0xFFEAF5FF), Color(0xFF1D63A3))
+        "popularity" -> SuggestionToneColors(Color(0xFFFFEEF2), Color(0xFFC33A58))
+        "filter" -> SuggestionToneColors(Color(0xFFF0F7F5), Color(0xFF0A7C66))
+        "warning" -> SuggestionToneColors(Color(0xFFFFF3E0), Color(0xFFE65100))
+        else -> SuggestionToneColors(Color(0xFFF4F6FA), Color(0xFF53615E))
+    }
 }
 
 private fun suggestionIconLabel(icon: String): String {
     return when (icon.trim().lowercase()) {
-        "money", "price", "coupon" -> "省"
+        "money", "price", "coupon", "wallet" -> "省"
         "shield", "official" -> "正"
         "palette", "similar" -> "似"
         "star", "rating" -> "评"
+        "trending", "sales" -> "热"
+        "brand" -> "牌"
+        "platform" -> "台"
+        "spark" -> "荐"
         "filter", "tune" -> "筛"
+        "discount" -> "折"
+        "truck" -> "邮"
+        "trophy" -> "优"
+        "bell" -> "铃"
+        "compare" -> "比"
+        "warning" -> "⚠"
         "" -> "筛"
         else -> icon.trim().take(2).ifBlank { "筛" }
     }
 }
+
+@Composable
+fun SortOptionsRow(
+    filter: SearchFilter,
+    onSortSelected: (sortBy: String?, sortOrder: String) -> Unit
+) {
+    val options = listOf(
+        SortOption("综合推荐", null, "desc"),
+        SortOption("价格低到高", "price", "asc"),
+        SortOption("销量优先", "sales", "desc"),
+        SortOption("口碑优先", "rating", "desc")
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Tune, contentDescription = null, tint = Color(0xFF53615E), modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("排序方式", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color(0xFF10201C))
+        }
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            options.forEach { option ->
+                val selected = option.sortBy == filter.sortBy &&
+                        (option.sortBy == null || option.sortOrder.equals(filter.sortOrder, ignoreCase = true))
+                Surface(
+                    modifier = Modifier
+                        .height(40.dp)
+                        .widthIn(min = 86.dp)
+                        .clickable { onSortSelected(option.sortBy, option.sortOrder) },
+                    shape = RoundedCornerShape(999.dp),
+                    color = if (selected) Color(0xFF0A7C66) else Color.White
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 12.dp)) {
+                        Text(
+                            option.label,
+                            color = if (selected) Color.White else Color(0xFF53615E),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class SortOption(
+    val label: String,
+    val sortBy: String?,
+    val sortOrder: String
+)
 
 // ==================== NLP Input ====================
 
@@ -638,8 +1008,43 @@ fun NlpInputBar(
             },
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
-            maxLines = 1
+            maxLines = 1,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onSubmit() })
         )
+    }
+}
+
+@Composable
+fun NlpFilteringBar(message: String, onCancel: () -> Unit) {
+    Surface(
+        color = Color(0xFFEAF3F0),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = Color(0xFF0A7C66)
+            )
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF0A7C66),
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = onCancel,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+            ) {
+                Text("取消", style = MaterialTheme.typography.labelSmall, color = Color(0xFF687A75))
+            }
+        }
     }
 }
 
@@ -653,25 +1058,49 @@ fun AttributeCorrectionDialog(
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit
 ) {
+    var customValue by remember { mutableStateOf("") }
+
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("修正「$attributeName」") },
         text = {
             Column(
-                modifier = Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                modifier = Modifier.heightIn(max = 400.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                options.forEach { option ->
-                    val isSelected = option == currentValue
+                // 自由输入行
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = customValue,
+                        onValueChange = { customValue = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("输入自定义值") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
                     TextButton(
-                        onClick = { onSelect(option) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            option,
-                            color = if (isSelected) Color(0xFF0A7C66) else Color.Unspecified,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                        )
+                        onClick = { if (customValue.isNotBlank()) onSelect(customValue.trim()) },
+                        enabled = customValue.isNotBlank()
+                    ) { Text("确定") }
+                }
+                // 选项列表
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    options.forEach { option ->
+                        val isSelected = option == currentValue
+                        TextButton(
+                            onClick = { onSelect(option) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                option,
+                                color = if (isSelected) Color(0xFF0A7C66) else Color.Unspecified,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
                     }
                 }
             }
@@ -686,57 +1115,215 @@ fun AttributeCorrectionDialog(
 // ==================== Filter Summary ====================
 
 @Composable
-fun FilterSummary(filter: SearchFilter, onClear: () -> Unit) {
-    val parts = mutableListOf<String>()
-    filter.priceRange.min?.let { parts.add("≥¥$it") }
-    filter.priceRange.max?.let { parts.add("≤¥$it") }
-    filter.platforms.take(2).forEach { parts.add(it) }
-    filter.selfOperated?.let { if (it) parts.add("自营") }
-    filter.ratingMin?.let { parts.add("≥${it}分") }
-    filter.sortBy?.let { sort ->
-        val label = when (sort) {
-            "price" -> if (filter.sortOrder == "asc") "价格低→高" else "价格高→低"
-            "sales" -> "销量排序"
-            "rating" -> "评分排序"
-            else -> sort
+fun FilterSummary(
+    filter: SearchFilter,
+    onClear: () -> Unit,
+    onRemoveTag: ((String) -> Unit)? = null,
+    filterTags: List<String> = emptyList(),
+    structuredFilterTags: List<com.visioncart.app.data.FilterTag> = emptyList(),
+    canUndo: Boolean = false,
+    onUndo: (() -> Unit)? = null,
+    keptPreviousResults: Boolean = false,
+    statusMessage: String? = null
+) {
+    data class TagItem(val label: String, val fieldName: String?, val tagId: String? = null)
+
+    val tags = mutableListOf<TagItem>()
+
+    // Use structured tags when available (they have filterPath for precise deletion)
+    if (structuredFilterTags.isNotEmpty()) {
+        structuredFilterTags.forEach { st ->
+            tags.add(TagItem(st.label, st.filterPath ?: st.id, st.id))
         }
-        parts.add(label)
+    } else {
+        // Fallback to building tags from filter fields
+        filter.priceRange.min?.let { tags.add(TagItem("≥¥$it", "price_range.min")) }
+        filter.priceRange.max?.let { tags.add(TagItem("≤¥$it", "price_range.max")) }
+        filter.platforms.take(2).forEach { tags.add(TagItem(it, "platforms.$it")) }
+        filter.selfOperated?.let { if (it) tags.add(TagItem("自营", "self_operated")) }
+        filter.colors.forEach { tags.add(TagItem(it, "colors.$it")) }
+        filter.brands.forEach { tags.add(TagItem(it, "brands.$it")) }
+        filter.ratingMin?.let { tags.add(TagItem("≥${it}分", "rating_min")) }
+        filter.keyword?.let { if (it.isNotBlank() && !it.startsWith("!")) tags.add(TagItem(it, "keyword")) }
+        filter.sortBy?.let { sort ->
+            val label = when (sort) {
+                "price" -> if (filter.sortOrder == "asc") "价格低→高" else "价格高→低"
+                "sales" -> "销量排序"
+                "rating" -> "口碑排序"
+                else -> sort
+            }
+            tags.add(TagItem(label, "sort"))
+        }
+
+        // Add capability/preference tags from backend (filterTags includes these now)
+        val existingLabels = tags.map { it.label }.toSet()
+        filterTags.forEach { tag ->
+            if (tag !in existingLabels) {
+                tags.add(TagItem(tag, null)) // no fieldName = not removable individually
+            }
+        }
     }
 
-    if (parts.isEmpty()) return
+    if (tags.isEmpty() && statusMessage == null) return
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("筛选", color = Color(0xFF687A75), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-            Row(
-                modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                parts.forEach { part ->
-                    AssistChip(
-                        onClick = {},
-                        label = { Text(part, style = MaterialTheme.typography.labelSmall) },
-                        shape = RoundedCornerShape(999.dp),
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = Color(0xFFEAF3F0),
-                            labelColor = Color(0xFF0A7C66)
-                        )
+        Column {
+            // Status message for keptPreviousResults or sparse results
+            if (statusMessage != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Outlined.Info,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = if (keptPreviousResults) Color(0xFFE65100) else Color(0xFF687A75)
                     )
+                    Text(
+                        statusMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (keptPreviousResults) Color(0xFFE65100) else Color(0xFF687A75),
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (canUndo && onUndo != null) {
+                        TextButton(
+                            onClick = onUndo,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Text("撤回", style = MaterialTheme.typography.labelSmall, color = Color(0xFF0A7C66))
+                        }
+                    }
                 }
             }
-            TextButton(onClick = onClear) {
-                Text("清除", style = MaterialTheme.typography.labelSmall)
+
+            if (tags.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("筛选", color = Color(0xFF687A75), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                    Row(
+                        modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        tags.forEach { tag ->
+                            val deleteTarget = tag.tagId ?: tag.fieldName ?: tag.label
+                            AssistChip(
+                                onClick = { onRemoveTag?.invoke(deleteTarget) },
+                                label = { Text(tag.label, style = MaterialTheme.typography.labelSmall, maxLines = 1) },
+                                shape = RoundedCornerShape(999.dp),
+                                colors = AssistChipDefaults.assistChipColors(
+                                    containerColor = if (tag.fieldName == null) Color(0xFFFFF3E0) else Color(0xFFEAF3F0),
+                                    labelColor = if (tag.fieldName == null) Color(0xFFE65100) else Color(0xFF0A7C66)
+                                ),
+                                trailingIcon = if (onRemoveTag != null && tag.fieldName != null) {
+                                    {
+                                        IconButton(
+                                            onClick = { onRemoveTag.invoke(deleteTarget) },
+                                            modifier = Modifier.size(16.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "删除",
+                                                modifier = Modifier.size(10.dp),
+                                                tint = Color(0xFF0A7C66)
+                                            )
+                                        }
+                                    }
+                                } else null
+                            )
+                        }
+                    }
+                    if (canUndo && onUndo != null && statusMessage == null) {
+                        IconButton(onClick = onUndo, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = "撤回", tint = Color(0xFF0A7C66), modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    TextButton(onClick = onClear) {
+                        Text("清除", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
         }
     }
+}
+
+/**
+ * Filter status bar for showing persistent filter status with actionable buttons.
+ * Shows status (applied/partial/rollback/expanded/failed) with explanation and CTA.
+ */
+@Composable
+fun FilterStatusBar(
+    status: FilterStatus,
+    explanation: String?,
+    keptPreviousResults: Boolean,
+    canUndo: Boolean,
+    onUndo: () -> Unit,
+    onRelax: (() -> Unit)? = null,
+    onRetry: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    if (status == FilterStatus.NONE && explanation == null) return
+
+    val (backgroundColor, textColor, icon) = when (status) {
+        FilterStatus.APPLIED -> Triple(Color(0xFFEAF3F0), Color(0xFF0A7C66), Icons.Outlined.CheckCircle)
+        FilterStatus.PARTIAL -> Triple(Color(0xFFFFF3E0), Color(0xFFE65100), Icons.Outlined.Info)
+        FilterStatus.ROLLBACK -> Triple(Color(0xFFFFF3E0), Color(0xFFE65100), Icons.AutoMirrored.Outlined.Undo)
+        FilterStatus.EXPANDED -> Triple(Color(0xFFE3F2FD), Color(0xFF1565C0), Icons.Outlined.Search)
+        FilterStatus.FAILED -> Triple(Color(0xFFFFEBEE), Color(0xFFC62828), Icons.Outlined.Info)
+        FilterStatus.NONE -> Triple(Color(0xFFF5F5F5), Color(0xFF687A75), Icons.Outlined.Info)
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = backgroundColor,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = textColor)
+            Text(
+                explanation ?: status.displayName,
+                style = MaterialTheme.typography.bodySmall,
+                color = textColor,
+                modifier = Modifier.weight(1f)
+            )
+            if (canUndo) {
+                TextButton(onClick = onUndo, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                    Text("撤回", style = MaterialTheme.typography.labelSmall, color = Color(0xFF0A7C66))
+                }
+            }
+            if (onRelax != null && (status == FilterStatus.PARTIAL || status == FilterStatus.ROLLBACK)) {
+                TextButton(onClick = onRelax, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                    Text("放宽条件", style = MaterialTheme.typography.labelSmall, color = Color(0xFFE65100))
+                }
+            }
+            if (onRetry != null && status == FilterStatus.FAILED) {
+                TextButton(onClick = onRetry, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                    Text("重试", style = MaterialTheme.typography.labelSmall, color = Color(0xFFC62828))
+                }
+            }
+        }
+    }
+}
+
+enum class FilterStatus(val displayName: String) {
+    NONE("无筛选"),
+    APPLIED("已应用筛选"),
+    PARTIAL("部分匹配"),
+    ROLLBACK("已回退"),
+    EXPANDED("已扩展搜索"),
+    FAILED("筛选失败")
 }
 
 // ==================== Previews ====================

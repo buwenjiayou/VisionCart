@@ -10,7 +10,21 @@ def localPropertiesFile = rootProject.file("local.properties")
 if (localPropertiesFile.exists()) {
     localPropertiesFile.withInputStream { localProperties.load(it) }
 }
-def apiBaseUrl = localProperties.getProperty("VISIONCART_API_BASE_URL", "http://10.0.2.2:8080/")
+def apiBaseUrl = localProperties.getProperty("VISIONCART_API_BASE_URL", "http://10.0.2.2:8080/").trim()
+
+tasks.register("validateReleaseApiBaseUrl") {
+    doLast {
+        def uri = new URI(apiBaseUrl)
+        def host = uri.host ?: ""
+        def privateIp = host ==~ /^10\..*/ ||
+                host ==~ /^192\.168\..*/ ||
+                host ==~ /^172\.(1[6-9]|2[0-9]|3[01])\..*/
+        def devHost = ["localhost", "127.0.0.1", "10.0.2.2"].contains(host) || privateIp
+        if (!"https".equalsIgnoreCase(uri.scheme) || devHost) {
+            throw new GradleException("Release builds require VISIONCART_API_BASE_URL to be HTTPS and not localhost/LAN: ${apiBaseUrl}")
+        }
+    }
+}
 
 android {
     namespace "com.visioncart.app"
@@ -37,6 +51,9 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+    testOptions {
+        unitTests.returnDefaultValues = true
     }
 }
 
@@ -86,6 +103,9 @@ dependencies {
     // Coroutines
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
 
+    // WorkManager for scheduled tasks
+    implementation "androidx.work:work-runtime-ktx:2.10.0"
+
     // DataStore (for simple preferences)
     implementation "androidx.datastore:datastore-preferences:1.1.4"
 
@@ -94,8 +114,20 @@ dependencies {
 
     // Encrypted SharedPreferences
     implementation "androidx.security:security-crypto:1.1.0-alpha06"
+
+    // Unit Test
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0"
+    testImplementation "org.mockito:mockito-core:5.14.2"
+    testImplementation "org.mockito.kotlin:mockito-kotlin:5.4.0"
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.fork = true
+}
+
+tasks.configureEach { task ->
+    if (task.name == "preReleaseBuild") {
+        task.dependsOn("validateReleaseApiBaseUrl")
+    }
 }

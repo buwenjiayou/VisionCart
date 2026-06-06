@@ -32,7 +32,10 @@ public class EbaySearchService implements PlatformSearchService {
     public EbaySearchService(VisionCartProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.restClient = RestClient.create();
+        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(java.time.Duration.ofSeconds(5));
+        factory.setReadTimeout(java.time.Duration.ofSeconds(15));
+        this.restClient = RestClient.builder().requestFactory(factory).build();
     }
 
     @Override
@@ -216,7 +219,7 @@ public class EbaySearchService implements PlatformSearchService {
                     tags,
                     detailUrl,
                     brand,
-                    "none",
+                    "seller",
                     null
             ));
         }

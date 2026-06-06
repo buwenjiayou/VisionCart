@@ -1,26 +1,46 @@
 package com.visioncart.domain;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.Lob;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
 
 @Entity
-@Table(name = "recognition_feedback")
+@Table(name = "recognition_feedback", indexes = {
+    @Index(name = "idx_feedback_session", columnList = "session_id")
+})
 public class RecognitionFeedback {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "session_id", nullable = false, length = 64)
     private String sessionId;
+
+    @Column(name = "image_hash", length = 64)
     private String imageHash;
+
+    @Column(name = "attribute_name", nullable = false, length = 128)
     private String attributeName;
+
+    @Lob
+    @Column(name = "vlm_output", columnDefinition = "LONGTEXT")
     private String vlmOutput;
+
+    @Lob
+    @Column(name = "user_correction", columnDefinition = "LONGTEXT")
     private String userCorrection;
+
+    @Column(name = "user_id")
+    private Long userId;
+
     private Instant createdAt = Instant.now();
 
     @PrePersist
@@ -75,6 +95,9 @@ public class RecognitionFeedback {
     public void setUserCorrection(String userCorrection) {
         this.userCorrection = userCorrection;
     }
+
+    public Long getUserId() { return userId; }
+    public void setUserId(Long userId) { this.userId = userId; }
 
     public Instant getCreatedAt() {
         return createdAt;

@@ -12,17 +12,35 @@ public record SearchRequest(
         SearchFilter filter,
         @Min(1) Integer page,
         @Min(1) @Max(100) Integer pageSize,
+        @Min(1) @Max(2000) Integer recallSize,
         String clientType
 ) {
+    /**
+     * Backward-compatible constructor (defaults recallSize to null → 300).
+     */
+    public SearchRequest(String sessionId, Map<String, String> attributes, SearchFilter filter,
+                         Integer page, Integer pageSize, String clientType) {
+        this(sessionId, attributes, filter, page, pageSize, null, clientType);
+    }
+
     public SearchFilter effectiveFilter() {
         return filter == null ? SearchFilter.empty() : filter;
     }
 
     public int effectivePage() {
-        return page == null ? 1 : page;
+        return page == null ? 1 : Math.max(1, page);
     }
 
     public int effectivePageSize() {
-        return pageSize == null ? 20 : pageSize;
+        return pageSize == null ? 50 : Math.min(100, Math.max(1, pageSize));
+    }
+
+    /**
+     * Candidate pool size for platform search. Defaults to 300; NLP expand uses 1000.
+     * Always >= effectivePageSize.
+     */
+    public int effectiveRecallSize() {
+        int base = recallSize == null ? 300 : Math.min(2000, Math.max(1, recallSize));
+        return Math.max(base, effectivePageSize());
     }
 }

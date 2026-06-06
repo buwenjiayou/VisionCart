@@ -1,11 +1,28 @@
-version: "1.0"
+version: "1.1"
 description: "NLP user prompt template for SpringAiNlpService"
 prompt: |
   当前商品：%s
   类目：%s
   对话历史（最近几轮）：
   %s
-  规则已提取：%s
   用户输入：%s
+
+  请只输出一个严格 JSON 对象，不要输出 markdown，不要解释。
   输出格式：
-  {"filter":{"price_range":{"min":null,"max":null},"platforms":[],"self_operated":null,"colors":[],"brands":[],"rating_min":null,"sort_by":null,"sort_order":"desc","keyword":null},"confidence":0.95}
+  {
+    "filter": {
+      "price_range": {"min": null, "max": null},
+      "platforms": [],
+      "self_operated": null,
+      "colors": [],
+      "brands": [],
+      "rating_min": null,
+      "sort_by": null,
+      "sort_order": "desc",
+      "keyword": null,
+      "attributes": {},
+      "exclude_attributes": {}
+    },
+    "intent": "refine",
+    "confidence": 0.95
+  }

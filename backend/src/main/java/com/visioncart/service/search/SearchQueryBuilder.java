@@ -13,7 +13,7 @@ public final class SearchQueryBuilder {
     private SearchQueryBuilder() {}
 
     public static int platformFetchSize(int pageSize) {
-        return Math.min(100, Math.max(pageSize * 3, 60));
+        return Math.min(100, Math.max(pageSize * 4, 90));
     }
 
     public static List<String> taobaoQueries(Map<String, String> attributes, SearchFilter filter, String fallback) {
@@ -56,11 +56,19 @@ public final class SearchQueryBuilder {
         add(candidates, core, first(intent.descriptiveTerms()));
         add(candidates, category, first(intent.descriptiveTerms()));
 
+        // 确保修饰词出现在查询中（如"电动"、"无线"、"智能"）
+        for (String modifier : intent.modifierTerms()) {
+            add(candidates, modifier, core);
+            if (!modifier.equals(core)) {
+                add(candidates, modifier, category);
+            }
+        }
+
         List<String> unique = unique(candidates);
         if (unique.isEmpty()) {
             add(unique, fallback);
         }
-        return unique.stream().limit(10).toList();
+        return unique.stream().limit(6).toList();
     }
 
     public static String defaultQuery(Map<String, String> attributes, SearchFilter filter, String fallback) {
@@ -68,7 +76,7 @@ public final class SearchQueryBuilder {
     }
 
     private static String explicitKeyword(SearchFilter filter) {
-        return filter == null ? "" : SearchTextUtils.useful(filter.keyword());
+        return filter == null ? "" : SearchTextUtils.positiveKeyword(filter.keyword());
     }
 
     private static List<String> explicitQueries(String explicit, Map<String, String> attributes, String fallback) {

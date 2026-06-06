@@ -89,10 +89,13 @@ public class PriceAlertController {
     public ApiResponse<PriceHistoryDto> priceHistory(@PathVariable String productId) {
         Long userId = SecurityUtils.currentUserId();
         FavoriteProduct favorite = favoriteRepository.findByProductIdAndUserId(productId, userId).orElse(null);
-        String platform = favorite != null ? favorite.getPlatform() : "未知";
+        if (favorite == null) {
+            return ApiResponse.fail(404, "未收藏该商品，无法查看价格历史");
+        }
+        String platform = favorite.getPlatform();
 
         List<PriceHistory> history = priceMonitorService.getPriceHistory(productId, platform);
-        BigDecimal lowest = priceMonitorService.getLowestPrice30d(productId, platform);
+        BigDecimal lowest = priceMonitorService.getLowestPriceInHistory(productId, platform);
 
         List<PriceHistoryDto.Entry> entries = history.stream()
                 .map(h -> new PriceHistoryDto.Entry(h.getPrice(), h.getRecordedAt()))

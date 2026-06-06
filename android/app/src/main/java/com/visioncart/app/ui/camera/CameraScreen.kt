@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.util.Log
 import android.widget.Toast
+import com.visioncart.app.R
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -71,7 +72,7 @@ fun CameraScreen(
     ) { granted ->
         hasCameraPermission = granted
         if (!granted) {
-            Toast.makeText(context, "需要相机权限才能拍照", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.camera_permission_required), Toast.LENGTH_SHORT).show()
             onBack()
         }
     }
@@ -119,7 +120,7 @@ fun CameraScreen(
             provider.bindToLifecycle(lifecycleOwner, lensFacing, preview, imageCapture)
         } catch (e: Exception) {
             Log.e("CameraScreen", "Failed to bind camera preview", e)
-            Toast.makeText(context, "相机启动失败，请重试", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.camera_start_failed), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -190,7 +191,7 @@ fun CameraScreen(
                             override fun onError(exc: ImageCaptureException) {
                                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                                     isCapturing = false
-                                    Toast.makeText(context, "拍照失败: ${exc.message}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, context.getString(R.string.photo_capture_failed, exc.message ?: ""), Toast.LENGTH_SHORT).show()
                                 }
                             }
                         }

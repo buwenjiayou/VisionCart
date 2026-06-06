@@ -13,9 +13,9 @@ import java.util.regex.Pattern;
 @Component
 public class RuleBasedNlpParser {
     private static final Pattern PRICE_RANGE = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:到|至|-|~)\\s*(\\d+(?:\\.\\d+)?)");
-    private static final Pattern PRICE_MAX = Pattern.compile("(?:不超过|不超|最高|最多|以内|以下|低于)\\s*(\\d+(?:\\.\\d+)?)");
-    private static final Pattern PRICE_MAX_REVERSE = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:以内|以下|不超过|不超|内)");
-    private static final Pattern PRICE_MIN = Pattern.compile("(?:超过|高于|最少|至少|不低于|不下)\\s*(\\d+(?:\\.\\d+)?)");
+    private static final Pattern PRICE_MAX = Pattern.compile("(?:不超过|不超|最高|最多|以内|以下|低于|小于|少于|不大于)\\s*(\\d+(?:\\.\\d+)?)");
+    private static final Pattern PRICE_MAX_REVERSE = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(?:以内|以下|不超过|不超|内|以下的)");
+    private static final Pattern PRICE_MIN = Pattern.compile("(?:超过|高于|最少|至少|不低于|不下|大于|多于|不少于)\\s*(\\d+(?:\\.\\d+)?)");
     private static final Pattern RATING_MIN = Pattern.compile("(\\d(?:\\.\\d)?)\\s*(?:分|星|评分|好评)?\\s*(?:以上|及以上|>=|≥)");
     private static final String CN_DIGITS = "零一二两三四五六七八九十百千万亿";
 
@@ -82,6 +82,38 @@ public class RuleBasedNlpParser {
         if (containsAny(normalized, "红", "红色", "酒红")) {
             colors.add("红色");
         }
+        if (containsAny(normalized, "绿", "绿色", "墨绿", "军绿", "草绿")) {
+            colors.add("绿色");
+        }
+        if (containsAny(normalized, "黄", "黄色", "金黄", "姜黄")) {
+            colors.add("黄色");
+        }
+        if (containsAny(normalized, "粉", "粉色", "粉红", "玫瑰")) {
+            colors.add("粉色");
+        }
+        if (containsAny(normalized, "紫", "紫色", "薰衣草")) {
+            colors.add("紫色");
+        }
+        if (containsAny(normalized, "灰", "灰色", "银灰", "深灰")) {
+            colors.add("灰色");
+        }
+        if (containsAny(normalized, "金", "金色", "香槟金")) {
+            colors.add("金色");
+        }
+        if (containsAny(normalized, "银", "银色", "银白")) {
+            colors.add("银色");
+        }
+
+        // Negation detection (Bug #33) - detect "不要/除了/排除" patterns
+        // Store negated terms in keyword with "!" prefix for downstream filtering
+        List<String> negatedTerms = new ArrayList<>();
+        java.util.regex.Matcher negMatcher = java.util.regex.Pattern.compile("(?:不要|除了|排除|不想|不喜欢)\\s*([^，。？！,\\.]+)").matcher(normalized);
+        while (negMatcher.find()) {
+            String term = negMatcher.group(1).trim();
+            if (!term.isEmpty() && term.length() <= 20) {
+                negatedTerms.add(term);
+            }
+        }
 
         Boolean selfOperated = containsAny(normalized, "自营", "官方", "旗舰") ? Boolean.TRUE : null;
         String sortBy = null;
@@ -97,6 +129,8 @@ public class RuleBasedNlpParser {
             sortBy = "rating";
         }
 
+        // Build keyword with negation info for downstream use
+        String keyword = negatedTerms.isEmpty() ? null : "!" + String.join(",", negatedTerms);
         SearchFilter filter = new SearchFilter(
                 new PriceRange(min, max),
                 platforms,
@@ -106,13 +140,15 @@ public class RuleBasedNlpParser {
                 ratingMin,
                 sortBy,
                 sortOrder,
-                null
+                keyword
         );
         // 关键字段: 价格、平台、排序 — 只有命中这些才算完整，颜色/自营/评分不够
-        boolean hasMeaningfulPrice = (min != null && min > 1) || (max != null && max > 1);
+        boolean hasMeaningfulPrice = (min != null && min > 0) || (max != null && max > 0);
         boolean hasPlatform = !platforms.isEmpty();
         boolean hasSort = sortBy != null;
-        boolean complete = hasMeaningfulPrice || hasPlatform || hasSort;
+        boolean hasNegation = !negatedTerms.isEmpty();
+        boolean hasColor = !colors.isEmpty();
+        boolean complete = hasMeaningfulPrice || hasPlatform || hasSort || hasNegation || hasColor;
         return new ParsedFilter(filter, complete);
     }
 
@@ -128,6 +164,13 @@ public class RuleBasedNlpParser {
                 .replaceAll(mr -> String.valueOf((long)(Double.parseDouble(mr.group(1)) * 100000000L)));
         s = Pattern.compile("(\\d+(?:\\.\\d+)?)千").matcher(s)
                 .replaceAll(mr -> String.valueOf((long)(Double.parseDouble(mr.group(1)) * 1000)));
+        // 数学表达式: "60的一半" → "30", "100的两倍" → "200"
+        s = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*的\\s*一半").matcher(s)
+                .replaceAll(mr -> String.valueOf(Double.parseDouble(mr.group(1)) / 2));
+        s = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*的\\s*两倍").matcher(s)
+                .replaceAll(mr -> String.valueOf(Double.parseDouble(mr.group(1)) * 2));
+        s = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*的\\s*(\\d+(?:\\.\\d+)?)\\s*分之\\s*(\\d+(?:\\.\\d+)?)").matcher(s)
+                .replaceAll(mr -> String.valueOf(Double.parseDouble(mr.group(1)) * Double.parseDouble(mr.group(3)) / Double.parseDouble(mr.group(2))));
         // 中文数字 → 阿拉伯数字（手动扫描）
         StringBuilder sb = new StringBuilder();
         int i = 0;

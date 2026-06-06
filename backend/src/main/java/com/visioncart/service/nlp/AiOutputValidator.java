@@ -4,7 +4,9 @@ import com.visioncart.api.dto.PriceRange;
 import com.visioncart.api.dto.SearchFilter;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 public final class AiOutputValidator {
 
@@ -12,6 +14,7 @@ public final class AiOutputValidator {
     private static final Set<String> ALLOWED_PLATFORMS = Set.of("京东", "淘宝", "天猫", "拼多多");
     private static final Set<String> ALLOWED_SORT_ORDER = Set.of("asc", "desc");
     private static final int MAX_STRING_LENGTH = 100;
+    private static final double MAX_PRICE = 10_000_000; // 1000万上限防LLM幻觉
 
     private AiOutputValidator() {}
 
@@ -37,7 +40,9 @@ public final class AiOutputValidator {
             Double min = priceRange.min();
             Double max = priceRange.max();
             if (min != null && min < 0) min = null;
+            if (min != null && min > MAX_PRICE) min = null;
             if (max != null && max < 0) max = null;
+            if (max != null && max > MAX_PRICE) max = null;
             // Swap if inverted
             if (min != null && max != null && min > max) {
                 Double temp = min;
@@ -51,6 +56,7 @@ public final class AiOutputValidator {
         List<String> brands = truncateList(filter.brands());
 
         String keyword = truncate(filter.keyword());
+        Map<String, String> attributes = truncateMap(filter.attributes());
 
         return new SearchFilter(
                 priceRange,
@@ -61,7 +67,10 @@ public final class AiOutputValidator {
                 ratingMin,
                 sortBy,
                 sortOrder,
-                keyword
+                keyword,
+                attributes,
+                filter.excludeRoles() != null ? filter.excludeRoles() : List.of(),
+                filter.capabilities() != null ? filter.capabilities() : Map.of()
         );
     }
 
@@ -77,5 +86,14 @@ public final class AiOutputValidator {
         if (value == null) return null;
         String trimmed = value.trim();
         return trimmed.length() > MAX_STRING_LENGTH ? trimmed.substring(0, MAX_STRING_LENGTH) : trimmed;
+    }
+
+    private static Map<String, String> truncateMap(Map<String, String> values) {
+        if (values == null || values.isEmpty()) return Map.of();
+        return values.entrySet().stream()
+                .map(entry -> new java.util.AbstractMap.SimpleEntry<>(truncate(entry.getKey()), truncate(entry.getValue())))
+                .filter(entry -> entry.getKey() != null && !entry.getKey().isBlank())
+                .filter(entry -> entry.getValue() != null && !entry.getValue().isBlank())
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (left, right) -> right));
     }
 }

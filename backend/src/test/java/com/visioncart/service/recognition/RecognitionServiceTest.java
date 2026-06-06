@@ -85,9 +85,9 @@ class RecognitionServiceTest {
         h1.setSessionId("s1");
         RecognitionHistory h2 = new RecognitionHistory();
         h2.setSessionId("s2");
-        when(historyRepository.findTop20ByOrderByCreatedAtDesc()).thenReturn(List.of(h1, h2));
+        when(historyRepository.findTop20ByUserIdOrderByCreatedAtDesc(1L)).thenReturn(List.of(h1, h2));
 
-        List<RecognitionHistory> result = recognitionService.latestHistory();
+        List<RecognitionHistory> result = recognitionService.latestHistory(1L);
 
         assertThat(result).hasSize(2);
         assertThat(result.get(0).getSessionId()).isEqualTo("s1");

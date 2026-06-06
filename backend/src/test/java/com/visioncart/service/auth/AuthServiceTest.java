@@ -4,6 +4,7 @@ import com.visioncart.api.dto.LoginResponse;
 import com.visioncart.api.dto.UserProfile;
 import com.visioncart.config.JwtUtil;
 import com.visioncart.domain.User;
+import com.visioncart.repository.RefreshTokenRepository;
 import com.visioncart.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,7 +29,7 @@ class AuthServiceTest {
     private JwtUtil jwtUtil;
     private StringRedisTemplate redisTemplate;
     private ValueOperations<String, String> valueOps;
-    private JavaMailSender mailSender;
+    private MailService mailService;
     private AuthService authService;
 
     @BeforeEach
@@ -37,23 +38,22 @@ class AuthServiceTest {
         jwtUtil = mock(JwtUtil.class);
         redisTemplate = mock(StringRedisTemplate.class);
         valueOps = mock(ValueOperations.class);
-        mailSender = mock(JavaMailSender.class);
+        mailService = mock(MailService.class);
 
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
 
-        MimeMessage mimeMessage = mock(MimeMessage.class);
-        when(mailSender.createMimeMessage()).thenReturn(mimeMessage);
-
-        authService = new AuthService(userRepository, jwtUtil, redisTemplate, mailSender);
-        ReflectionTestUtils.setField(authService, "fromEmail", "noreply@example.com");
+        authService = new AuthService(userRepository, mock(RefreshTokenRepository.class), jwtUtil, redisTemplate, mailService);
     }
 
     @Test
     void sendCodeStoresCodeInRedis() {
-        when(redisTemplate.hasKey(anyString())).thenReturn(false);
+        // Rate limit setIfAbsent returns true (no existing rate limit)
+        when(valueOps.setIfAbsent(eq("verify:code:rate:test@example.com"), eq("1"), eq(60L), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
 
         authService.sendCode("test@example.com");
 
+        // Verify code is stored
         verify(valueOps).set(
                 eq("verify:code:test@example.com"),
                 argThat(code -> code.matches("\\d{6}")),
@@ -77,7 +77,9 @@ class AuthServiceTest {
 
     @Test
     void sendCodeRateLimits() {
-        when(redisTemplate.hasKey("verify:code:rate:test@example.com")).thenReturn(true);
+        // Rate limit setIfAbsent returns false (key already exists)
+        when(valueOps.setIfAbsent(eq("verify:code:rate:test@example.com"), eq("1"), eq(60L), eq(TimeUnit.SECONDS)))
+                .thenReturn(false);
 
         assertThatThrownBy(() -> authService.sendCode("test@example.com"))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -171,8 +173,9 @@ class AuthServiceTest {
 
     @Test
     void generateCodeIsSixDigits() {
-        // Verify code format by sending multiple codes
-        when(redisTemplate.hasKey(anyString())).thenReturn(false);
+        // Rate limit setIfAbsent returns true for all calls
+        when(valueOps.setIfAbsent(anyString(), eq("1"), eq(60L), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
 
         for (int i = 0; i < 10; i++) {
             authService.sendCode("test" + i + "@example.com");

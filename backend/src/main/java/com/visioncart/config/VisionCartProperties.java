@@ -19,6 +19,7 @@ public class VisionCartProperties {
     private final PriceMonitor priceMonitor = new PriceMonitor();
     private final Security security = new Security();
     private final RateLimit rateLimit = new RateLimit();
+    private final Platforms platforms = new Platforms();
 
     public String getPublicBaseUrl() { return publicBaseUrl; }
     public void setPublicBaseUrl(String publicBaseUrl) { this.publicBaseUrl = publicBaseUrl; }
@@ -34,6 +35,7 @@ public class VisionCartProperties {
     public PriceMonitor getPriceMonitor() { return priceMonitor; }
     public Security getSecurity() { return security; }
     public RateLimit getRateLimit() { return rateLimit; }
+    public Platforms getPlatforms() { return platforms; }
 
     // ==================== AI ====================
     public static class Ai {
@@ -47,6 +49,10 @@ public class VisionCartProperties {
         private double temperature = 0.0;
         private Integer maxTokens;
         private Double topP;
+        private boolean semanticJudgeEnabled = true;
+        private int semanticJudgeCandidateLimit = 80;
+        private int semanticJudgeReturnLimit = 50;
+        private double semanticJudgeMinScore = 0.35;
 
         public String getLlmModel() { return llmModel; }
         public void setLlmModel(String llmModel) { this.llmModel = llmModel; }
@@ -77,6 +83,18 @@ public class VisionCartProperties {
 
         public Double getTopP() { return topP; }
         public void setTopP(Double topP) { this.topP = topP; }
+
+        public boolean isSemanticJudgeEnabled() { return semanticJudgeEnabled; }
+        public void setSemanticJudgeEnabled(boolean semanticJudgeEnabled) { this.semanticJudgeEnabled = semanticJudgeEnabled; }
+
+        public int getSemanticJudgeCandidateLimit() { return semanticJudgeCandidateLimit; }
+        public void setSemanticJudgeCandidateLimit(int semanticJudgeCandidateLimit) { this.semanticJudgeCandidateLimit = semanticJudgeCandidateLimit; }
+
+        public int getSemanticJudgeReturnLimit() { return semanticJudgeReturnLimit; }
+        public void setSemanticJudgeReturnLimit(int semanticJudgeReturnLimit) { this.semanticJudgeReturnLimit = semanticJudgeReturnLimit; }
+
+        public double getSemanticJudgeMinScore() { return semanticJudgeMinScore; }
+        public void setSemanticJudgeMinScore(double semanticJudgeMinScore) { this.semanticJudgeMinScore = semanticJudgeMinScore; }
     }
 
     // ==================== PDD ====================
@@ -182,7 +200,7 @@ public class VisionCartProperties {
         private int queueCapacity = 50;
         private long retryBaseDelayMs = 1000;
         private int multiProductThreshold = 2;
-        private double minDetectionConfidence = 0.55;
+        private double minDetectionConfidence = 0.40;
         private int maxProducts = 8;
         private String historyImageDir = "data/recognition-history";
         private Map<String, List<String>> attributeOptions = Map.of(
@@ -311,12 +329,18 @@ public class VisionCartProperties {
     public static class Security {
         private String allowedOrigins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080";
         private String adminUserIds = "";
+        private boolean websocketQueryTokenEnabled = false;
 
         public String getAllowedOrigins() { return allowedOrigins; }
         public void setAllowedOrigins(String allowedOrigins) { this.allowedOrigins = allowedOrigins; }
 
         public String getAdminUserIds() { return adminUserIds; }
         public void setAdminUserIds(String adminUserIds) { this.adminUserIds = adminUserIds; }
+
+        public boolean isWebsocketQueryTokenEnabled() { return websocketQueryTokenEnabled; }
+        public void setWebsocketQueryTokenEnabled(boolean websocketQueryTokenEnabled) {
+            this.websocketQueryTokenEnabled = websocketQueryTokenEnabled;
+        }
 
         public java.util.List<String> allowedOriginList() {
             return java.util.Arrays.stream(java.util.Optional.ofNullable(allowedOrigins).orElse("").split(","))
@@ -376,5 +400,91 @@ public class VisionCartProperties {
 
         public int getMaxLocalKeys() { return maxLocalKeys; }
         public void setMaxLocalKeys(int maxLocalKeys) { this.maxLocalKeys = maxLocalKeys; }
+    }
+
+    // ==================== Platforms ====================
+    public static class Platforms {
+        private Platform pdd = new Platform();
+        private Platform taobao = new Platform();
+        private Platform ebay = new Platform();
+
+        public Platform getPdd() { return pdd; }
+        public void setPdd(Platform pdd) { this.pdd = pdd; }
+
+        public Platform getTaobao() { return taobao; }
+        public void setTaobao(Platform taobao) { this.taobao = taobao; }
+
+        public Platform getEbay() { return ebay; }
+        public void setEbay(Platform ebay) { this.ebay = ebay; }
+
+        /**
+         * 获取指定平台的配置（支持 PlatformSearchService.platform() 返回值和配置键名）
+         */
+        public Platform getPlatform(String platformName) {
+            if (platformName == null) return new Platform();
+            return switch (platformName) {
+                case "拼多多", "pdd" -> pdd;
+                case "淘宝", "淘宝联盟", "taobao" -> taobao;
+                case "eBay", "ebay" -> ebay;
+                default -> new Platform();
+            };
+        }
+
+        /**
+         * 返回所有平台名与配置的映射，用于遍历
+         */
+        public java.util.List<java.util.Map.Entry<String, Platform>> all() {
+            return java.util.List.of(
+                    java.util.Map.entry("拼多多", pdd),
+                    java.util.Map.entry("淘宝", taobao),
+                    java.util.Map.entry("eBay", ebay)
+            );
+        }
+    }
+
+    /**
+     * 单个平台的配置
+     */
+    public static class Platform {
+        private boolean enabled = true;
+        private long timeoutMs = 2500;
+        private double weight = 1.0;
+        private boolean fallbackEnabled = true;
+        private int fallbackPriority = 1;
+        private String regionStrategy = "global"; // global, domestic, international
+        private int maxRetries = 2;
+        private long retryDelayMs = 500;
+        private int rateLimitPerSecond = 10;
+        private boolean circuitBreakerEnabled = true;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+        public long getTimeoutMs() { return timeoutMs; }
+        public void setTimeoutMs(long timeoutMs) { this.timeoutMs = timeoutMs; }
+
+        public double getWeight() { return weight; }
+        public void setWeight(double weight) { this.weight = weight; }
+
+        public boolean isFallbackEnabled() { return fallbackEnabled; }
+        public void setFallbackEnabled(boolean fallbackEnabled) { this.fallbackEnabled = fallbackEnabled; }
+
+        public int getFallbackPriority() { return fallbackPriority; }
+        public void setFallbackPriority(int fallbackPriority) { this.fallbackPriority = fallbackPriority; }
+
+        public String getRegionStrategy() { return regionStrategy; }
+        public void setRegionStrategy(String regionStrategy) { this.regionStrategy = regionStrategy; }
+
+        public int getMaxRetries() { return maxRetries; }
+        public void setMaxRetries(int maxRetries) { this.maxRetries = maxRetries; }
+
+        public long getRetryDelayMs() { return retryDelayMs; }
+        public void setRetryDelayMs(long retryDelayMs) { this.retryDelayMs = retryDelayMs; }
+
+        public int getRateLimitPerSecond() { return rateLimitPerSecond; }
+        public void setRateLimitPerSecond(int rateLimitPerSecond) { this.rateLimitPerSecond = rateLimitPerSecond; }
+
+        public boolean isCircuitBreakerEnabled() { return circuitBreakerEnabled; }
+        public void setCircuitBreakerEnabled(boolean circuitBreakerEnabled) { this.circuitBreakerEnabled = circuitBreakerEnabled; }
     }
 }

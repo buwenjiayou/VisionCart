@@ -18,6 +18,7 @@ import org.springframework.web.socket.config.annotation.WebSocketTransportRegist
 
 import java.security.Principal;
 import java.util.List;
+import java.util.Map;
 
 @Configuration
 @EnableWebSocketMessageBroker
@@ -27,10 +28,16 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private final JwtUtil jwtUtil;
     private final VisionCartProperties properties;
+    private final com.visioncart.service.recognition.AsyncRecognitionTaskManager taskManager;
+    private final com.visioncart.repository.RecognitionHistoryRepository historyRepository;
 
-    public WebSocketConfig(JwtUtil jwtUtil, VisionCartProperties properties) {
+    public WebSocketConfig(JwtUtil jwtUtil, VisionCartProperties properties,
+                           com.visioncart.service.recognition.AsyncRecognitionTaskManager taskManager,
+                           com.visioncart.repository.RecognitionHistoryRepository historyRepository) {
         this.jwtUtil = jwtUtil;
         this.properties = properties;
+        this.taskManager = taskManager;
+        this.historyRepository = historyRepository;
     }
 
     @Override
@@ -43,13 +50,37 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         registry.addEndpoint("/ws/recognition")
                 .setAllowedOrigins(properties.getSecurity().allowedOriginList().toArray(String[]::new))
+                .addInterceptors(new org.springframework.web.socket.server.HandshakeInterceptor() {
+                    @Override
+                    public boolean beforeHandshake(org.springframework.http.server.ServerHttpRequest request,
+                                                   org.springframework.http.server.ServerHttpResponse response,
+                                                   org.springframework.web.socket.WebSocketHandler handler,
+                                                   Map<String, Object> attributes) {
+                        // Extract token from query parameter for SockJS fallback transports (Bug #28)
+                        String query = request.getURI().getQuery();
+                        if (properties.getSecurity().isWebsocketQueryTokenEnabled() && query != null) {
+                            for (String param : query.split("&")) {
+                                if (param.startsWith("token=")) {
+                                    attributes.put("ws_token", java.net.URLDecoder.decode(param.substring(6), java.nio.charset.StandardCharsets.UTF_8));
+                                    break;
+                                }
+                            }
+                        }
+                        return true;
+                    }
+                    @Override
+                    public void afterHandshake(org.springframework.http.server.ServerHttpRequest request,
+                                               org.springframework.http.server.ServerHttpResponse response,
+                                               org.springframework.web.socket.WebSocketHandler handler,
+                                               Exception exception) {}
+                })
                 .withSockJS();
     }
 
     @Override
     public void configureWebSocketTransport(WebSocketTransportRegistration registry) {
-        registry.setMessageSizeLimit(64 * 1024);      // 64KB
-        registry.setSendBufferSizeLimit(128 * 1024);   // 128KB
+        registry.setMessageSizeLimit(2 * 1024 * 1024);      // 2MB (base64 crop images)
+        registry.setSendBufferSizeLimit(4 * 1024 * 1024);   // 4MB
     }
 
     @Override
@@ -112,9 +143,17 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     String topicUserId = destination.substring("/topic/price-alert/".length());
                     return String.valueOf(userId).equals(topicUserId);
                 }
-                // /topic/recognition/{sessionId} — allowed for any authenticated user
-                // (sessionId is a UUID, ownership is checked at the REST API level)
-                return destination.startsWith("/topic/recognition/");
+                // /topic/recognition/{sessionId} — verify ownership (Bug #29)
+                if (destination.startsWith("/topic/recognition/")) {
+                    String sessionId = destination.substring("/topic/recognition/".length());
+                    return taskManager.belongsToUser(sessionId, userId);
+                }
+                // /topic/search/{sessionId} — verify ownership via task or history
+                if (destination.startsWith("/topic/search/")) {
+                    String sessionId = destination.substring("/topic/search/".length());
+                    return taskManager.belongsToUser(sessionId, userId)
+                            || historyRepository.findBySessionIdAndUserId(sessionId, userId).isPresent();
+                }
             }
             return false;
         }
@@ -128,10 +167,18 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     return header.substring(7);
                 }
             }
-            // Try token query parameter (for SockJS)
+            // Try token native header
             List<String> tokenHeaders = accessor.getNativeHeader("token");
             if (tokenHeaders != null && !tokenHeaders.isEmpty()) {
                 return tokenHeaders.get(0);
+            }
+            // Try session attributes (set by handshake interceptor for SockJS query param, Bug #28)
+            Map<String, Object> sessionAttrs = accessor.getSessionAttributes();
+            if (sessionAttrs != null) {
+                Object wsToken = sessionAttrs.get("ws_token");
+                if (wsToken instanceof String token && !token.isBlank()) {
+                    return token;
+                }
             }
             return null;
         }

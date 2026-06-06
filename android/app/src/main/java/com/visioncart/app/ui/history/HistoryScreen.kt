@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
@@ -85,7 +87,8 @@ fun HistoryScreen(
             items(history, key = { it.sessionId }) { record ->
                 HistoryItemView(
                     record = record,
-                    onClick = { onItemClick(record.sessionId) }
+                    onClick = { onItemClick(record.sessionId) },
+                    onDelete = { viewModel.deleteHistory(record.sessionId) }
                 )
             }
         }
@@ -95,7 +98,8 @@ fun HistoryScreen(
 @Composable
 internal fun HistoryItemView(
     record: RecognitionRecordEntity,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDelete: () -> Unit = {}
 ) {
     val dateFormat = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
     val timeText = dateFormat.format(Date(record.createdAt))
@@ -137,11 +141,21 @@ internal fun HistoryItemView(
                         color = Color(0xFF757575),
                         style = MaterialTheme.typography.bodySmall
                     )
-                    Text(
-                        timeText,
-                        color = Color(0xFF9E9E9E),
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            timeText,
+                            color = Color(0xFF9E9E9E),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "删除",
+                                tint = Color(0xFFBDBDBD),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
             }
         }

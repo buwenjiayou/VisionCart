@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.Flow
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -48,22 +49,23 @@ class VisionCartRepository(private val context: Context) {
         val imageUrl: String? = null
     ) : Exception("请选择要识别的商品")
 
-    suspend fun analyzeImage(imageUri: Uri): Result<RecognitionResult> {
+    suspend fun analyzeImage(imageUri: Uri, onProgress: ((String) -> Unit)? = null): Result<RecognitionResult> {
         return try {
             val file = uriToFile(imageUri)
-            analyzeImageFile(file, imageUri.toString())
+            analyzeImageFile(file, imageUri.toString(), onProgress)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to prepare image for recognition: $imageUri", e)
             Result.failure(e)
         }
     }
 
-    suspend fun analyzeImageFile(file: File, imageUrl: String? = null): Result<RecognitionResult> {
+    suspend fun analyzeImageFile(file: File, imageUrl: String? = null, onProgress: ((String) -> Unit)? = null): Result<RecognitionResult> {
         return try {
             Log.i(TAG, "Uploading image for recognition: name=${file.name}, size=${file.length()}")
             val requestFile = file.asRequestBody("image/jpeg".toMediaTypeOrNull())
             val body = MultipartBody.Part.createFormData("image", file.name, requestFile)
-            val response = api.analyzeImage(body)
+            val regionBody = "CN".toRequestBody("text/plain".toMediaTypeOrNull())
+            val response = api.analyzeImage(body, regionBody)
             if (response.code != 200 || response.data == null) {
                 Log.w(TAG, "Recognition upload rejected: code=${response.code}, message=${response.message}")
                 return Result.failure(Exception(response.message))
@@ -73,7 +75,7 @@ class VisionCartRepository(private val context: Context) {
             val persistentImageUrl = persistRecognitionImage(file, sessionId)
             Log.i(TAG, "Recognition task accepted: sessionId=$sessionId")
             val result = try {
-                pollRecognitionResult(sessionId)
+                pollRecognitionResult(sessionId, onProgress)
             } catch (e: MultiProductPendingException) {
                 throw MultiProductPendingException(e.sessionId, e.candidates, persistentImageUrl)
             }
@@ -88,17 +90,68 @@ class VisionCartRepository(private val context: Context) {
         }
     }
 
-    private suspend fun pollRecognitionResult(sessionId: String): RecognitionResult {
+    private suspend fun pollRecognitionResult(sessionId: String, onProgress: ((String) -> Unit)? = null): RecognitionResult {
+        // Try WebSocket first for real-time result
+        val wsResult = tryWebSocketRecognition(sessionId)
+        if (wsResult != null) return wsResult
+
+        // Fallback to HTTP polling
+        Log.d(TAG, "WebSocket failed for $sessionId, falling back to HTTP polling")
+        return pollRecognitionResultHttp(sessionId, onProgress)
+    }
+
+    private suspend fun tryWebSocketRecognition(sessionId: String): RecognitionResult? {
+        return try {
+            val token = ApiClient.authToken ?: return null
+            val baseUrl = com.visioncart.app.BuildConfig.API_BASE_URL
+            val topic = "/topic/recognition/$sessionId"
+
+            Log.d(TAG, "Trying WebSocket for session $sessionId")
+            val stompClient = StompClient(ApiClient.okHttpClient)
+
+            // Run in IO dispatcher to avoid blocking
+            val messageJson = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                stompClient.connectAndReceive(baseUrl, token, topic, timeoutMs = 60_000)
+            }
+
+            if (messageJson == null) {
+                Log.w(TAG, "WebSocket returned null for $sessionId")
+                return null
+            }
+
+            // Parse the RecognitionTaskResult JSON
+            val moshiAdapter = moshi.adapter(RecognitionTaskResult::class.java)
+            val task = moshiAdapter.fromJson(messageJson)
+
+            when (task?.status) {
+                "COMPLETED" -> {
+                    if (task.result != null) task.result.copy(confidenceHint = task.confidenceHint)
+                    else null
+                }
+                "MULTI_PRODUCT_PENDING" -> throw MultiProductPendingException(sessionId, task.candidates)
+                "FAILED" -> throw Exception(task.error ?: "识别失败")
+                else -> null
+            }
+        } catch (e: MultiProductPendingException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "WebSocket recognition failed for $sessionId: ${e.message}")
+            null
+        }
+    }
+
+    private suspend fun pollRecognitionResultHttp(sessionId: String, onProgress: ((String) -> Unit)? = null): RecognitionResult {
         val maxAttempts = 30 // 30 * 2s = 60s max
         val intervalMs = 2000L
         for (i in 0 until maxAttempts) {
             val statusResponse = api.getRecognitionStatus(sessionId)
             if (statusResponse.code == 200 && statusResponse.data != null) {
                 val task = statusResponse.data
-                Log.d(TAG, "Recognition poll: sessionId=$sessionId, attempt=${i + 1}, status=${task.status}")
+                Log.d(TAG, "Recognition poll: sessionId=$sessionId, attempt=${i + 1}, status=${task.status}, progress=${task.progressStep}")
+                task.progressStep?.let { onProgress?.invoke(it) }
                 when (task.status) {
                     "COMPLETED" -> {
-                        if (task.result != null) return task.result
+                        if (task.result != null) return task.result.copy(confidenceHint = task.confidenceHint)
                         throw Exception("识别结果为空")
                     }
                     "MULTI_PRODUCT_PENDING" -> throw MultiProductPendingException(sessionId, task.candidates)
@@ -194,6 +247,44 @@ class VisionCartRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Subscribe to search progress via WebSocket (staged results).
+     * Calls [onProgress] for each partial product list received from a platform.
+     * Blocks until timeout; run in IO dispatcher.
+     */
+    fun subscribeSearchProgress(
+        sessionId: String,
+        timeoutMs: Long = 15_000,
+        onProgress: (List<ProductCard>) -> Unit
+    ) {
+        try {
+            val token = ApiClient.authToken ?: return
+            val baseUrl = com.visioncart.app.BuildConfig.API_BASE_URL
+            val topic = "/topic/search/$sessionId"
+            val stompClient = StompClient(ApiClient.okHttpClient)
+            val moshiAdapter = moshi.adapter<List<ProductCard>>(
+                Types.newParameterizedType(List::class.java, ProductCard::class.java)
+            )
+
+            stompClient.connectAndListen(baseUrl, token, topic, timeoutMs) { body ->
+                try {
+                    val jsonObject = org.json.JSONObject(body)
+                    val productsArray = jsonObject.optJSONArray("products")
+                    if (productsArray != null && productsArray.length() > 0) {
+                        val products = moshiAdapter.fromJson(productsArray.toString()) ?: emptyList()
+                        if (products.isNotEmpty()) {
+                            onProgress(products)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to parse search progress: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Search progress subscription failed: ${e.message}")
+        }
+    }
+
     // ==================== NLP ====================
 
     suspend fun parseNlp(request: NlpParseRequest): Result<NlpParseResult> {
@@ -209,13 +300,71 @@ class VisionCartRepository(private val context: Context) {
         }
     }
 
+    suspend fun nlpFilter(request: NlpFilterRequest): Result<NlpFilterResult> {
+        return try {
+            val response = api.nlpFilter(request)
+            if (response.code == 200 && response.data != null) {
+                Result.success(response.data)
+            } else {
+                Result.failure(Exception(response.message))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun removeFilterField(sessionId: String, fieldName: String, currentFilter: SearchFilter): Result<NlpFilterResult> {
+        return executeUserAction(
+            UserActionRequest(
+                actionId = "tag-${System.currentTimeMillis()}",
+                source = "tag_delete",
+                sessionId = sessionId,
+                rawText = "remove filter:$fieldName",
+                payload = UserActionPayload(tagId = fieldName, filterPath = fieldName)
+            )
+        ).map { it.toNlpFilterResult(currentFilter) }
+    }
+
+    suspend fun removeFilterTag(sessionId: String, tagId: String, currentFilter: SearchFilter): Result<NlpFilterResult> {
+        return executeUserAction(
+            UserActionRequest(
+                actionId = "tag-${System.currentTimeMillis()}",
+                source = "tag_delete",
+                sessionId = sessionId,
+                rawText = "remove filter:$tagId",
+                payload = UserActionPayload(tagId = tagId, filterPath = tagId)
+            )
+        ).map { it.toNlpFilterResult(currentFilter) }
+    }
+
+    suspend fun clearFilters(sessionId: String): Result<Unit> {
+        return executeUserAction(
+            UserActionRequest(
+                actionId = "clear-${System.currentTimeMillis()}",
+                source = "clear_filter",
+                sessionId = sessionId,
+                rawText = "clear filters",
+                payload = UserActionPayload(action = "clear_all")
+            )
+        ).map { Unit }
+    }
+
+    suspend fun undoNlpFilter(sessionId: String): Result<NlpFilterResult> {
+        return undoLastAction(sessionId).map { it.toNlpFilterResult(SearchFilter()) }
+    }
+
     // ==================== Suggestions ====================
 
-    suspend fun getSuggestionCards(sessionId: String): Result<List<SuggestionCard>> {
+    data class SuggestionCardsResponse(
+        val cards: List<SuggestionCard>,
+        val insightStatus: String? = null  // "READY" or "PENDING"
+    )
+
+    suspend fun getSuggestionCards(sessionId: String): Result<SuggestionCardsResponse> {
         return try {
             val response = api.getSuggestionCards(sessionId)
             if (response.code == 200 && response.data != null) {
-                Result.success(response.data.cards)
+                Result.success(SuggestionCardsResponse(response.data.cards, response.data.insightStatus))
             } else {
                 Result.failure(Exception(response.message))
             }
@@ -227,12 +376,45 @@ class VisionCartRepository(private val context: Context) {
     suspend fun executeSuggestion(
         sessionId: String,
         action: String,
+        currentProducts: List<ProductCard>? = null,
+        currentFilter: SearchFilter? = null
+    ): Result<SuggestionExecuteResult> {
+        return executeSuggestionAction(sessionId, action, currentProducts, currentFilter)
+            .map { it.toSuggestionExecuteResult(currentFilter ?: SearchFilter()) }
+    }
+
+    @Deprecated("Use executeUserAction()")
+    suspend fun undoSuggestion(
+        sessionId: String,
         currentProducts: List<ProductCard>? = null
     ): Result<SuggestionExecuteResult> {
-        return try {
-            val response = api.executeSuggestion(
-                SuggestionExecuteRequest(sessionId, action, currentProducts)
+        return undoLastAction(sessionId).map { it.toSuggestionExecuteResult(SearchFilter()) }
+    }
+
+    /**
+     * Execute a suggestion action through the unified SafeActionExecutor pipeline.
+     * Returns ActionResult (unified response for all action types).
+     */
+    suspend fun executeSuggestionAction(
+        sessionId: String,
+        action: String,
+        currentProducts: List<ProductCard>? = null,
+        currentFilter: SearchFilter? = null
+    ): Result<ActionResult> {
+        return executeUserAction(
+            UserActionRequest(
+                actionId = "suggestion-${System.currentTimeMillis()}",
+                source = "suggestion",
+                sessionId = sessionId,
+                rawText = action,
+                payload = UserActionPayload(action = action)
             )
+        )
+    }
+
+    suspend fun executeUserAction(request: UserActionRequest): Result<ActionResult> {
+        return try {
+            val response = api.executeUserAction(request)
             if (response.code == 200 && response.data != null) {
                 Result.success(response.data)
             } else {
@@ -241,6 +423,57 @@ class VisionCartRepository(private val context: Context) {
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * Unified undo: undo the last action regardless of source (NLP, suggestion, correction, etc.).
+     * Returns ActionResult with restored products and filter.
+     */
+    suspend fun undoLastAction(sessionId: String): Result<ActionResult> {
+        return try {
+            val response = api.undoLastAction(sessionId)
+            if (response.code == 200 && response.data != null) {
+                Result.success(response.data)
+            } else {
+                Result.failure(Exception(response.message))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun ActionResult.toNlpFilterResult(fallbackFilter: SearchFilter): NlpFilterResult {
+        return NlpFilterResult(
+            products = allDisplayProducts,
+            filter = appliedFilter ?: fallbackFilter,
+            filterTags = filterTags.map { it.label },
+            structuredFilterTags = filterTags,
+            totalInPool = totalInPool,
+            resultCount = allDisplayProducts.size,
+            needExpand = false,
+            needRelaxHint = false,
+            cacheExpired = false,
+            newSearchIntent = false,
+            newCategory = null,
+            keepStyleReference = false,
+            message = message,
+            canUndo = canUndo,
+            filterApplied = filterApplied,
+            keptPreviousResults = keptPreviousResults,
+            warnings = warnings,
+            explanations = explanations
+        )
+    }
+
+    private fun ActionResult.toSuggestionExecuteResult(fallbackFilter: SearchFilter): SuggestionExecuteResult {
+        return SuggestionExecuteResult(
+            products = allDisplayProducts,
+            cards = suggestionCards ?: emptyList(),
+            toast = message,
+            updated_filter = appliedFilter ?: fallbackFilter,
+            can_undo = canUndo,
+            filter_applied = filterApplied
+        )
     }
 
     // ==================== Favorites ====================
@@ -271,8 +504,25 @@ class VisionCartRepository(private val context: Context) {
     suspend fun isFavoriteLocal(productId: String): Boolean = favoriteDao.isFavorite(productId)
 
     suspend fun addFavoriteLocal(product: ProductCard, sessionId: String) {
-        favoriteDao.insert(
-            FavoriteProductEntity(
+        val entity = FavoriteProductEntity(
+            productId = product.id,
+            platform = product.platform,
+            title = product.title,
+            imageUrl = product.imageUrl,
+            price = product.price,
+            originalPrice = product.originalPrice,
+            shopName = product.shopName,
+            rating = product.rating,
+            sales = product.sales,
+            detailUrl = product.detailUrl,
+            sessionId = sessionId,
+            brand = product.brand
+        )
+        // IGNORE inserts only if not exists; update if already exists (preserves createdAt)
+        val inserted = favoriteDao.insert(entity)
+        if (favoriteDao.isFavorite(product.id)) {
+            // Row already existed (IGNORE didn't insert) — update mutable fields
+            favoriteDao.update(
                 productId = product.id,
                 platform = product.platform,
                 title = product.title,
@@ -283,10 +533,10 @@ class VisionCartRepository(private val context: Context) {
                 rating = product.rating,
                 sales = product.sales,
                 detailUrl = product.detailUrl,
-                sessionId = sessionId,
+                updatedAt = System.currentTimeMillis(),
                 brand = product.brand
             )
-        )
+        }
     }
 
     suspend fun removeFavoriteLocal(productId: String) = favoriteDao.delete(productId)
@@ -314,23 +564,39 @@ class VisionCartRepository(private val context: Context) {
                 // Upsert backend items into local, preserving local data for fields not returned by backend
                 for (card in response.data) {
                     val existing = localMap[card.product_id]
-                    favoriteDao.insert(
-                        FavoriteProductEntity(
-                            productId = card.product_id,
-                            platform = card.platform ?: existing?.platform ?: "",
-                            title = card.title ?: existing?.title ?: "",
-                            imageUrl = card.image_url ?: existing?.imageUrl ?: "",
-                            price = card.price ?: existing?.price ?: 0.0,
-                            originalPrice = existing?.originalPrice,
-                            shopName = card.platform ?: existing?.shopName ?: "收藏商品",
-                            rating = existing?.rating ?: 0.0,
-                            sales = existing?.sales ?: 0L,
-                            detailUrl = card.detail_url ?: existing?.detailUrl ?: "",
-                            sessionId = existing?.sessionId ?: "",
-                            updatedAt = card.updated_at ?: System.currentTimeMillis(),
-                            brand = existing?.brand
-                        )
+                    val entity = FavoriteProductEntity(
+                        productId = card.product_id,
+                        platform = card.platform ?: existing?.platform ?: "",
+                        title = card.title ?: existing?.title ?: "",
+                        imageUrl = card.image_url ?: existing?.imageUrl ?: "",
+                        price = card.price ?: existing?.price ?: 0.0,
+                        originalPrice = existing?.originalPrice,
+                        shopName = card.platform ?: existing?.shopName ?: "收藏商品",
+                        rating = existing?.rating ?: 0.0,
+                        sales = existing?.sales ?: 0L,
+                        detailUrl = card.detail_url ?: existing?.detailUrl ?: "",
+                        sessionId = existing?.sessionId ?: "",
+                        updatedAt = card.updated_at ?: System.currentTimeMillis(),
+                        brand = existing?.brand
                     )
+                    // IGNORE inserts only if not exists; update to preserve createdAt
+                    favoriteDao.insert(entity)
+                    if (existing != null) {
+                        favoriteDao.update(
+                            productId = card.product_id,
+                            platform = entity.platform,
+                            title = entity.title,
+                            imageUrl = entity.imageUrl,
+                            price = entity.price,
+                            originalPrice = entity.originalPrice,
+                            shopName = entity.shopName,
+                            rating = entity.rating,
+                            sales = entity.sales,
+                            detailUrl = entity.detailUrl,
+                            updatedAt = entity.updatedAt,
+                            brand = entity.brand
+                        )
+                    }
                 }
 
                 // Sync local-only items to backend (items added while offline)
@@ -338,7 +604,7 @@ class VisionCartRepository(private val context: Context) {
                 val localOnlyIds = localItems.map { it.productId }.toSet() - backendIds
                 for (localItem in localItems.filter { it.productId in localOnlyIds }) {
                     try {
-                        api.addFavorite(FavoriteRequest(
+                        val pushResult = api.addFavorite(FavoriteRequest(
                             product_id = localItem.productId,
                             platform = localItem.platform,
                             title = localItem.title,
@@ -347,13 +613,65 @@ class VisionCartRepository(private val context: Context) {
                             detail_url = localItem.detailUrl,
                             updated_at = localItem.updatedAt
                         ))
+                        // If push succeeded, the item is now on backend — no need to clean
                     } catch (_: Exception) {
                         // Will retry on next sync
+                    }
+                }
+
+                // Remove local favorites that no longer exist on backend
+                // (user deleted them on another device or backend cleaned them up)
+                val syncedBackendIds = response.data.map { it.product_id }.toSet()
+                val staleLocalIds = localItems.map { it.productId }.toSet() - syncedBackendIds
+                if (staleLocalIds.isNotEmpty()) {
+                    for (staleId in staleLocalIds) {
+                        favoriteDao.delete(staleId)
                     }
                 }
             }
         } catch (_: Exception) {
             // 静默失败，本地缓存仍可用
+        }
+    }
+
+    // ==================== Price Alerts ====================
+
+    suspend fun createPriceAlert(productId: String, targetPrice: Double): Result<PriceAlertCard> {
+        return try {
+            val response = api.createPriceAlert(PriceAlertRequest(productId, targetPrice))
+            if (response.code == 200 && response.data != null) {
+                Result.success(response.data)
+            } else {
+                Result.failure(Exception(response.message))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getPriceAlerts(): Result<List<PriceAlertCard>> {
+        return try {
+            val response = api.getPriceAlerts()
+            if (response.code == 200 && response.data != null) {
+                Result.success(response.data)
+            } else {
+                Result.failure(Exception(response.message))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deletePriceAlert(productId: String): Result<Unit> {
+        return try {
+            val response = api.deletePriceAlert(productId)
+            if (response.code == 200) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(response.message))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
@@ -364,12 +682,56 @@ class VisionCartRepository(private val context: Context) {
         return recognitionDao.getAllFlow(userId)
     }
 
+    suspend fun deleteHistory(sessionId: String): Result<Unit> {
+        return try {
+            val response = api.deleteHistory(sessionId)
+            if (response.code == 200) {
+                recognitionDao.delete(sessionId)
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(response.message ?: "删除失败"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 归档会话商品到 MySQL（识别历史）。会话结束时调用。
+     */
+    suspend fun archiveSession(sessionId: String) {
+        try {
+            api.archiveSession(sessionId)
+        } catch (_: Exception) {
+            // 归档失败不影响主流程
+        }
+    }
+
     suspend fun syncHistoryFromBackend() {
         try {
             val userId = ApiClient.currentUserId ?: return
-            val response = api.getHistory(page = 1, size = 100)
-            if (response.code == 200 && response.data != null) {
-                val items = response.data.items
+            val allItems = mutableListOf<HistoryItem>()
+            var page = 1
+            val pageSize = 100
+            val maxRecords = 500
+            // Paginate through history records
+            while (allItems.size < maxRecords) {
+                val response = api.getHistory(page = page, size = pageSize)
+                if (response.code == 200 && response.data != null) {
+                    allItems.addAll(response.data.items)
+                    if (response.data.items.size < pageSize || allItems.size >= (response.data.total ?: 0)) break
+                    page++
+                } else {
+                    break
+                }
+            }
+            if (allItems.isEmpty()) {
+                // Backend returned empty history — clean local data for this user
+                recognitionDao.deleteByUserId(userId)
+                return
+            }
+            if (allItems.isNotEmpty()) {
+                val items = allItems
                 val existingBySession = recognitionDao.getAllForUser(userId).associateBy { it.sessionId }
                 val entities = items.map { item ->
                     val existing = existingBySession[item.session_id]
@@ -398,12 +760,33 @@ class VisionCartRepository(private val context: Context) {
                 // Insert new data first (REPLACE updates existing), then remove stale records
                 recognitionDao.insertAll(entities)
                 val keepIds = entities.map { it.sessionId }
+                // Guard: never call deleteByUserIdExcept with empty list (would delete ALL user history)
                 if (keepIds.isNotEmpty()) {
                     recognitionDao.deleteByUserIdExcept(userId, keepIds)
+                } else {
+                    // Backend returned items but all mapped to empty sessionIds — skip cleanup
+                    Log.w(TAG, "syncHistoryFromBackend: keepIds is empty after mapping, skipping deleteByUserIdExcept")
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "syncHistoryFromBackend failed, local cache still usable", e)
+        }
+    }
+
+    /**
+     * 从后端获取指定 session 的商品快照（历史记录点击时使用，不重新搜索）。
+     */
+    suspend fun getHistoryProducts(sessionId: String): List<ProductCard> {
+        return try {
+            val response = api.getHistoryProducts(sessionId)
+            if (response.code == 200 && response.data != null) {
+                response.data.map { it.toProductCard() }
+            } else {
+                emptyList()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "getHistoryProducts failed for $sessionId", e)
+            emptyList()
         }
     }
 
@@ -473,7 +856,8 @@ class VisionCartRepository(private val context: Context) {
     }
 
     private fun preferredLocalImageUrl(sessionId: String, candidate: String?): String? {
-        if (isUsableLocalImageUrl(candidate)) return candidate
+        val explicit = candidate?.trim().orEmpty()
+        if (explicit.isNotBlank() && !explicit.startsWith("upload://")) return explicit
         return localRecognitionImageUrl(currentUserIdForStorage(), sessionId)
     }
 
@@ -485,7 +869,12 @@ class VisionCartRepository(private val context: Context) {
     ): String {
         if (isUsableLocalImageUrl(existingImageUrl)) return existingImageUrl.orEmpty()
         localRecognitionImageUrl(userId, sessionId)?.let { return it }
-        return remoteImageUrl.orEmpty()
+        // If remote URL is blank or upload://, use backend API path
+        val remote = remoteImageUrl.orEmpty()
+        if (remote.isBlank() || remote.startsWith("upload://")) {
+            return "/api/v1/history/$sessionId/image"
+        }
+        return remote
     }
 
     private fun localRecognitionImageUrl(userId: Long, sessionId: String): String? {

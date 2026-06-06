@@ -1,6 +1,7 @@
 package com.visioncart.service.search;
 
 import com.visioncart.config.VisionCartProperties;
+import com.visioncart.service.metrics.PerformanceMetricsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -19,70 +20,67 @@ public class PlatformCircuitBreaker {
     private final int halfOpenProbeCount;
     private final long slowCallThresholdMs;
     private final double slowCallRateThreshold;
+    private final PerformanceMetricsService metricsService;
 
     private final ConcurrentHashMap<String, CircuitState> states = new ConcurrentHashMap<>();
 
-    public PlatformCircuitBreaker(VisionCartProperties properties) {
+    public PlatformCircuitBreaker(VisionCartProperties properties, PerformanceMetricsService metricsService) {
         VisionCartProperties.CircuitBreaker cfg = properties.getCircuitBreaker();
         this.failureThreshold = cfg.getFailureThreshold();
         this.openDurationMs = cfg.getOpenDurationMs();
         this.halfOpenProbeCount = cfg.getHalfOpenProbeCount();
         this.slowCallThresholdMs = cfg.getSlowCallThresholdMs();
         this.slowCallRateThreshold = cfg.getSlowCallRateThreshold();
+        this.metricsService = metricsService;
     }
 
     public boolean allowRequest(String platform) {
         CircuitState state = states.get(platform);
         if (state == null) return true;
 
-        if (state.status == Status.OPEN) {
-            synchronized (state) {
-                if (state.status == Status.OPEN && System.currentTimeMillis() - state.openedAt > openDurationMs) {
+        synchronized (state) {
+            if (state.status == Status.OPEN) {
+                if (System.currentTimeMillis() - state.openedAt > openDurationMs) {
                     state.status = Status.HALF_OPEN;
+                    state.failures.set(0);
+                    state.slowCalls.set(0);
+                    state.totalCalls.set(0);
                     state.halfOpenSuccesses.set(0);
-                    state.halfOpenAllowed.set(0);
+                    state.halfOpenAllowed.set(1); // Count this request as the first probe
+                    metricsService.recordCircuitHalfOpen(platform);
                     log.info("Circuit half-open for {}", platform);
                     return true;
                 }
+                return false;
             }
-            return state.status == Status.HALF_OPEN;
-        }
-        if (state.status == Status.HALF_OPEN) {
-            int allowed = state.halfOpenAllowed.incrementAndGet();
-            if (allowed < halfOpenProbeCount) {
-                return true;
+            if (state.status == Status.HALF_OPEN) {
+                int allowed = state.halfOpenAllowed.incrementAndGet();
+                if (allowed <= halfOpenProbeCount) {
+                    return true;
+                }
+                return false;
             }
-            return false;
+            return true;
         }
-        return true;
     }
 
     public void recordSuccess(String platform, long durationMs) {
-        CircuitState state = states.get(platform);
-        if (state == null) {
-            if (durationMs > slowCallThresholdMs) {
-                state = states.computeIfAbsent(platform, k -> new CircuitState());
-                recordSlowCall(state, platform);
-            }
-            return;
-        }
+        CircuitState state = states.computeIfAbsent(platform, k -> new CircuitState());
 
         synchronized (state) {
-            recordCall(state, platform);
-            if (durationMs > slowCallThresholdMs) {
-                recordSlowCall(state, platform);
-            }
-
-            if (state.status == Status.CLOSED) {
-                state.failures.set(0);
-            }
-
             if (state.status == Status.HALF_OPEN) {
                 int successes = state.halfOpenSuccesses.incrementAndGet();
                 if (successes >= halfOpenProbeCount) {
                     states.remove(platform, state);
+                    metricsService.recordCircuitClose(platform);
                     log.info("Circuit closed for {} after {} successful probes", platform, successes);
                 }
+                return;
+            }
+            state.failures.set(0);
+            recordCall(state, platform);
+            if (durationMs > slowCallThresholdMs) {
+                recordSlowCall(state, platform);
             }
         }
     }
@@ -98,20 +96,22 @@ public class PlatformCircuitBreaker {
         }
 
         synchronized (state) {
-            if (durationMs > slowCallThresholdMs) {
-                recordSlowCall(state, platform);
-            }
-
             if (state.status == Status.HALF_OPEN) {
                 state.status = Status.OPEN;
                 state.openedAt = System.currentTimeMillis();
+                metricsService.recordCircuitOpen(platform);
                 log.warn("Circuit re-opened for {} during half-open probe", platform);
                 return;
+            }
+            recordCall(state, platform);
+            if (durationMs > slowCallThresholdMs) {
+                recordSlowCall(state, platform);
             }
             int failures = state.failures.incrementAndGet();
             if (failures >= failureThreshold) {
                 state.status = Status.OPEN;
                 state.openedAt = System.currentTimeMillis();
+                metricsService.recordCircuitOpen(platform);
                 log.warn("Circuit opened for {} after {} failures", platform, failures);
             }
         }
@@ -140,11 +140,12 @@ public class PlatformCircuitBreaker {
             if (slowRate >= slowCallRateThreshold) {
                 state.status = Status.OPEN;
                 state.openedAt = System.currentTimeMillis();
-                state.slowCalls.set(0);
-                state.totalCalls.set(0);
                 log.warn("Circuit opened for {} due to slow call rate {}% (threshold {}%)",
                         platform, String.format("%.1f", slowRate * 100), String.format("%.1f", slowCallRateThreshold * 100));
             }
+            // Reset counters for the next window (true sliding window behavior)
+            state.slowCalls.set(0);
+            state.totalCalls.set(0);
         }
     }
 

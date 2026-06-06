@@ -22,26 +22,44 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class PddSearchService implements PlatformSearchService {
     private static final Logger log = LoggerFactory.getLogger(PddSearchService.class);
-    private static final long DETAIL_CACHE_TTL_MS = Duration.ofMinutes(30).toMillis();
 
     private final VisionCartProperties properties;
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
-    private final Map<String, CachedDetail> detailCache = new ConcurrentHashMap<>();
-    private final Map<String, CachedUrl> promotionUrlCache = new ConcurrentHashMap<>();
+    private final java.util.concurrent.ExecutorService searchExecutor;
+    private final java.util.concurrent.ExecutorService detailExecutor;
+    private final Cache<String, CachedDetail> detailCache = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(30, TimeUnit.MINUTES)
+            .build();
+    private final Cache<String, CachedUrl> promotionUrlCache = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(30, TimeUnit.MINUTES)
+            .build();
 
-    public PddSearchService(VisionCartProperties properties, ObjectMapper objectMapper) {
+    public PddSearchService(VisionCartProperties properties, ObjectMapper objectMapper,
+                            @org.springframework.beans.factory.annotation.Qualifier("searchExecutor") java.util.concurrent.ExecutorService searchExecutor,
+                            @org.springframework.beans.factory.annotation.Qualifier("detailExecutor") java.util.concurrent.ExecutorService detailExecutor) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.restClient = RestClient.create();
+        this.searchExecutor = searchExecutor;
+        this.detailExecutor = detailExecutor;
+        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(java.time.Duration.ofSeconds(5));
+        factory.setReadTimeout(java.time.Duration.ofSeconds(15));
+        this.restClient = RestClient.builder().requestFactory(factory).build();
     }
 
     @Override
@@ -57,22 +75,53 @@ public class PddSearchService implements PlatformSearchService {
         }
 
         try {
-            Map<String, ProductCard> byId = new LinkedHashMap<>();
             int fetchSize = SearchQueryBuilder.platformFetchSize(pageSize);
-            for (String query : SearchQueryBuilder.pddQueries(attributes, filter, "商品")) {
-                mapResponse(executeSearch(query, page, fetchSize)).forEach(product -> byId.putIfAbsent(product.id(), product));
-                if (byId.size() >= fetchSize) {
-                    break;
+            List<String> queries = SearchQueryBuilder.pddQueries(attributes, filter, "商品");
+            log.info("PDD search: {} queries, attributes={}", queries.size(), attributes);
+
+            // Run all queries in parallel
+            List<CompletableFuture<List<ProductCard>>> futures = queries.stream()
+                    .map(query -> CompletableFuture.supplyAsync(() -> {
+                        try {
+                            List<ProductCard> results = mapResponse(executeSearch(query, page, fetchSize));
+                            log.info("PDD query '{}' returned {} products", query, results.size());
+                            return results;
+                        } catch (Exception e) {
+                            log.warn("PDD query '{}' failed: {}", query, e.toString());
+                            return List.<ProductCard>of();
+                        }
+                    }, searchExecutor))
+                    .toList();
+
+            // Collect results as they complete, merge into deduplicated map
+            waitForQueries(futures);
+            Map<String, ProductCard> byId = new LinkedHashMap<>();
+            for (CompletableFuture<List<ProductCard>> future : futures) {
+                if (!future.isDone()) {
+                    future.cancel(true);
+                    continue;
                 }
+                future.getNow(List.<ProductCard>of())
+                        .forEach(product -> byId.putIfAbsent(product.id(), product));
             }
-            List<ProductCard> relevant = relevantProducts(byId, attributes, fetchSize);
-            if (!relevant.isEmpty()) {
-                return relevant;
-            }
-            return byId.values().stream().limit(fetchSize).toList();
+
+            List<ProductCard> relevant = relevantProducts(byId, fetchSize);
+            log.info("PDD search: {} raw -> {} relevant products", byId.size(), relevant.size());
+            return relevant;
         } catch (Exception error) {
             log.warn("PDD search failed: {}", error.toString());
             return List.of();
+        }
+    }
+
+    private void waitForQueries(List<CompletableFuture<List<ProductCard>>> futures) {
+        try {
+            CompletableFuture
+                    .allOf(futures.toArray(new CompletableFuture[0]))
+                    .get(12, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            long completed = futures.stream().filter(CompletableFuture::isDone).count();
+            log.warn("PDD query batch timed out; using {} completed of {} queries", completed, futures.size());
         }
     }
 
@@ -86,9 +135,8 @@ public class PddSearchService implements PlatformSearchService {
         return call(params);
     }
 
-    private List<ProductCard> relevantProducts(Map<String, ProductCard> byId, Map<String, String> attributes, int pageSize) {
+    private List<ProductCard> relevantProducts(Map<String, ProductCard> byId, int pageSize) {
         return byId.values().stream()
-                .filter(product -> SearchTextUtils.relevantToCoreProduct(product.title(), attributes))
                 .limit(pageSize)
                 .toList();
     }
@@ -146,13 +194,22 @@ public class PddSearchService implements PlatformSearchService {
             list = root.path("goods_list");
         }
 
-        List<ProductCard> products = new ArrayList<>();
+        // Parallel detail enrichment for the first N products
+        int detailLimit = 20;
+        List<CompletableFuture<ProductCard>> futures = new ArrayList<>();
         for (JsonNode item : list) {
             String goodsSign = firstText(item, "goods_sign");
             ProductCard base = toProduct(item, goodsSign);
-            products.add(enrichDetail(base, goodsSign, searchId));
+            if (futures.size() < detailLimit && StringUtils.isNotBlank(goodsSign)) {
+                futures.add(CompletableFuture.supplyAsync(() -> enrichDetail(base, goodsSign, searchId), detailExecutor));
+            } else {
+                futures.add(CompletableFuture.completedFuture(base));
+            }
         }
-        return products;
+        return futures.stream()
+                .map(f -> { try { return f.get(8, java.util.concurrent.TimeUnit.SECONDS); } catch (Exception e) { return f.getNow(null); } })
+                .filter(java.util.Objects::nonNull)
+                .toList();
     }
 
     private ProductCard enrichDetail(ProductCard base, String goodsSign, String searchId) {
@@ -222,9 +279,8 @@ public class PddSearchService implements PlatformSearchService {
     }
 
     private PddDetail loadDetail(String goodsSign, String searchId) throws Exception {
-        long now = System.currentTimeMillis();
-        CachedDetail cached = detailCache.get(goodsSign);
-        if (cached != null && cached.expiresAt() > now) {
+        CachedDetail cached = detailCache.getIfPresent(goodsSign);
+        if (cached != null) {
             return cached.detail();
         }
         Map<String, Object> params = baseParams("pdd.ddk.goods.detail");
@@ -238,7 +294,7 @@ public class PddSearchService implements PlatformSearchService {
         params.put("sign", sign(params));
         PddDetail detail = mapDetailResponse(call(params));
         if (detail != null) {
-            detailCache.put(goodsSign, new CachedDetail(detail, now + DETAIL_CACHE_TTL_MS));
+            detailCache.put(goodsSign, new CachedDetail(detail));
         }
         return detail;
     }
@@ -255,9 +311,8 @@ public class PddSearchService implements PlatformSearchService {
 
     private String loadPromotionUrl(String goodsSign, String searchId) throws Exception {
         String cacheKey = goodsSign + ":" + StringUtils.defaultString(searchId);
-        long now = System.currentTimeMillis();
-        CachedUrl cached = promotionUrlCache.get(cacheKey);
-        if (cached != null && cached.expiresAt() > now) {
+        CachedUrl cached = promotionUrlCache.getIfPresent(cacheKey);
+        if (cached != null) {
             return cached.url();
         }
 
@@ -277,7 +332,7 @@ public class PddSearchService implements PlatformSearchService {
 
         String url = mapPromotionUrl(call(params));
         if (StringUtils.isNotBlank(url)) {
-            promotionUrlCache.put(cacheKey, new CachedUrl(url, now + DETAIL_CACHE_TTL_MS));
+            promotionUrlCache.put(cacheKey, new CachedUrl(url));
         }
         return url;
     }
@@ -387,10 +442,15 @@ public class PddSearchService implements PlatformSearchService {
         if (itemRating > 0) {
             return new RatingInfo(itemRating, "item_rating");
         }
-        double shopDsr = parseRating(
+        // 拼多多 DSR 字段是文本 "高"/"中"/"低"，先尝试文本转换
+        double textDsr = parseDsrText(
                 item.path("desc_txt"),
                 item.path("serv_txt"),
-                item.path("lgst_txt"),
+                item.path("lgst_txt"));
+        if (textDsr > 0) {
+            return new RatingInfo(textDsr, "shop_dsr");
+        }
+        double shopDsr = parseRating(
                 item.path("avg_desc"),
                 item.path("avg_serv"),
                 item.path("avg_lgst"));
@@ -398,6 +458,33 @@ public class PddSearchService implements PlatformSearchService {
             return new RatingInfo(shopDsr, "shop_dsr");
         }
         return new RatingInfo(0.0, "none");
+    }
+
+    /**
+     * 拼多多 DSR 文本转兼容评分：高→4.6, 中→4.0, 低→3.2
+     * 注意：这是店铺口碑维度的映射，不是商品评分。
+     * 排序时 ProductReputationService 会根据 ratingSource="shop_dsr" 使用低权重。
+     * 取多个维度的平均值
+     */
+    private double parseDsrText(JsonNode... nodes) {
+        double sum = 0;
+        int count = 0;
+        for (JsonNode node : nodes) {
+            if (node != null && !node.isMissingNode() && !node.isNull() && node.isTextual()) {
+                String text = node.asText("").trim();
+                double score = switch (text) {
+                    case "高" -> 4.6;  // 店铺口碑高，不等于商品评分4.8
+                    case "中" -> 4.0;
+                    case "低" -> 3.2;
+                    default -> 0;
+                };
+                if (score > 0) {
+                    sum += score;
+                    count++;
+                }
+            }
+        }
+        return count > 0 ? Math.round(sum / count * 10.0) / 10.0 : 0.0;
     }
 
     private List<String> tags(JsonNode item) {
@@ -509,14 +596,13 @@ public class PddSearchService implements PlatformSearchService {
 
     @Scheduled(fixedDelay = 300_000)
     void evictExpiredCaches() {
-        long now = System.currentTimeMillis();
-        detailCache.entrySet().removeIf(e -> e.getValue().expiresAt() <= now);
-        promotionUrlCache.entrySet().removeIf(e -> e.getValue().expiresAt() <= now);
+        detailCache.cleanUp();
+        promotionUrlCache.cleanUp();
     }
 
-    private record CachedDetail(PddDetail detail, long expiresAt) {}
+    private record CachedDetail(PddDetail detail) {}
 
-    private record CachedUrl(String url, long expiresAt) {}
+    private record CachedUrl(String url) {}
 
     private record RatingInfo(double value, String source) {}
 

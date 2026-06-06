@@ -14,10 +14,10 @@ public class FavoriteProduct {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "product_id")
+    @Column(name = "product_id", nullable = false)
     private String productId;
 
-    @Column(name = "user_id")
+    @Column(name = "user_id", nullable = false)
     private Long userId;
 
     private String platform;
@@ -31,7 +31,7 @@ public class FavoriteProduct {
     @Column(name = "detail_url")
     private String detailUrl;
 
-    @Column(name = "created_at")
+    @Column(name = "created_at", updatable = false)
     private Instant createdAt = Instant.now();
 
     @Column(name = "updated_at")

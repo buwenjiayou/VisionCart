@@ -10,6 +10,8 @@ import com.visioncart.service.ai.AiTraceService;
 import com.visioncart.service.ai.AiJsonUtils;
 import com.visioncart.service.ai.PromptLoader;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -27,6 +29,7 @@ import java.util.Map;
 
 @Component
 public class DoubaoVisionClient implements VisionModelService {
+    private static final Logger log = LoggerFactory.getLogger(DoubaoVisionClient.class);
     private final VisionCartProperties properties;
     private final AiTraceService traceService;
     private final ObjectMapper objectMapper;
@@ -107,6 +110,13 @@ public class DoubaoVisionClient implements VisionModelService {
     }
 
     private Map<String, Object> requestBody(byte[] imageBytes, String contentType, String region, String model) {
+        if (imageBytes == null || imageBytes.length == 0) {
+            throw new IllegalStateException("图片数据为空");
+        }
+        // Base64 encoding expands data by ~33%; cap at 20MB raw to prevent OOM
+        if (imageBytes.length > 20 * 1024 * 1024) {
+            throw new IllegalStateException("图片数据过大: " + (imageBytes.length / 1024 / 1024) + "MB (最大20MB)");
+        }
         String base64 = Base64.getEncoder().encodeToString(imageBytes);
         String imageUrl = "data:" + contentType + ";base64," + base64;
         Map<String, Object> body = new java.util.LinkedHashMap<>();
@@ -134,35 +144,7 @@ public class DoubaoVisionClient implements VisionModelService {
     }
 
     private String normalizedContentType(String contentType, byte[] imageBytes) {
-        String normalized = StringUtils.defaultString(contentType).toLowerCase();
-        if (normalized.matches("image/(jpeg|jpg|png|webp)")) {
-            return "image/jpg".equals(normalized) ? "image/jpeg" : normalized;
-        }
-        if (imageBytes.length >= 4
-                && (imageBytes[0] & 0xFF) == 0x89
-                && imageBytes[1] == 0x50
-                && imageBytes[2] == 0x4E
-                && imageBytes[3] == 0x47) {
-            return "image/png";
-        }
-        if (imageBytes.length >= 3
-                && (imageBytes[0] & 0xFF) == 0xFF
-                && (imageBytes[1] & 0xFF) == 0xD8
-                && (imageBytes[2] & 0xFF) == 0xFF) {
-            return "image/jpeg";
-        }
-        if (imageBytes.length >= 12
-                && imageBytes[0] == 0x52
-                && imageBytes[1] == 0x49
-                && imageBytes[2] == 0x46
-                && imageBytes[3] == 0x46
-                && imageBytes[8] == 0x57
-                && imageBytes[9] == 0x45
-                && imageBytes[10] == 0x42
-                && imageBytes[11] == 0x50) {
-            return "image/webp";
-        }
-        return "image/jpeg";
+        return ImageProcessor.normalizedContentType(imageBytes, contentType);
     }
 
     private RecognitionResult parseResponse(String body) throws Exception {
@@ -171,7 +153,13 @@ public class DoubaoVisionClient implements VisionModelService {
         if (StringUtils.isBlank(content)) {
             throw new IllegalStateException("豆包视觉返回为空");
         }
-        JsonNode parsed = objectMapper.readTree(AiJsonUtils.extractFirstJsonObject(content));
+        String json = AiJsonUtils.extractFirstJsonObject(content);
+        if (StringUtils.isBlank(json)) {
+            log.warn("豆包视觉返回非JSON内容: {}", content.length() > 200 ? content.substring(0, 200) + "..." : content);
+            throw new IllegalStateException("视觉模型未返回合法 JSON，原始内容: " +
+                    (content.length() > 100 ? content.substring(0, 100) + "..." : content));
+        }
+        JsonNode parsed = objectMapper.readTree(json);
         JsonNode category = parsed.path("category");
         CategoryDto categoryDto = new CategoryDto(
                 textOrDefault(category.path("level1"), "未知"),

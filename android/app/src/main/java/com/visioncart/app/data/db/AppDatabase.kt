@@ -55,7 +55,8 @@ abstract class AppDatabase : RoomDatabase() {
                     "visioncart_db"
                 )
                 .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
-                .fallbackToDestructiveMigration()
+                // Do NOT use fallbackToDestructiveMigration — it silently destroys user data.
+                // If a migration is missing, the app will crash loudly instead of losing data.
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build().also { INSTANCE = it }
             }

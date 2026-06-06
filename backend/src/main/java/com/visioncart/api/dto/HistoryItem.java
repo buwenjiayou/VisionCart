@@ -13,6 +13,7 @@ public record HistoryItem(
         @JsonProperty("attributes") Map<String, AttributeValue> attributes,
         List<String> keywords,
         double confidence,
-        @JsonProperty("created_at") Instant createdAt
+        @JsonProperty("created_at") Instant createdAt,
+        @JsonProperty("products") List<HistoryProduct> products
 ) {
 }

@@ -19,6 +19,7 @@ import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -43,6 +44,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -62,12 +64,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Screenshot
-import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -92,6 +90,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -112,19 +112,28 @@ import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import coil.compose.AsyncImage
-import com.visioncart.app.data.NlpParseRequest
+import com.visioncart.app.data.ActionResult
+import com.visioncart.app.data.FilterTag
 import com.visioncart.app.data.ProductCard
+import com.visioncart.app.data.RecognitionCandidate
 import com.visioncart.app.data.RecognitionResult
+import com.visioncart.app.data.SearchFilter
 import com.visioncart.app.data.SearchRequest
 import com.visioncart.app.data.SuggestionCard
+import com.visioncart.app.data.UserActionPayload
+import com.visioncart.app.data.UserActionRequest
 import com.visioncart.app.data.toSearchAttributes
 import com.visioncart.app.data.repository.VisionCartRepository
+import com.visioncart.app.ui.components.MultiProductSelectionPanel
+import com.visioncart.app.ui.components.SortOptionsRow
+import com.visioncart.app.ui.components.SuggestionChipsRow
+import com.visioncart.app.ui.components.rememberAuthenticatedImageModel
+import com.visioncart.app.ui.viewmodel.ActionStateReducer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
 import java.io.File
 
 class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner {
@@ -168,19 +177,20 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     override val savedStateRegistry: SavedStateRegistry get() = savedStateController.savedStateRegistry
 
     companion object {
+        private const val ACTION_SHOW_PANEL = "com.visioncart.ACTION_SHOW_PANEL"
         private const val ACTION_SCREENSHOT = "com.visioncart.ACTION_SCREENSHOT"
         private const val ACTION_SCREENSHOT_FAILED = "com.visioncart.ACTION_SCREENSHOT_FAILED"
+        private const val ACTION_CROP_COMPLETE = "com.visioncart.ACTION_CROP_COMPLETE"
+        private const val ACTION_CROP_CANCELLED = "com.visioncart.ACTION_CROP_CANCELLED"
+        private const val ACTION_CROP_FAILED = "com.visioncart.ACTION_CROP_FAILED"
         private const val EXTRA_RESULT_CODE = "resultCode"
         private const val EXTRA_RESULT_DATA = "resultData"
         private const val EXTRA_ERROR_MESSAGE = "errorMessage"
+        private const val EXTRA_IMAGE_PATH = "imagePath"
         private const val TAG = "FloatingWindowService"
         private const val CAPTURE_TIMEOUT_MS = 2_000L
         private const val FRAME_RETRY_DELAY_MS = 120L
         private const val HIDE_OVERLAY_DELAY_MS = 450L
-        private const val MAX_SCREENSHOT_DIMENSION = 1280
-        private const val MAX_SCREENSHOT_BYTES = 1_500_000
-        private const val INITIAL_JPEG_QUALITY = 88
-        private const val MIN_JPEG_QUALITY = 68
 
         val isRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
 
@@ -200,6 +210,41 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         fun reportScreenshotFailure(context: Context, message: String) {
             val intent = Intent(context, FloatingWindowService::class.java).apply {
                 action = ACTION_SCREENSHOT_FAILED
+                putExtra(EXTRA_ERROR_MESSAGE, message)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun reportCropComplete(context: Context, imagePath: String) {
+            val intent = Intent(context, FloatingWindowService::class.java).apply {
+                action = ACTION_CROP_COMPLETE
+                putExtra(EXTRA_IMAGE_PATH, imagePath)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun reportCropCancelled(context: Context) {
+            val intent = Intent(context, FloatingWindowService::class.java).apply {
+                action = ACTION_CROP_CANCELLED
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun reportCropFailure(context: Context, message: String) {
+            val intent = Intent(context, FloatingWindowService::class.java).apply {
+                action = ACTION_CROP_FAILED
                 putExtra(EXTRA_ERROR_MESSAGE, message)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -244,9 +289,11 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(channel)
 
-        val pendingIntent = PendingIntent.getActivity(
+        val pendingIntent = PendingIntent.getService(
             this, 0,
-            Intent(this, com.visioncart.app.MainActivity::class.java),
+            Intent(this, FloatingWindowService::class.java).apply {
+                action = ACTION_SHOW_PANEL
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -278,6 +325,10 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_SHOW_PANEL -> {
+                showPanel()
+            }
+
             ACTION_SCREENSHOT -> {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
                 val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -296,6 +347,26 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
             ACTION_SCREENSHOT_FAILED -> {
                 val message = intent.getStringExtra(EXTRA_ERROR_MESSAGE)
                     ?: "屏幕捕获授权失败，请重试"
+                showPanel(initialError = message)
+            }
+
+            ACTION_CROP_COMPLETE -> {
+                val path = intent.getStringExtra(EXTRA_IMAGE_PATH)
+                val file = path?.let { File(it) }
+                if (file != null && file.isFile) {
+                    showPanel(pendingImageFile = file)
+                } else {
+                    showPanel(initialError = "裁剪图片不存在，请重新截图")
+                }
+            }
+
+            ACTION_CROP_CANCELLED -> {
+                showCollapsed()
+            }
+
+            ACTION_CROP_FAILED -> {
+                val message = intent.getStringExtra(EXTRA_ERROR_MESSAGE)
+                    ?: "截图裁剪失败，请重试"
                 showPanel(initialError = message)
             }
         }
@@ -323,12 +394,12 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     private fun showCollapsed() {
         onStateChange?.invoke(OverlayState.COLLAPSED)
         replaceView(
-            52,
-            52,
+            64,
+            64,
             draggable = true,
             initialX = ballX,
             initialY = ballY,
-            onClick = { showMenu() },
+            onClick = { requestScreenshot() },
             onPositionChanged = { x, y ->
                 ballX = x
                 ballY = y
@@ -344,7 +415,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         val menuHeightDp = 136
         val menuWidthPx = (menuWidthDp * density).toInt()
         val menuHeightPx = (menuHeightDp * density).toInt()
-        val ballSizePx = (52 * density).toInt()
+        val ballSizePx = (64 * density).toInt()
         val ballCenterX = ballX + ballSizePx / 2
         val ballCenterY = ballY + ballSizePx / 2
         val isOnLeftEdge = ballCenterX < screenWidth / 2
@@ -364,21 +435,9 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         ) {
             SemiCircleMenuOverlay(
                 isOnLeftEdge = isOnLeftEdge,
-                onCamera = {
-                    showCollapsed()
-                    launchMainToCamera()
-                },
                 onScreenshot = {
                     showCollapsed()
                     requestScreenshot()
-                },
-                onHistory = {
-                    launchMainToScreen("history")
-                    showCollapsed()
-                },
-                onFavorites = {
-                    launchMainToScreen("favorites")
-                    showCollapsed()
                 },
                 onDismiss = { showCollapsed() }
             )
@@ -391,14 +450,16 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         initialError: String? = null
     ) {
         onStateChange?.invoke(OverlayState.PANEL)
-        val panelPosition = anchoredPanelPosition(320, 500)
+        val panelWidthDp = (screenWidth / density).toInt().coerceAtLeast(1)
+        val panelHeightPx = (screenHeight / 2).coerceAtLeast(1)
+        val panelHeightDp = (panelHeightPx / density).toInt().coerceAtLeast(1)
         replaceView(
-            320,
-            500,
+            panelWidthDp,
+            panelHeightDp,
             draggable = false,
             focusable = true,
-            initialX = panelPosition.first,
-            initialY = panelPosition.second
+            initialX = 0,
+            initialY = (screenHeight - panelHeightPx).coerceAtLeast(0)
         ) {
             OverlayPanel(
                 onMinimize = { showCollapsed() },
@@ -412,8 +473,8 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     }
 
     private fun requestScreenshot() {
-        overlayView?.let { windowManager.removeView(it) }
-        overlayView = null
+        // 不要提前移除悬浮窗 — startScreenCapture() 会在截图前移除
+        // 提前移除会导致透明 Activity 覆盖在桌面上，用户需要额外点击才能触发权限弹窗
         val intent = Intent(this, MediaProjectionPermissionActivity::class.java).apply {
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -475,18 +536,21 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
             val width = metrics.widthPixels.coerceAtLeast(1)
             val height = metrics.heightPixels.coerceAtLeast(1)
 
-            val imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
+            // Downscale to half resolution to reduce memory (~55MB -> ~14MB)
+            val captureWidth = (width / 2).coerceAtLeast(1)
+            val captureHeight = (height / 2).coerceAtLeast(1)
+            val imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2)
             captureImageReader = imageReader
             captureStartedAtMs = SystemClock.elapsedRealtime()
 
             imageReader.setOnImageAvailableListener({ reader ->
-                tryAcquireFrame(reader, width, height)
+                tryAcquireFrame(reader, captureWidth, captureHeight)
             }, handler)
 
             virtualDisplay = projection.createVirtualDisplay(
                 "VisionCartScreenCapture",
-                width,
-                height,
+                captureWidth,
+                captureHeight,
                 metrics.densityDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.surface,
@@ -494,7 +558,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
                 handler
             )
 
-            scheduleFrameRetry(imageReader, width, height)
+            scheduleFrameRetry(imageReader, captureWidth, captureHeight)
         } catch (error: SecurityException) {
             Log.w(TAG, "Unable to start screen capture", error)
             failScreenCapture("系统拒绝屏幕捕获，请重新授权")
@@ -633,8 +697,9 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
             val result = runCatching { saveScreenshotBitmap(bitmap) }
             bitmap.recycle()
             android.os.Handler(mainLooper).post {
+                if (!isRunning.value) return@post
                 result
-                    .onSuccess { file -> showPanel(pendingImageFile = file) }
+                    .onSuccess { file -> launchCropActivity(file) }
                     .onFailure { error ->
                         Log.w(TAG, "Failed to save screenshot", error)
                         showPanel(initialError = "截图保存失败，请重试")
@@ -677,77 +742,35 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
     }
 
     private fun saveScreenshotBitmap(bitmap: Bitmap): File {
-        val constrained = resizeScreenshotIfNeeded(bitmap)
-        val bytes = compressScreenshotToLimit(constrained)
         val file = File(cacheDir, "screenshot_${System.currentTimeMillis()}.jpg")
-        file.outputStream().use { output -> output.write(bytes) }
-        if (constrained !== bitmap) constrained.recycle()
+        file.outputStream().use { output ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, output)
+        }
         return file
     }
 
-    private fun resizeScreenshotIfNeeded(bitmap: Bitmap): Bitmap {
-        val maxDimension = maxOf(bitmap.width, bitmap.height)
-        if (maxDimension <= MAX_SCREENSHOT_DIMENSION) return bitmap
-        val scale = MAX_SCREENSHOT_DIMENSION.toFloat() / maxDimension
-        return Bitmap.createScaledBitmap(
-            bitmap,
-            (bitmap.width * scale).toInt().coerceAtLeast(1),
-            (bitmap.height * scale).toInt().coerceAtLeast(1),
-            true
-        )
-    }
-
-    private fun compressScreenshotToLimit(bitmap: Bitmap): ByteArray {
-        var working = bitmap
-        var quality = INITIAL_JPEG_QUALITY
-        while (true) {
-            val output = ByteArrayOutputStream()
-            working.compress(Bitmap.CompressFormat.JPEG, quality, output)
-            val bytes = output.toByteArray()
-            if (bytes.size <= MAX_SCREENSHOT_BYTES ||
-                (quality <= MIN_JPEG_QUALITY && maxOf(working.width, working.height) <= 768)
-            ) {
-                if (working !== bitmap) working.recycle()
-                return bytes
-            }
-
-            if (quality > MIN_JPEG_QUALITY) {
-                quality -= 8
-            } else {
-                val scaled = Bitmap.createScaledBitmap(
-                    working,
-                    (working.width * 0.85f).toInt().coerceAtLeast(1),
-                    (working.height * 0.85f).toInt().coerceAtLeast(1),
-                    true
-                )
-                if (working !== bitmap) working.recycle()
-                working = scaled
-                quality = INITIAL_JPEG_QUALITY
-            }
+    private fun launchCropActivity(screenshotFile: File) {
+        val intent = Intent(this, ScreenshotCropActivity::class.java).apply {
+            putExtra(ScreenshotCropActivity.EXTRA_SCREENSHOT_PATH, screenshotFile.absolutePath)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
         }
-    }
-
-    private fun launchMainToCamera() {
-        val intent = Intent(this, com.visioncart.app.MainActivity::class.java).apply {
-            putExtra("navigate", "camera")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        try {
+            startActivity(intent)
+        } catch (error: Exception) {
+            Log.w(TAG, "Failed to launch screenshot crop activity", error)
+            showPanel(initialError = "无法打开截图框选界面，请重试")
         }
-        startActivity(intent)
-    }
-
-    private fun launchMainToScreen(screen: String) {
-        val intent = Intent(this, com.visioncart.app.MainActivity::class.java).apply {
-            putExtra("navigate", screen)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-        startActivity(intent)
     }
 
     private fun anchoredPanelPosition(widthDp: Int, heightDp: Int): Pair<Int, Int> {
         val widthPx = (widthDp * density).toInt()
         val heightPx = (heightDp * density).toInt()
         val margin = (12 * density).toInt()
-        val ballSizePx = (52 * density).toInt()
+        val ballSizePx = (64 * density).toInt()
         val ballCenterX = ballX + ballSizePx / 2
         val x = if (ballCenterX < screenWidth / 2) {
             margin
@@ -795,6 +818,7 @@ class FloatingWindowService : Service(), LifecycleOwner, SavedStateRegistryOwner
         onPositionChanged?.invoke(params.x, params.y)
 
         overlayView = ComposeView(this).apply {
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
             setViewTreeLifecycleOwner(this@FloatingWindowService)
             setViewTreeSavedStateRegistryOwner(this@FloatingWindowService)
             setContent { MaterialTheme { content() } }
@@ -896,10 +920,10 @@ private fun CollapsedFloatingBall() {
 
     // Breathing glow effect
     val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.4f,
-        targetValue = 0.8f,
+        initialValue = 0.3f,
+        targetValue = 0.7f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = LinearEasing),
+            animation = tween(2000, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "glow"
@@ -908,29 +932,59 @@ private fun CollapsedFloatingBall() {
     // Subtle scale pulse
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = 1.08f,
+        targetValue = 1.06f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = LinearEasing),
+            animation = tween(2000, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "scale"
+    )
+
+    // Ring rotation
+    val ringRotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(8000, easing = LinearEasing),
+        ),
+        label = "ringRotation"
     )
 
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier.fillMaxSize()
     ) {
-        // Outer glow ring
-        Canvas(modifier = Modifier.size(56.dp)) {
+        // Outer soft glow
+        Canvas(modifier = Modifier.size(64.dp)) {
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        com.visioncart.app.ui.theme.BrandGradientStart.copy(alpha = glowAlpha * 0.6f),
+                        com.visioncart.app.ui.theme.BrandGradientStart.copy(alpha = glowAlpha * 0.35f),
+                        com.visioncart.app.ui.theme.BrandGradientStart.copy(alpha = glowAlpha * 0.1f),
                         Color.Transparent
                     ),
-                    radius = size.minDimension / 2 * 1.5f
+                    radius = size.minDimension / 2
                 ),
-                radius = size.minDimension / 2 * 1.4f
+                radius = size.minDimension / 2
+            )
+        }
+
+        // Spinning ring accent
+        Canvas(
+            modifier = Modifier
+                .size(52.dp)
+                .graphicsLayer { rotationZ = ringRotation }
+        ) {
+            val ringRadius = size.minDimension / 2
+            drawCircle(
+                brush = Brush.sweepGradient(
+                    0f to Color.White.copy(alpha = 0.5f),
+                    0.3f to Color.Transparent,
+                    0.7f to Color.Transparent,
+                    1f to Color.White.copy(alpha = 0.35f)
+                ),
+                radius = ringRadius,
+                style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round)
             )
         }
 
@@ -938,12 +992,17 @@ private fun CollapsedFloatingBall() {
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(46.dp)
+                .size(44.dp)
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
                 }
-                .shadow(12.dp, CircleShape, spotColor = com.visioncart.app.ui.theme.BrandGradientEnd)
+                .shadow(
+                    elevation = 10.dp,
+                    shape = CircleShape,
+                    spotColor = com.visioncart.app.ui.theme.BrandGradientEnd,
+                    ambientColor = com.visioncart.app.ui.theme.BrandGradientStart.copy(alpha = 0.3f)
+                )
                 .background(
                     brush = Brush.linearGradient(
                         colors = listOf(
@@ -953,10 +1012,20 @@ private fun CollapsedFloatingBall() {
                     ),
                     shape = CircleShape
                 )
+                .border(
+                    width = 1.dp,
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.4f),
+                            Color.White.copy(alpha = 0.1f)
+                        )
+                    ),
+                    shape = CircleShape
+                )
         ) {
             Icon(
-                Icons.Default.ShoppingCart,
-                contentDescription = "VisionCart",
+                Icons.Default.Screenshot,
+                contentDescription = "截图识物",
                 tint = Color.White,
                 modifier = Modifier.size(22.dp)
             )
@@ -967,15 +1036,12 @@ private fun CollapsedFloatingBall() {
 // ==================== Radial Menu ====================
 
 /**
- * 极简双按钮菜单 - 截图 + 拍照，根据悬浮球位置向内侧展开
+ * 极简悬浮窗菜单，根据悬浮球位置向内侧展开截图入口。
  */
 @Composable
 private fun SemiCircleMenuOverlay(
     isOnLeftEdge: Boolean,
-    onCamera: () -> Unit,
     onScreenshot: () -> Unit,
-    onHistory: () -> Unit,
-    onFavorites: () -> Unit,
     onDismiss: () -> Unit
 ) {
     Box(
@@ -988,19 +1054,13 @@ private fun SemiCircleMenuOverlay(
             ),
         contentAlignment = if (isOnLeftEdge) Alignment.CenterStart else Alignment.CenterEnd
     ) {
-        // 四个功能按钮：截图 + 拍照 + 历史 + 收藏
+        // 悬浮窗菜单只保留可在悬浮窗内闭环完成的截图识别入口。
         val items = if (isOnLeftEdge) {
             listOf(
-                MenuItemData(Icons.Default.Screenshot, "截图", Color(0xFF1976D2), onScreenshot, 0f),
-                MenuItemData(Icons.Default.CameraAlt, "拍照", Color(0xFF0A7C66), onCamera, 44f),
-                MenuItemData(Icons.Default.History, "历史", Color(0xFF7B61FF), onHistory, 88f),
-                MenuItemData(Icons.Default.Favorite, "收藏", Color(0xFFE91E63), onFavorites, 132f)
+                MenuItemData(Icons.Default.Screenshot, "截图", Color(0xFF1976D2), onScreenshot, 0f)
             )
         } else {
             listOf(
-                MenuItemData(Icons.Default.Favorite, "收藏", Color(0xFFE91E63), onFavorites, 48f),
-                MenuItemData(Icons.Default.History, "历史", Color(0xFF7B61FF), onHistory, 92f),
-                MenuItemData(Icons.Default.CameraAlt, "拍照", Color(0xFF0A7C66), onCamera, 136f),
                 MenuItemData(Icons.Default.Screenshot, "截图", Color(0xFF1976D2), onScreenshot, 180f)
             )
         }
@@ -1168,6 +1228,7 @@ private fun OverlayPanel(
     var recognitionResult by remember { mutableStateOf(initialResult) }
     var products by remember { mutableStateOf<List<ProductCard>>(emptyList()) }
     var suggestionCards by remember { mutableStateOf<List<SuggestionCard>>(emptyList()) }
+    var currentFilter by remember { mutableStateOf(SearchFilter()) }
     var isLoading by remember { mutableStateOf(pendingImageFile != null) }
     var errorText by remember { mutableStateOf(initialError) }
     var statusText by remember {
@@ -1181,12 +1242,52 @@ private fun OverlayPanel(
         )
     }
     var nlpInput by remember { mutableStateOf("") }
+    var pendingCandidates by remember { mutableStateOf<List<RecognitionCandidate>>(emptyList()) }
+    var pendingSessionId by remember { mutableStateOf<String?>(null) }
+    var pendingImageUri by remember { mutableStateOf(pendingImageFile?.let(Uri::fromFile)) }
+    var selectedCandidateLoading by remember { mutableStateOf(false) }
+
+    // Undo state for the compact applied-action bar.
+    var undoAction by remember { mutableStateOf<String?>(null) }
+
+    // Filter tags state
+    var filterTags by remember { mutableStateOf<List<FilterTag>>(emptyList()) }
+    var resultMessage by remember { mutableStateOf<String?>(null) }
+
+    fun actionMessage(result: ActionResult): String? {
+        val parts = mutableListOf<String>()
+        ActionStateReducer.resolveMessage(result.messageCode, result.message)?.let { parts.add(it) }
+        result.warnings.firstOrNull()?.let { parts.add(it) }
+        result.explanations.firstOrNull()?.let { parts.add(it) }
+        return parts.distinct().joinToString("\n").ifBlank { null }
+    }
+
+    fun applyActionResult(result: ActionResult) {
+        val displayMessage = actionMessage(result)
+        if (!result.filterApplied) {
+            displayMessage?.let {
+                resultMessage = it
+                statusText = it
+            }
+            return
+        }
+        products = result.allDisplayProducts.take(50)
+        currentFilter = result.appliedFilter ?: currentFilter
+        filterTags = result.filterTags
+        suggestionCards = result.suggestionCards ?: suggestionCards
+        displayMessage?.let {
+            resultMessage = it
+            statusText = it
+        }
+    }
 
     suspend fun loadProducts(result: RecognitionResult) {
         val searchResult = repository.searchProducts(
             SearchRequest(
                 sessionId = result.sessionId,
-                attributes = result.toSearchAttributes()
+                attributes = result.toSearchAttributes(),
+                filter = currentFilter,
+                clientType = "overlay"
             )
         )
         searchResult
@@ -1202,30 +1303,86 @@ private fun OverlayPanel(
     }
 
     suspend fun analyzePendingImage(file: File) {
+        val imageUri = Uri.fromFile(file)
         isLoading = true
         errorText = null
+        pendingCandidates = emptyList()
+        pendingSessionId = null
+        pendingImageUri = imageUri
+        recognitionResult = null
+        products = emptyList()
+        suggestionCards = emptyList()
         statusText = "截图已获取，正在云端识别..."
-        repository.analyzeImageFile(file, file.toURI().toString())
+        repository.analyzeImage(imageUri)
             .onSuccess { result ->
                 recognitionResult = result
                 sessionId = result.sessionId
+                pendingCandidates = emptyList()
+                pendingSessionId = null
                 statusText = "识别完成，正在加载商品..."
                 loadProducts(result)
             }
             .onFailure { error ->
-                errorText = error.message ?: "截图识别失败，请重试"
-                statusText = "截图识别遇到问题"
+                if (error is VisionCartRepository.MultiProductPendingException) {
+                    sessionId = error.sessionId
+                    pendingSessionId = error.sessionId
+                    pendingCandidates = error.candidates
+                    pendingImageUri = error.imageUrl?.let(Uri::parse) ?: imageUri
+                    errorText = null
+                    statusText = "检测到 ${error.candidates.size} 个商品，请选择要识别的商品"
+                } else {
+                    errorText = error.message ?: "截图识别失败，请重试"
+                    statusText = "截图识别遇到问题"
+                }
             }
+        isLoading = false
+    }
+
+    suspend fun selectPendingCandidate(candidate: RecognitionCandidate) {
+        val sid = pendingSessionId ?: sessionId ?: return
+        val selectedPreviewUrl = candidate.previewImageUrl ?: pendingImageUri?.toString()
+        selectedCandidateLoading = true
+        isLoading = true
+        errorText = null
+        pendingImageUri = selectedPreviewUrl?.let(Uri::parse) ?: pendingImageUri
+        statusText = "正在识别选中的商品..."
+        repository.selectProductForRecognition(
+            sid,
+            candidate.candidateId,
+            selectedPreviewUrl
+        )
+            .onSuccess { result ->
+                recognitionResult = result
+                sessionId = result.sessionId
+                pendingSessionId = null
+                pendingCandidates = emptyList()
+                statusText = "识别完成，正在加载商品..."
+                loadProducts(result)
+            }
+            .onFailure { error ->
+                errorText = error.message ?: "选中商品识别失败，请重试"
+                statusText = "选中商品识别遇到问题"
+            }
+        selectedCandidateLoading = false
         isLoading = false
     }
 
     LaunchedEffect(initialResult, pendingImageFile) {
         when {
-            pendingImageFile != null -> analyzePendingImage(pendingImageFile)
+            pendingImageFile != null -> {
+                try {
+                    analyzePendingImage(pendingImageFile)
+                } finally {
+                    isLoading = false
+                }
+            }
             initialResult != null -> {
                 isLoading = true
-                loadProducts(initialResult)
-                isLoading = false
+                try {
+                    loadProducts(initialResult)
+                } finally {
+                    isLoading = false
+                }
             }
         }
     }
@@ -1239,10 +1396,11 @@ private fun OverlayPanel(
         elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
     ) {
         Column(
-            Modifier.padding(14.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1255,6 +1413,9 @@ private fun OverlayPanel(
                     color = Color(0xFF0A7C66)
                 )
                 Row {
+                    TextButton(onClick = onRetakeScreenshot) {
+                        Text("重新截图", style = MaterialTheme.typography.labelSmall, color = Color(0xFF0A7C66))
+                    }
                     IconButton(onClick = onMinimize, modifier = Modifier.size(32.dp)) {
                         Text("收起", style = MaterialTheme.typography.labelSmall, color = Color(0xFF757575))
                     }
@@ -1264,133 +1425,320 @@ private fun OverlayPanel(
                 }
             }
 
-            // Status
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = Color(0xFFF0F7F5)
-            ) {
-                Text(
-                    statusText,
-                    color = Color(0xFF53615E),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                )
-            }
-
-            errorText?.let { error ->
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = Color(0xFFFFF1F1)
-                ) {
-                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            error,
-                            color = Color(0xFFB3261E),
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        pendingImageFile?.let { retryFile ->
-                            TextButton(
-                                onClick = {
-                                    scope.launch { analyzePendingImage(retryFile) }
-                                }
-                            ) {
-                                Text("重试", color = Color(0xFF0A7C66), fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-                        if (pendingImageFile == null) {
-                            TextButton(onClick = onRetakeScreenshot) {
-                                Text("重新截图", color = Color(0xFF0A7C66), fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Recognition result
-            recognitionResult?.let { result ->
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFFE8F5E9)
-                ) {
-                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            "${result.category.level1} / ${result.category.level2}",
-                            fontWeight = FontWeight.SemiBold,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF2E7D32)
-                        )
-                        val attrsText = result.attributes.entries.joinToString("  ") { "${it.key}: ${it.value.value}" }
-                        Text(
-                            attrsText,
-                            color = Color(0xFF53615E),
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-
-            // Suggestion chips
-            if (suggestionCards.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    suggestionCards.take(3).forEach { card ->
-                        Surface(
-                            modifier = Modifier.clickable {
-                                scope.launch {
-                                    val sid = sessionId ?: return@launch
-                                    try {
-                                        val response = repository.executeSuggestion(sid, card.action)
-                                        response.onSuccess { result ->
-                                            products = result.products
-                                            suggestionCards = result.cards
-                                        }
-                                    } catch (error: Exception) {
-                                        Log.w("FloatingWindowService", "Failed to execute suggestion ${card.action}", error)
-                                        errorText = "建议执行失败: ${error.message ?: "请稍后重试"}"
-                                    }
-                                }
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            color = Color(0xFFF0F7F5)
-                        ) {
-                            Text(
-                                "${card.icon} ${card.title}",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                color = Color(0xFF0A7C66),
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Loading
-            if (isLoading) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color(0xFF0A7C66))
-                    Spacer(Modifier.width(8.dp))
-                    Text("处理中...", color = Color(0xFF757575), style = MaterialTheme.typography.bodySmall)
-                }
-            }
-
-            // Product list
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (products.isEmpty() && !isLoading) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFFF0F7F5)
+                    ) {
+                        Text(
+                            statusText,
+                            color = Color(0xFF53615E),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                // Filter tags row
+                if (filterTags.isNotEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            filterTags.forEach { tag ->
+                                val fieldName = tag.filterPath ?: tagToFilterField(tag.label)
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF0A7C66).copy(alpha = 0.12f)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(start = 8.dp, end = 4.dp, top = 3.dp, bottom = 3.dp)
+                                    ) {
+                                        Text(
+                                            tag.label,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color(0xFF0A7C66)
+                                        )
+                                        if (fieldName != null) {
+                                            IconButton(
+                                                onClick = {
+                                                    val sid = sessionId ?: return@IconButton
+                                                    scope.launch {
+                                                        try {
+                                                            repository.executeUserAction(
+                                                                UserActionRequest(
+                                                                    actionId = "overlay-tag-${System.currentTimeMillis()}",
+                                                                    source = "tag_delete",
+                                                                    sessionId = sid,
+                                                                    rawText = "remove filter:$fieldName",
+                                                                    payload = UserActionPayload(
+                                                                        tagId = fieldName,
+                                                                        filterPath = fieldName
+                                                                    )
+                                                                )
+                                                            ).onSuccess { actionResult ->
+                                                                applyActionResult(actionResult)
+                                                            }.onFailure { error ->
+                                                                errorText = "删除筛选失败: ${error.message ?: "请稍后重试"}"
+                                                            }
+                                                        } catch (e: Exception) {
+                                                            Log.w("FloatingWindowService", "Failed to remove filter field", e)
+                                                            errorText = "删除筛选失败: ${e.message ?: "请稍后重试"}"
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.size(16.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Close,
+                                                    contentDescription = "删除",
+                                                    tint = Color(0xFF0A7C66).copy(alpha = 0.7f),
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Result message
+                resultMessage?.let { msg ->
                     item {
                         Text(
-                            if (recognitionResult == null) "截图后会在这里显示比价结果" else "暂未找到匹配商品",
+                            msg,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFE65100),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                pendingImageUri?.toString()?.let { previewUrl ->
+                    item {
+                        rememberAuthenticatedImageModel(previewUrl)?.let { imageModel ->
+                            AsyncImage(
+                                model = imageModel,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(120.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(Color(0xFFEAF3F0)),
+                                contentScale = ContentScale.Fit
+                            )
+                        }
+                    }
+                }
+
+                errorText?.let { error ->
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFFFFF1F1)
+                        ) {
+                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    error,
+                                    color = Color(0xFFB3261E),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 4,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    pendingImageFile?.let { retryFile ->
+                                        TextButton(
+                                            onClick = {
+                                                scope.launch { analyzePendingImage(retryFile) }
+                                            }
+                                        ) {
+                                            Text("重试", color = Color(0xFF0A7C66), fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
+                                    TextButton(onClick = onRetakeScreenshot) {
+                                        Text("重新截图", color = Color(0xFF0A7C66), fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (pendingCandidates.isNotEmpty()) {
+                    item {
+                        MultiProductSelectionPanel(
+                            candidates = pendingCandidates,
+                            onSelect = { candidate ->
+                                if (!selectedCandidateLoading) {
+                                    scope.launch { selectPendingCandidate(candidate) }
+                                }
+                            }
+                        )
+                    }
+                }
+
+                recognitionResult?.let { result ->
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFE8F5E9)
+                        ) {
+                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    "${result.category.level1} / ${result.category.level2}",
+                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF2E7D32)
+                                )
+                                val attrsText = result.attributes.entries.joinToString("  ") { "${it.key}: ${it.value.value}" }
+                                Text(
+                                    attrsText,
+                                    color = Color(0xFF53615E),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 4,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (suggestionCards.isNotEmpty()) {
+                    item {
+                        SuggestionChipsRow(
+                            cards = suggestionCards,
+                            maxCards = 4,
+                            compact = true,
+                            onCardClick = { card ->
+                                scope.launch {
+                                    val sid = sessionId ?: return@launch
+                                    val action = card.action.takeIf { it.isNotBlank() } ?: return@launch
+                                    try {
+                                        repository.executeUserAction(
+                                            UserActionRequest(
+                                                actionId = "overlay-suggestion-${System.currentTimeMillis()}",
+                                                source = "suggestion",
+                                                sessionId = sid,
+                                                rawText = action,
+                                                payload = UserActionPayload(action = action)
+                                            )
+                                        ).onSuccess { result ->
+                                            applyActionResult(result)
+                                            if (result.canUndo) {
+                                                undoAction = card.title
+                                            }
+                                        }.onFailure { error ->
+                                            errorText = "建议执行失败: ${error.message ?: "请稍后重试"}"
+                                        }
+                                    } catch (error: Exception) {
+                                        Log.w("FloatingWindowService", "Failed to execute suggestion $action", error)
+                                        errorText = "建议执行失败: ${error.message ?: "请稍后重试"}"
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+
+                // Undo bar after suggestion card is applied
+                if (undoAction != null) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "已应用: $undoAction",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF53615E),
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        val sid = sessionId ?: return@launch
+                                        try {
+                                            repository.undoLastAction(sid).onSuccess { result ->
+                                                applyActionResult(result)
+                                            }.onFailure { error ->
+                                                errorText = "撤回失败: ${error.message ?: "请稍后重试"}"
+                                            }
+                                        } catch (error: Exception) {
+                                            Log.w("FloatingWindowService", "Failed to undo overlay action", error)
+                                            errorText = "撤回失败: ${error.message ?: "请稍后重试"}"
+                                        }
+                                        undoAction = null
+                                    }
+                                },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "撤回",
+                                    tint = Color(0xFF53615E),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (products.isNotEmpty() || currentFilter.sortBy != null) {
+                    item {
+                        SortOptionsRow(
+                            filter = currentFilter,
+                            onSortSelected = { sortBy, sortOrder ->
+                                currentFilter = currentFilter.copy(
+                                    sortBy = sortBy,
+                                    sortOrder = if (sortBy == null) "desc" else sortOrder
+                                )
+                                recognitionResult?.let { result ->
+                                    scope.launch {
+                                        isLoading = true
+                                        loadProducts(result)
+                                        isLoading = false
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+
+                if (isLoading) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color(0xFF0A7C66))
+                            Spacer(Modifier.width(8.dp))
+                            Text("处理中...", color = Color(0xFF757575), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                if (products.isEmpty() && !isLoading && pendingCandidates.isEmpty()) {
+                    item {
+                        Text(
+                            if (recognitionResult == null) "框选商品后会在这里显示比价结果" else "暂未找到匹配商品",
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 18.dp),
@@ -1400,13 +1748,12 @@ private fun OverlayPanel(
                         )
                     }
                 } else {
-                    items(products.take(5)) { product ->
+                    items(products) { product ->
                         CompactProductCard(product)
                     }
                 }
             }
 
-            // NLP input
             OutlinedTextField(
                 value = nlpInput,
                 onValueChange = { nlpInput = it },
@@ -1423,34 +1770,61 @@ private fun OverlayPanel(
                                 scope.launch {
                                     isLoading = true
                                     try {
-                                        val nlpResult = repository.parseNlp(
-                                            NlpParseRequest(sessionId = sid, userInput = nlpInput)
-                                        )
-                                        nlpResult.onSuccess { result ->
-                                            val searchResult = repository.searchProducts(
-                                                SearchRequest(
-                                                    sessionId = sid,
-                                                    attributes = recognitionResult?.toSearchAttributes() ?: emptyMap(),
-                                                    filter = result.filter
+                                        val query = nlpInput
+                                        val category = recognitionResult?.category?.level1 ?: ""
+                                        repository.executeUserAction(
+                                            UserActionRequest(
+                                                actionId = "overlay-nlp-${System.currentTimeMillis()}",
+                                                source = "nlp",
+                                                sessionId = sid,
+                                                rawText = query,
+                                                payload = UserActionPayload(
+                                                    context = mapOf(
+                                                        "productName" to category,
+                                                        "category" to category
+                                                    )
                                                 )
                                             )
-                                            searchResult.onSuccess { search ->
-                                                products = search.products
-                                                suggestionCards = search.suggestionCards
+                                        ).onSuccess { result ->
+                                            applyActionResult(result)
+                                            if (result.canUndo) {
+                                                undoAction = query
                                             }
+                                        }.onFailure { error ->
+                                            errorText = "筛选失败: ${error.message ?: "请稍后重试"}"
                                         }
                                     } catch (error: Exception) {
                                         Log.w("FloatingWindowService", "Failed to parse overlay NLP filter", error)
                                         errorText = "筛选失败: ${error.message ?: "请稍后重试"}"
+                                    } finally {
+                                        isLoading = false
+                                        nlpInput = ""
                                     }
-                                    isLoading = false
-                                    nlpInput = ""
                                 }
                             }
                         ) { Text("搜", color = Color(0xFF0A7C66), fontWeight = FontWeight.Bold) }
                     }
                 }
             )
+        }
+    }
+}
+
+/**
+ * Maps a display tag to its corresponding filter field name for deletion.
+ * Returns null if the tag doesn't map to a deletable field.
+ */
+private fun tagToFilterField(tag: String): String? {
+    return when {
+        tag.startsWith("≤¥") || tag.startsWith("≥¥") -> "price_range"
+        tag == "京东" || tag == "淘宝" || tag == "天猫" || tag == "拼多多" -> "platforms"
+        tag == "自营" -> "self_operated"
+        tag.startsWith("≥") && tag.endsWith("分") -> "rating_min"
+        else -> {
+            val colors = listOf("黑色", "白色", "红色", "蓝色", "绿色", "黄色", "粉色", "紫色", "灰色", "金色", "银色")
+            if (colors.any { tag.contains(it) }) return "colors"
+            // 未知标签返回 null，不显示删除按钮
+            null
         }
     }
 }
@@ -1466,9 +1840,10 @@ private fun CompactProductCard(product: ProductCard) {
             modifier = Modifier.padding(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (product.imageUrl.isNotBlank()) {
+            val imageModel = rememberAuthenticatedImageModel(product.imageUrl)
+            if (imageModel != null) {
                 AsyncImage(
-                    model = product.imageUrl,
+                    model = imageModel,
                     contentDescription = null,
                     modifier = Modifier
                         .size(44.dp)

@@ -40,6 +40,9 @@ public class PromptLoader {
             Yaml yaml = new Yaml();
             Map<String, Object> data = yaml.load(content);
             String prompt = (String) data.get("prompt");
+            if (prompt == null || prompt.isBlank()) {
+                throw new IllegalStateException("Prompt file missing 'prompt' key: " + path);
+            }
             String version = (String) data.getOrDefault("version", "unknown");
             String description = (String) data.getOrDefault("description", "");
             log.info("Loaded prompt '{}' version={} description='{}'", name, version, description);

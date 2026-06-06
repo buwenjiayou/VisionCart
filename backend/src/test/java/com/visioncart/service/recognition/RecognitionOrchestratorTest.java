@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,7 +37,8 @@ class RecognitionOrchestratorTest {
     private RecognitionHistoryRepository historyRepository;
     private SimpMessagingTemplate messagingTemplate;
     private ObjectMapper objectMapper;
-    private ExecutorService executorService;
+    private ExecutorService recognitionExecutor;
+    private ExecutorService searchExecutor;
     private VisionCartProperties properties;
     private RecognitionImageStorage imageStorage;
     private SearchOrchestrator searchOrchestrator;
@@ -51,20 +53,30 @@ class RecognitionOrchestratorTest {
         historyRepository = mock(RecognitionHistoryRepository.class);
         messagingTemplate = mock(SimpMessagingTemplate.class);
         objectMapper = new ObjectMapper();
-        executorService = Executors.newSingleThreadExecutor();
+        recognitionExecutor = Executors.newSingleThreadExecutor();
+        searchExecutor = Executors.newSingleThreadExecutor();
         properties = new VisionCartProperties();
         properties.getRecognition().setTimeoutMs(5000L);
         properties.getRecognition().setRetryCount(1);
         imageStorage = mock(RecognitionImageStorage.class);
         when(imageStorage.historyImageUrl(anyString())).thenAnswer(invocation ->
                 "/api/v1/history/" + invocation.getArgument(0, String.class) + "/image");
+        when(imageStorage.candidateCropUrl(anyString(), anyString())).thenAnswer(invocation ->
+                "/api/v1/recognition/" + invocation.getArgument(0, String.class)
+                        + "/candidates/" + invocation.getArgument(1, String.class) + "/image");
         searchOrchestrator = mock(SearchOrchestrator.class);
         regionResolver = mock(RegionResolver.class);
         when(regionResolver.isDomestic()).thenReturn(true);
 
+        com.visioncart.service.metrics.PerformanceMetricsService metricsService =
+                mock(com.visioncart.service.metrics.PerformanceMetricsService.class);
+        when(metricsService.startRecognitionTimer()).thenReturn(io.micrometer.core.instrument.Timer.start(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+        when(metricsService.startVisionModelTimer()).thenReturn(io.micrometer.core.instrument.Timer.start(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+
         orchestrator = new RecognitionOrchestrator(
                 imageProcessor, visionClient, taskManager, historyRepository,
-                messagingTemplate, objectMapper, executorService, properties, imageStorage, searchOrchestrator, regionResolver
+                messagingTemplate, objectMapper, recognitionExecutor, searchExecutor,
+                properties, imageStorage, searchOrchestrator, regionResolver, metricsService
         );
     }
 
@@ -109,15 +121,15 @@ class RecognitionOrchestratorTest {
     }
 
     @Test
-    void shouldPauseForSelectionWhenMultipleProductsDetected() {
+    void shouldPauseForSelectionWhenMultipleProductsDetected() throws Exception {
         when(imageProcessor.process(any())).thenReturn(new byte[]{0});
         when(imageProcessor.cropToJpeg(any(), any())).thenReturn(
                 new ImageProcessor.CroppedImage(new byte[]{1, 2, 3}, 80, 80, 6400)
         );
         when(visionClient.supportsTwoStageRecognition()).thenReturn(true);
         when(visionClient.detectProducts(any(byte[].class), anyString(), anyString())).thenReturn(List.of(
-                new RecognitionCandidate("raw-1", List.of(0, 0, 80, 80), "鼠标", "罗技", 0.92, null),
-                new RecognitionCandidate("raw-2", List.of(10, 10, 70, 70), "键盘", null, 0.88, null)
+                new RecognitionCandidate("raw-1", List.of(0, 0, 80, 80), "电动剃须刀", "FEP", 0.92, null),
+                new RecognitionCandidate("raw-2", List.of(10, 10, 70, 70), "充电宝", null, 0.88, null)
         ));
 
         org.springframework.mock.web.MockMultipartFile image =
@@ -125,7 +137,46 @@ class RecognitionOrchestratorTest {
 
         var response = orchestrator.submitAsync(image, "整张图", 1L);
 
-        verify(taskManager, timeout(5000)).markMultiProductPending(eq(response.sessionId()), any(), any());
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<RecognitionCandidate>> candidatesCaptor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(taskManager, timeout(5000)).markMultiProductPending(eq(response.sessionId()), candidatesCaptor.capture(), any());
+        assertThat(candidatesCaptor.getValue())
+                .allSatisfy(candidate -> assertThat(candidate.previewImageUrl())
+                        .contains("/api/v1/recognition/" + response.sessionId() + "/candidates/"));
+        assertThat(candidatesCaptor.getValue())
+                .extracting(RecognitionCandidate::category)
+                .containsExactly("电动剃须刀", "充电宝");
+        verify(imageStorage, timeout(5000).times(2)).saveCandidateCrop(eq(response.sessionId()), anyString(), any());
+    }
+
+    @Test
+    void shouldUseStoredCropWhenSelectedProductIsRecognized() {
+        byte[] cropBytes = new byte[]{9, 8, 7};
+        RecognitionCandidate candidate = new RecognitionCandidate(
+                "candidate-1", List.of(0, 0, 80, 80), "电动剃须刀", "FEP", 0.92, null);
+        RecognitionResult expectedResult = new RecognitionResult(
+                "test-session",
+                new CategoryDto("个护", "剃须刀", "电动剃须刀", 0.9),
+                Map.of("品牌", new AttributeValue("FEP", 0.95, true)),
+                List.of("FEP 电动剃须刀"),
+                0.9
+        );
+
+        when(taskManager.belongsToUser("s1", 1L)).thenReturn(true);
+        when(taskManager.getCandidate("s1", "candidate-1")).thenReturn(candidate);
+        when(imageStorage.loadCandidateCrop("s1", "candidate-1")).thenReturn(java.util.Optional.of(cropBytes));
+        when(taskManager.getOriginalFilename("s1")).thenReturn("multi.jpg");
+        when(taskManager.getImageSize("s1")).thenReturn(123L);
+        when(taskManager.getImageHash("s1")).thenReturn("hash");
+        when(visionClient.extractAttributes(eq(cropBytes), anyString(), eq("电动剃须刀"), eq(candidate.brand()), anyString()))
+                .thenReturn(expectedResult);
+
+        orchestrator.selectProduct("s1", new com.visioncart.api.dto.ProductSelectionRequest("candidate-1"), 1L);
+
+        verify(visionClient, timeout(5000)).extractAttributes(
+                eq(cropBytes), eq("image/jpeg"), eq("电动剃须刀"), eq(candidate.brand()), anyString());
+        verify(taskManager, never()).getCandidateCrop("s1", "candidate-1");
     }
 
     @Test

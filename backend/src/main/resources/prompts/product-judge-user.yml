@@ -1,0 +1,22 @@
+version: "1.0"
+description: "Product judge user prompt template"
+prompt: |
+  用户需求：%s
+  排序目标：%s
+  正向信号：%s
+  负向信号：%s
+  商品候选 JSON：
+  %s
+
+  请只输出严格 JSON：
+  {
+    "results": [
+      {
+        "product_id": "输入中的商品ID",
+        "score": 0.0,
+        "bucket": "GOOD_MATCH",
+        "reasons": ["理由1"],
+        "risk_flags": []
+      }
+    ]
+  }

@@ -64,6 +64,42 @@ class AliyunQwenVisionClientTest {
     }
 
     @Test
+    void parsesFlashDetectionBboxInNormalizedThousandSpace() throws Exception {
+        AliyunQwenVisionClient client = client();
+        String content = """
+                {
+                  "products": [
+                    {"bbox": [100, 200, 900, 800], "category": "鏃犵嚎榧犳爣", "brand": null, "confidence": 0.91}
+                  ],
+                  "total": 1
+                }
+                """;
+
+        List<RecognitionCandidate> candidates = client.parseDetectionResponse(openAiBody(content), imageBytes(1000, 500));
+
+        assertThat(candidates).hasSize(1);
+        assertThat(candidates.get(0).bbox()).containsExactly(100, 100, 900, 400);
+    }
+
+    @Test
+    void parsesThousandSpaceBboxOnNonThousandImageWithoutExpandingToFullImage() throws Exception {
+        AliyunQwenVisionClient client = client();
+        String content = """
+                {
+                  "products": [
+                    {"bbox": [100, 200, 900, 800], "category": "camera", "brand": null, "confidence": 0.91}
+                  ],
+                  "total": 1
+                }
+                """;
+
+        List<RecognitionCandidate> candidates = client.parseDetectionResponse(openAiBody(content), imageBytes(800, 600));
+
+        assertThat(candidates).hasSize(1);
+        assertThat(candidates.get(0).bbox()).containsExactly(80, 120, 720, 480);
+    }
+
+    @Test
     void ignoresInvalidFlashBbox() throws Exception {
         AliyunQwenVisionClient client = client();
         String content = """
@@ -112,6 +148,28 @@ class AliyunQwenVisionClientTest {
         assertThat(crop.bytes()).isNotEmpty();
         assertThat(crop.width()).isGreaterThan(70);
         assertThat(crop.height()).isGreaterThan(55);
+    }
+
+    @Test
+    void cropsBboxWithSafetyMargin() throws Exception {
+        ImageProcessor processor = new ImageProcessor(new VisionCartProperties());
+
+        ImageProcessor.CroppedImage crop = processor.cropToJpeg(imageBytes(100, 100), List.of(25, 25, 75, 75));
+
+        assertThat(crop.width()).isGreaterThanOrEqualTo(70);
+        assertThat(crop.height()).isGreaterThanOrEqualTo(70);
+    }
+
+    @Test
+    void cropsSmallProductRegionWithoutReturningWholeImage() throws Exception {
+        ImageProcessor processor = new ImageProcessor(new VisionCartProperties());
+
+        ImageProcessor.CroppedImage crop = processor.cropToJpeg(imageBytes(400, 400), List.of(100, 100, 180, 180));
+
+        assertThat(crop.bytes()).isNotEmpty();
+        assertThat(crop.width()).isLessThan(400);
+        assertThat(crop.height()).isLessThan(400);
+        assertThat(crop.sourceArea()).isEqualTo(6400);
     }
 
     private AliyunQwenVisionClient client() {

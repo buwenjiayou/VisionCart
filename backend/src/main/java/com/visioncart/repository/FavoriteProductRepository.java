@@ -11,6 +11,10 @@ import java.util.Optional;
 public interface FavoriteProductRepository extends JpaRepository<FavoriteProduct, Long> {
     Optional<FavoriteProduct> findByProductIdAndUserId(String productId, Long userId);
 
+    /**
+     * @deprecated Use {@link #findByProductIdAndUserId(String, Long)} to avoid cross-user data leaks.
+     */
+    @Deprecated
     List<FavoriteProduct> findByProductId(String productId);
 
     List<FavoriteProduct> findByUserIdAndProductIdIn(Long userId, List<String> productIds);

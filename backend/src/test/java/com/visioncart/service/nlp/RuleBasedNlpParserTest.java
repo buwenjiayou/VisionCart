@@ -55,9 +55,10 @@ class RuleBasedNlpParserTest {
     }
 
     @Test
-    void smallPriceNotComplete() {
+    void smallPriceIsComplete() {
+        // "低于1" is a valid price filter (Bug fix: floor changed from >1 to >0)
         RuleBasedNlpParser.ParsedFilter parsed = parser.parse("低于1");
-        assertThat(parsed.complete()).isFalse();
+        assertThat(parsed.complete()).isTrue();
     }
 
     // === 中文数字全面覆盖 ===

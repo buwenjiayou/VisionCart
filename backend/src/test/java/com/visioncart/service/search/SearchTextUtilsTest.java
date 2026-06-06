@@ -109,6 +109,34 @@ class SearchTextUtilsTest {
     }
 
     @Test
+    void negativeKeywordDoesNotBecomePositivePlatformQuery() {
+        Map<String, String> attributes = Map.of("类目", "无线鼠标", "关键词", "白色无线鼠标");
+        SearchFilter filter = new SearchFilter(
+                new PriceRange(null, null),
+                List.of(),
+                null,
+                List.of(),
+                List.of(),
+                null,
+                null,
+                "desc",
+                "!黑色,支架"
+        );
+
+        List<String> queries = SearchQueryBuilder.taobaoQueries(attributes, filter, "商品");
+
+        assertEquals(false, queries.stream().anyMatch(query -> query.contains("!") || query.contains("支架")));
+        assertEquals(List.of("黑色", "支架"), SearchTextUtils.negativeTerms(filter.keyword()));
+    }
+
+    @Test
+    void productRelevanceAcceptsKeywordCoreWhenCategoryIsWrong() {
+        assertEquals(true, SearchTextUtils.isProductRelevant(
+                "罗技白色无线办公鼠标",
+                Map.of("类目", "肩颈按摩仪", "关键词", "无线鼠标")));
+    }
+
+    @Test
     void buildsPreciseModelQueriesBeforeBroadQueries() {
         Map<String, String> attributes = Map.of(
                 "品牌", "罗技",
@@ -139,7 +167,7 @@ class SearchTextUtilsTest {
 
     @Test
     void platformFetchSizeExpandsCandidatePool() {
-        assertEquals(60, SearchQueryBuilder.platformFetchSize(20));
+        assertEquals(90, SearchQueryBuilder.platformFetchSize(20));
         assertEquals(100, SearchQueryBuilder.platformFetchSize(50));
     }
 

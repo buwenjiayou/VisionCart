@@ -41,11 +41,13 @@ TAOBAO_APP_KEY=<真实值>
 TAOBAO_APP_SECRET=<真实值>
 TAOBAO_ADZONE_ID=<真实值>
 VISIONCART_ALLOWED_ORIGINS=http://47.94.4.31:8080
+VISIONCART_ADMIN_USER_IDS=<可访问 metrics/prometheus 的用户 ID，多个用逗号分隔>
+VISIONCART_WS_QUERY_TOKEN_ENABLED=false
 ```
 
 Docker Compose 默认会让后端连接 compose 内的 `mysql` 服务；只有使用外部数据库时才需要设置 `DOCKER_MYSQL_URL`。
 
-首次部署可以保留 `JPA_DDL_AUTO=update` 自动建表。数据库稳定后再改成 `validate` 或 `none`。
+生产部署使用 Flyway 管理表结构，JPA 固定为 `validate`。首次部署请先确认 `backend/src/main/resources/db/migration` 中的迁移脚本已覆盖当前 schema，不再使用 `JPA_DDL_AUTO=update` 自动建表。
 
 ## 4. 启动后端、MySQL、Redis
 
@@ -61,7 +63,10 @@ docker compose --env-file ../.env logs -f backend
 ```bash
 curl http://127.0.0.1:8080/api/v1/health
 curl http://47.94.4.31:8080/api/v1/health
+curl -H "Authorization: Bearer <admin-jwt>" http://127.0.0.1:8080/actuator/prometheus
 ```
+
+`/api/v1/health` 用于负载均衡健康检查；`/api/v1/health/deep`、`/api/v1/metrics/**`、`/actuator/metrics/**`、`/actuator/prometheus` 需要登录，其中 metrics/prometheus 还要求当前用户 ID 在 `VISIONCART_ADMIN_USER_IDS` 内。
 
 ## 5. 防火墙和安全组
 
@@ -87,6 +92,8 @@ MySQL 和 Redis 在 compose 中只绑定 `127.0.0.1`，不对公网开放。
 ```properties
 VISIONCART_API_BASE_URL=http://47.94.4.31:8080/
 ```
+
+Debug 构建允许本地 HTTP 地址。Release 构建必须配置 HTTPS，且不能是 localhost、`10.0.2.2` 或局域网 IP，否则 Gradle 会在 `preReleaseBuild` 阶段失败。
 
 重新构建并安装：
 
@@ -121,6 +128,8 @@ Android 改为：
 ```properties
 VISIONCART_API_BASE_URL=https://你的域名/
 ```
+
+开启 HTTPS 后，Release APK 只信任 HTTPS；本地 cleartext network security config 仅存在于 debug source set。
 
 ## 8. 常用运维命令
 

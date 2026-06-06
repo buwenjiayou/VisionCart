@@ -33,20 +33,29 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         String path = request.getRequestURI();
 
-        // Skip public auth endpoints, swagger, static resources, and actuator
+        // Completely skip: public auth endpoints, health, static resources
         if (path.equals("/api/v1/auth/send-code") ||
             path.equals("/api/v1/auth/login") ||
             path.startsWith("/swagger") ||
             path.startsWith("/v3/api-docs") ||
             path.startsWith("/webjars") ||
             path.equals("/api/v1/health") ||
-            path.equals("/error") ||
-            path.startsWith("/actuator") ||
-            !path.startsWith("/api/")) {
+            path.equals("/actuator/health") ||
+            path.startsWith("/actuator/health/") ||
+            path.equals("/error")) {
             filterChain.doFilter(request, response);
             return;
         }
 
+        // Skip non-API, non-actuator paths (static resources, etc.)
+        boolean isApiPath = path.startsWith("/api/");
+        boolean isActuatorPath = path.startsWith("/actuator/");
+        if (!isApiPath && !isActuatorPath) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        // Try to extract and validate JWT
         String authHeader = request.getHeader("Authorization");
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             String token = authHeader.substring(7);
@@ -60,7 +69,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         }
 
-        // Only require auth for /api/v1/** endpoints (excluding /api/v1/auth/**)
+        // Require auth for both /api/v1/** and /actuator/** (except health, already skipped above)
         if (SecurityContextHolder.getContext().getAuthentication() == null) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);

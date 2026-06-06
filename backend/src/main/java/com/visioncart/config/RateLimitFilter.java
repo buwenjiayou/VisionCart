@@ -64,6 +64,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
         if (path.equals("/api/v1/auth/send-code")) {
             return new LimitSpec("auth", cfg.getAuthLimit(), cfg.getAuthWindowSeconds());
         }
+        if (path.equals("/api/v1/auth/login")) {
+            // Stricter rate limit for login to prevent brute-force code guessing (Bug #15)
+            return new LimitSpec("login", Math.min(cfg.getAuthLimit(), 20), cfg.getAuthWindowSeconds());
+        }
         if (path.equals("/api/v1/recognition/analyze")) {
             return new LimitSpec("recognition", cfg.getRecognitionLimit(), cfg.getRecognitionWindowSeconds());
         }
@@ -78,8 +82,19 @@ public class RateLimitFilter extends OncePerRequestFilter {
         if (auth != null && auth.getPrincipal() instanceof JwtAuthenticationFilter.AuthPrincipal principal) {
             return "user:" + principal.getUserId();
         }
-        // Always use remoteAddr for rate limiting (not spoofable by client)
-        return "ip:" + request.getRemoteAddr();
+        // Use remoteAddr as primary (cannot be spoofed by client)
+        String remoteAddr = request.getRemoteAddr();
+        // Only trust X-Forwarded-For when request comes from localhost (reverse proxy)
+        if ("127.0.0.1".equals(remoteAddr) || "0:0:0:0:0:0:0:1".equals(remoteAddr)) {
+            String forwarded = request.getHeader("X-Forwarded-For");
+            if (forwarded != null && !forwarded.isBlank()) {
+                String clientIp = forwarded.split(",")[0].trim();
+                if (!clientIp.isEmpty()) {
+                    return "ip:" + clientIp;
+                }
+            }
+        }
+        return "ip:" + remoteAddr;
     }
 
     private record LimitSpec(String scope, int limit, int windowSeconds) {

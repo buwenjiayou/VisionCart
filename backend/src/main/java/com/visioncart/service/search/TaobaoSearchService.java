@@ -22,25 +22,39 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class TaobaoSearchService implements PlatformSearchService {
     private static final Logger log = LoggerFactory.getLogger(TaobaoSearchService.class);
     private static final int DETAIL_ENRICH_LIMIT = 20;
-    private static final long DETAIL_CACHE_TTL_MS = Duration.ofMinutes(30).toMillis();
 
     private final VisionCartProperties properties;
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
-    private final Map<String, CachedDetail> detailCache = new ConcurrentHashMap<>();
+    private final java.util.concurrent.ExecutorService searchExecutor;
+    private final java.util.concurrent.ExecutorService detailExecutor;
+    private final Cache<String, CachedDetail> detailCache = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(30, TimeUnit.MINUTES)
+            .build();
     private volatile long apiClockOffsetMs = 0;
 
-    public TaobaoSearchService(VisionCartProperties properties, ObjectMapper objectMapper) {
+    public TaobaoSearchService(VisionCartProperties properties, ObjectMapper objectMapper,
+                               @org.springframework.beans.factory.annotation.Qualifier("searchExecutor") java.util.concurrent.ExecutorService searchExecutor,
+                               @org.springframework.beans.factory.annotation.Qualifier("detailExecutor") java.util.concurrent.ExecutorService detailExecutor) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.restClient = RestClient.create();
+        this.searchExecutor = searchExecutor;
+        this.detailExecutor = detailExecutor;
+        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(java.time.Duration.ofSeconds(5));
+        factory.setReadTimeout(java.time.Duration.ofSeconds(15));
+        this.restClient = RestClient.builder().requestFactory(factory).build();
     }
 
     @Override
@@ -74,16 +88,50 @@ public class TaobaoSearchService implements PlatformSearchService {
 
     private List<ProductCard> doSearch(Map<String, String> attributes, SearchFilter filter, int page, int pageSize,
                                        VisionCartProperties.Taobao tb) throws Exception {
-        Map<String, ProductCard> byId = new LinkedHashMap<>();
         int fetchSize = SearchQueryBuilder.platformFetchSize(pageSize);
-        for (String query : SearchQueryBuilder.taobaoQueries(attributes, filter, "商品")) {
-            Map<String, String> params = buildParams(query, filter, page, fetchSize, tb);
-            mapResponse(executeSearch(tb, params)).forEach(product -> byId.putIfAbsent(product.id(), product));
-            if (byId.size() >= fetchSize) {
-                break;
+        List<String> queries = SearchQueryBuilder.taobaoQueries(attributes, filter, "商品");
+        log.info("Taobao search: {} queries", queries.size());
+
+        // Run all queries in parallel
+        List<java.util.concurrent.CompletableFuture<List<ProductCard>>> futures = queries.stream()
+                .map(query -> java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                    try {
+                        Map<String, String> params = buildParams(query, filter, page, fetchSize, tb);
+                        List<ProductCard> results = mapResponse(executeSearch(tb, params));
+                        log.info("Taobao query '{}' returned {} products", query, results.size());
+                        return results;
+                    } catch (Exception e) {
+                        log.warn("Taobao query '{}' failed: {}", query, e.toString());
+                        return List.<ProductCard>of();
+                    }
+                }, searchExecutor))
+                .toList();
+
+        // Collect results as they complete
+        waitForQueries(futures, "Taobao");
+        Map<String, ProductCard> byId = new LinkedHashMap<>();
+        for (java.util.concurrent.CompletableFuture<List<ProductCard>> future : futures) {
+            if (!future.isDone()) {
+                future.cancel(true);
+                continue;
             }
+            future.getNow(List.<ProductCard>of())
+                    .forEach(product -> byId.putIfAbsent(product.id(), product));
         }
-        return enrichWithDetails(new ArrayList<>(byId.values()).stream().limit(fetchSize).toList(), tb);
+
+        return enrichWithDetails(new ArrayList<>(byId.values()).stream()
+                .limit(fetchSize).toList(), tb);
+    }
+
+    private void waitForQueries(List<java.util.concurrent.CompletableFuture<List<ProductCard>>> futures, String platform) {
+        try {
+            java.util.concurrent.CompletableFuture
+                    .allOf(futures.toArray(new java.util.concurrent.CompletableFuture[0]))
+                    .get(12, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            long completed = futures.stream().filter(java.util.concurrent.CompletableFuture::isDone).count();
+            log.warn("{} query batch timed out; using {} completed of {} queries", platform, completed, futures.size());
+        }
     }
 
     private Map<String, String> buildParams(String query,
@@ -118,9 +166,12 @@ public class TaobaoSearchService implements PlatformSearchService {
 
         if (filter.sortBy() != null) {
             String sort = switch (filter.sortBy()) {
-                case "price" -> "price_asc".equals(filter.sortOrder()) ? "price_asc" : "price_des";
+                case "price" -> "asc".equalsIgnoreCase(filter.sortOrder()) || "price_asc".equalsIgnoreCase(filter.sortOrder())
+                        ? "price_asc" : "price_des";
                 case "sales" -> "total_sales_des";
-                case "rating" -> "tk_rate_des";
+                // 淘宝API无真正的评分排序，tk_rate_des是佣金比率排序（非客户评分）
+                // 评分排序依赖后端本地 applySort 按 shop_dsr 字段排序
+                case "rating" -> "total_sales_des";
                 default -> null;
             };
             if (sort != null) {
@@ -133,12 +184,16 @@ public class TaobaoSearchService implements PlatformSearchService {
     }
 
     private String executeSearch(VisionCartProperties.Taobao tb, Map<String, String> params) {
-        return restClient.post()
+        String body = buildQueryString(params);
+        log.info("Taobao search: method={}, q={}", params.get("method"), params.get("q"));
+        String response = restClient.post()
                 .uri(tb.getApiUrl())
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .body(buildQueryString(params))
+                .body(body)
                 .retrieve()
                 .body(String.class);
+        log.info("Taobao response (first 500 chars): {}", response != null ? response.substring(0, Math.min(500, response.length())) : "null");
+        return response;
     }
 
     private String sign(Map<String, String> params, String secret) throws Exception {
@@ -235,9 +290,12 @@ public class TaobaoSearchService implements PlatformSearchService {
             String userType = firstLong(item, "user_type") == 1 || firstLong(basicInfo, "user_type") == 1 ? "天猫" : "淘宝";
             boolean selfOperated = "天猫".equals(userType);
 
-            double rating = parseRating(
-                    firstText(item, "shop_dsr", "item_score"),
-                    firstText(basicInfo, "shop_dsr", "item_score"));
+            RatingInfo ratingInfo = ratingInfo(item, basicInfo);
+            double rating = ratingInfo.rating();
+            if (log.isDebugEnabled() && rating > 0) {
+                log.debug("Taobao search item {} rating_source={} rating={}",
+                        numIid, ratingInfo.source(), rating);
+            }
 
             List<String> tags = new ArrayList<>();
             tags.add(userType);
@@ -259,8 +317,17 @@ public class TaobaoSearchService implements PlatformSearchService {
                 detailUrl = "https://s.taobao.com/search?q=" + java.net.URLEncoder.encode(title, StandardCharsets.UTF_8);
             }
 
+            // Generate stable product ID: use numIid if available, otherwise hash title+image+shop
+            String productId;
+            if (StringUtils.isNotBlank(numIid)) {
+                productId = "tb_" + numIid;
+            } else {
+                String seed = StringUtils.defaultString(title) + "|" + StringUtils.defaultString(pictUrl) + "|" + StringUtils.defaultString(shopName);
+                productId = "tb_" + Integer.toHexString(seed.hashCode());
+            }
+
             products.add(new ProductCard(
-                    "tb_" + numIid,
+                    productId,
                     title,
                     pictUrl,
                     zkPrice,
@@ -274,7 +341,7 @@ public class TaobaoSearchService implements PlatformSearchService {
                     tags,
                     detailUrl,
                     brand,
-                    rating > 0 ? "shop_dsr" : "none",
+                    ratingInfo.source(),
                     SearchTextUtils.salesLabel(salesInfo.sales(), salesInfo.source())
             ));
         }
@@ -309,10 +376,9 @@ public class TaobaoSearchService implements PlatformSearchService {
     private Map<String, TaobaoDetail> loadDetails(List<String> itemIds, VisionCartProperties.Taobao tb) throws Exception {
         Map<String, TaobaoDetail> details = new LinkedHashMap<>();
         List<String> missing = new ArrayList<>();
-        long now = System.currentTimeMillis();
         for (String itemId : itemIds) {
-            CachedDetail cached = detailCache.get(itemId);
-            if (cached != null && cached.expiresAt() > now) {
+            CachedDetail cached = detailCache.getIfPresent(itemId);
+            if (cached != null) {
                 details.put(itemId, cached.detail());
             } else {
                 missing.add(itemId);
@@ -320,7 +386,7 @@ public class TaobaoSearchService implements PlatformSearchService {
         }
         if (!missing.isEmpty()) {
             Map<String, TaobaoDetail> loaded = fetchDetails(missing, tb);
-            loaded.forEach((id, detail) -> detailCache.put(id, new CachedDetail(detail, now + DETAIL_CACHE_TTL_MS)));
+            loaded.forEach((id, detail) -> detailCache.put(id, new CachedDetail(detail)));
             details.putAll(loaded);
         }
         return details;
@@ -393,7 +459,8 @@ public class TaobaoSearchService implements PlatformSearchService {
         String shopName = firstText(basicInfo, "shop_title", "shop_name", "seller_nick");
         String brand = StringUtils.defaultIfBlank(firstText(basicInfo, "brand_name", "brand"),
                 SearchTextUtils.inferBrand(title, shopName));
-        double rating = parseRating(firstText(basicInfo, "shop_dsr", "item_score"));
+        RatingInfo ratingInfo = ratingInfo(detail, basicInfo);
+        double rating = ratingInfo.rating();
         SalesInfo sales = salesInfo(detail, basicInfo, publishInfo);
         String detailUrl = SearchTextUtils.normalizeUrl(firstText(publishInfo, "coupon_share_url", "click_url"));
         if (StringUtils.isBlank(detailUrl)) {
@@ -405,7 +472,7 @@ public class TaobaoSearchService implements PlatformSearchService {
         if (basicInfo.path("free_shipment").asBoolean(false)) tags.add("包邮");
         addPromotionTags(tags, priceInfo);
         return new TaobaoDetail(itemId, inputItemId, title, imageUrl, price, originalPrice, shopName, brand,
-                rating, sales.sales(), sales.source(), tags, detailUrl, "天猫".equals(userType));
+                rating, ratingInfo.source(), sales.sales(), sales.source(), tags, detailUrl, "天猫".equals(userType));
     }
 
     private ProductCard applyDetail(ProductCard base, TaobaoDetail detail) {
@@ -421,6 +488,7 @@ public class TaobaoSearchService implements PlatformSearchService {
         long sales = Math.max(base.sales(), detail.sales());
         String salesSource = detail.sales() >= base.sales() ? detail.salesSource() : salesSourceFromLabel(base.salesLabel());
         double rating = detail.rating() > 0 ? detail.rating() : base.rating();
+        String ratingSource = detail.rating() > 0 ? detail.ratingSource() : base.ratingSource();
         return new ProductCard(
                 base.id(),
                 StringUtils.defaultIfBlank(detail.title(), base.title()),
@@ -436,7 +504,7 @@ public class TaobaoSearchService implements PlatformSearchService {
                 tags,
                 StringUtils.defaultIfBlank(detail.detailUrl(), base.detailUrl()),
                 StringUtils.defaultIfBlank(detail.brand(), base.brand()),
-                rating > 0 ? "shop_dsr" : base.ratingSource(),
+                rating > 0 ? ratingSource : "none",
                 SearchTextUtils.salesLabel(sales, salesSource)
         );
     }
@@ -547,6 +615,24 @@ public class TaobaoSearchService implements PlatformSearchService {
         return "monthly";
     }
 
+    private RatingInfo ratingInfo(JsonNode item, JsonNode basicInfo) {
+        String rawItemScore = firstText(basicInfo, "item_score");
+        if (StringUtils.isBlank(rawItemScore)) {
+            rawItemScore = firstText(item, "item_score");
+        }
+        double rating = parseRating(rawItemScore);
+        if (rating > 0) {
+            return new RatingInfo(rating, "item_rating");
+        }
+
+        String rawShopDsr = firstText(basicInfo, "shop_dsr");
+        if (StringUtils.isBlank(rawShopDsr)) {
+            rawShopDsr = firstText(item, "shop_dsr");
+        }
+        rating = parseRating(rawShopDsr);
+        return rating > 0 ? new RatingInfo(rating, "shop_dsr") : new RatingInfo(0, "none");
+    }
+
     private double parseRating(String... values) {
         for (String value : values) {
             if (StringUtils.isNotBlank(value)) {
@@ -568,13 +654,14 @@ public class TaobaoSearchService implements PlatformSearchService {
 
     @Scheduled(fixedDelay = 300_000)
     void evictExpiredCaches() {
-        long now = System.currentTimeMillis();
-        detailCache.entrySet().removeIf(e -> e.getValue().expiresAt() <= now);
+        detailCache.cleanUp();
     }
 
     private record SalesInfo(long sales, String source) {}
 
-    private record CachedDetail(TaobaoDetail detail, long expiresAt) {}
+    private record RatingInfo(double rating, String source) {}
+
+    private record CachedDetail(TaobaoDetail detail) {}
 
     private record TaobaoDetail(
             String itemId,
@@ -586,6 +673,7 @@ public class TaobaoSearchService implements PlatformSearchService {
             String shopName,
             String brand,
             double rating,
+            String ratingSource,
             long sales,
             String salesSource,
             List<String> tags,

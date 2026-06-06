@@ -6,6 +6,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Lob;
 import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
@@ -38,14 +39,30 @@ public class RecognitionHistory {
 
     private double confidence = 0.0;
 
-    @Column(name = "user_id")
+    @Column(name = "user_id", nullable = false)
     private Long userId;
 
+    @Lob
+    @Column(name = "display_products_snapshot")
+    private String displayProductsSnapshot;
+
+    @Lob
+    @Column(name = "applied_filters_json")
+    private String appliedFiltersJson;
+
     private Instant createdAt = Instant.now();
+
+    private Instant updatedAt = Instant.now();
 
     @PrePersist
     protected void onCreate() {
         if (createdAt == null) createdAt = Instant.now();
+        if (updatedAt == null) updatedAt = Instant.now();
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = Instant.now();
     }
 
     public String getSessionId() {
@@ -113,5 +130,29 @@ public class RecognitionHistory {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getDisplayProductsSnapshot() {
+        return displayProductsSnapshot;
+    }
+
+    public void setDisplayProductsSnapshot(String displayProductsSnapshot) {
+        this.displayProductsSnapshot = displayProductsSnapshot;
+    }
+
+    public String getAppliedFiltersJson() {
+        return appliedFiltersJson;
+    }
+
+    public void setAppliedFiltersJson(String appliedFiltersJson) {
+        this.appliedFiltersJson = appliedFiltersJson;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
+    }
+
+    public void setUpdatedAt(Instant updatedAt) {
+        this.updatedAt = updatedAt;
     }
 }

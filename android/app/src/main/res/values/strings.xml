@@ -1,3 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">VisionCart</string>
+
+    <!-- 通用操作 -->
+    <string name="operation_failed">操作失败: %1$s</string>
+    <string name="retry_later">请稍后重试</string>
+
+    <!-- 识别 -->
+    <string name="recognition_failed">识别失败</string>
+    <string name="recognition_failed_retry">识别失败，请重试</string>
+    <string name="select_product_to_recognize">请选择要识别的商品</string>
+
+    <!-- 搜索 -->
+    <string name="search_failed">搜索失败: %1$s</string>
+
+    <!-- 修正 -->
+    <string name="correction_success">属性已修正: %1$s → %2$s</string>
+    <string name="correction_failed">修正失败: %1$s</string>
+
+    <!-- NLP 筛选 -->
+    <string name="nlp_understanding">正在理解筛选条件…</string>
+    <string name="nlp_filtering">正在筛选相似商品…</string>
+    <string name="nlp_expanding">正在扩大搜索范围…</string>
+    <string name="nlp_parse_failed">解析失败: %1$s</string>
+    <string name="filter_failed_keep_previous">筛选失败，已保留原结果</string>
+    <string name="filter_cleared">已清空筛选条件</string>
+    <string name="filter_clear_failed">清除筛选失败: %1$s</string>
+    <string name="filter_deleted">已删除筛选标签</string>
+    <string name="filter_delete_failed">删除筛选失败: %1$s</string>
+    <string name="filter_undone">已撤回筛选</string>
+    <string name="filter_undo_failed">撤回失败: %1$s</string>
+    <string name="no_results_relax">没有找到完全匹配的商品，已保留原结果</string>
+
+    <!-- 排序 -->
+    <string name="sort_failed">排序失败: %1$s</string>
+
+    <!-- 收藏 -->
+    <string name="favorited">已收藏</string>
+    <string name="favorite_failed_rollback">收藏失败，已恢复原状态</string>
+    <string name="unfavorited">已取消收藏</string>
+    <string name="unfavorite_failed_rollback">取消收藏失败，已恢复原状态</string>
+
+    <!-- 价格提醒 -->
+    <string name="price_alert_set">价格提醒已设置</string>
+    <string name="price_alert_set_failed">设置失败: %1$s</string>
+    <string name="price_alert_deleted">价格提醒已删除</string>
+    <string name="price_alert_delete_failed">删除失败: %1$s</string>
+    <string name="select_target_price">请选择目标价格</string>
+    <string name="set_price_alert">请设置降价提醒</string>
+
+    <!-- 历史记录 -->
+    <string name="history_deleted">已删除识别记录</string>
+    <string name="history_delete_failed">删除失败: %1$s</string>
+    <string name="history_loading">正在加载历史快照…</string>
+    <string name="history_restored">已恢复历史快照（%1$d 件商品）</string>
+    <string name="history_no_snapshot">无历史快照，请点击重新搜索</string>
+
+    <!-- 撤销 -->
+    <string name="undo_success">已撤销</string>
+    <string name="undo_success_detail">已撤销: %1$s</string>
+    <string name="undo_failed">撤回失败: %1$s</string>
+
+    <!-- messageCode 映射（后端 ActionResult.messageCode → Android strings.xml） -->
+    <string name="msg_filter_applied">已筛选</string>
+    <string name="msg_filter_rollback">没有找到符合条件的商品，已保留原结果</string>
+    <string name="msg_filter_cleared">已清空筛选条件</string>
+    <string name="msg_filter_removed">已删除筛选标签</string>
+    <string name="msg_filter_soft_reference">没有找到明确符合的商品，下方保留可能相关结果供参考</string>
+    <string name="msg_preference_applied">已按偏好调整排序</string>
+    <string name="msg_exclusion_applied">已排除相关商品</string>
+    <string name="msg_action_payload_required">操作参数不能为空</string>
+    <string name="msg_unauthorized_session">无权访问该识别任务</string>
+    <string name="msg_action_execution_failed">操作执行失败，请稍后重试</string>
+
+    <!-- 导购建议 -->
+    <string name="suggestion_failed">操作失败: %1$s</string>
+    <string name="feature_in_development">功能开发中: %1$s</string>
+    <string name="feature_in_development_generic">功能开发中</string>
+    <string name="no_better_results">未找到更优结果，已保留当前商品</string>
+
+    <!-- 相机 -->
+    <string name="camera_permission_required">需要相机权限才能拍照</string>
+    <string name="camera_start_failed">相机启动失败，请重试</string>
+    <string name="photo_capture_failed">拍照失败: %1$s</string>
+
+    <!-- 悬浮窗 -->
+    <string name="float_window_permission_required">请授予悬浮窗权限后再开启</string>
+    <string name="float_ball_off">悬浮球已关闭</string>
+    <string name="float_ball_on">悬浮球已开启</string>
+    <string name="press_again_to_exit">再按一次退出应用</string>
 </resources>

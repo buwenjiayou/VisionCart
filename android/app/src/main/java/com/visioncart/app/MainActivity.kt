@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -51,6 +52,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -60,8 +62,14 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -99,6 +107,7 @@ import com.visioncart.app.ui.favorites.FavoritesScreen
 import com.visioncart.app.ui.history.HistoryScreen
 import com.visioncart.app.ui.viewmodel.MainViewModel
 import com.visioncart.app.ui.viewmodel.UiState
+import com.visioncart.app.data.PriceAlertWorker
 import com.visioncart.app.overlay.FloatingWindowService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -112,6 +121,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleIntentExtras(intent)
+        PriceAlertWorker.schedule(this)
         val repository = VisionCartRepository(applicationContext)
         setContent {
             com.visioncart.app.ui.theme.VisionCartTheme {
@@ -133,7 +143,7 @@ class MainActivity : ComponentActivity() {
         if (Settings.canDrawOverlays(this)) {
             startFloatingWindowService()
         } else {
-            Toast.makeText(this, "请授予悬浮窗权限后再开启", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.float_window_permission_required), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -161,10 +171,10 @@ class MainActivity : ComponentActivity() {
 
         if (FloatingWindowService.isRunning.value) {
             stopFloatingWindowService()
-            Toast.makeText(this, "悬浮球已关闭", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.float_ball_off), Toast.LENGTH_SHORT).show()
         } else {
             startFloatingWindowService()
-            Toast.makeText(this, "悬浮球已开启", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.float_ball_on), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -212,11 +222,13 @@ fun VisionCartApp(
     val snackbarHostState = remember { SnackbarHostState() }
     val isOverlayActive by FloatingWindowService.isRunning.collectAsState()
 
-    // Check saved token on startup — auto login
+    // Check saved token on startup — auto login (skip network validation for fast startup)
     LaunchedEffect(Unit) {
+        ApiClient.appContext = context.applicationContext
         val token = TokenManager.getToken(context)
         if (!token.isNullOrBlank()) {
             ApiClient.authToken = token
+            ApiClient.refreshTokenValue = TokenManager.getRefreshToken(context)
             currentUserId = TokenManager.getUserId(context)
             ApiClient.currentUserId = currentUserId
             userEmail = TokenManager.getEmail(context) ?: ""
@@ -264,9 +276,10 @@ fun VisionCartApp(
 
     // ========== Logged in UI ==========
 
+    val app = LocalContext.current.applicationContext as android.app.Application
     val viewModel: MainViewModel = viewModel(
         key = "main-${currentUserId ?: 0L}",
-        factory = MainViewModel.Factory(repository)
+        factory = MainViewModel.Factory(app, repository)
     )
     val uiState by viewModel.uiState.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
@@ -285,7 +298,7 @@ fun VisionCartApp(
             (context as? ComponentActivity)?.moveTaskToBack(true)
         } else {
             backPressTime = now
-            Toast.makeText(context, "再按一次退出应用", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.press_again_to_exit), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -337,17 +350,15 @@ fun VisionCartApp(
         correctingAttribute = name
         correctingCurrentValue = value
         val category = uiState.categoryText.split(" / ").lastOrNull() ?: ""
-        if (category.isNotBlank()) {
-            // Show local attribute suggestions immediately
-            attributeOptions = getDefaultOptions(name)
-            showAttributeDialog = true
-            // Load remote options asynchronously
-            scope.launch {
-                val result = repository.getAttributeOptions(category, name, uiState.sessionId)
-                result.onSuccess { options ->
-                    if (options.isNotEmpty()) {
-                        attributeOptions = options
-                    }
+        // Show local attribute suggestions immediately
+        attributeOptions = getDefaultOptions(name, uiState.categoryText)
+        showAttributeDialog = true
+        // Load remote options asynchronously
+        scope.launch {
+            val result = repository.getAttributeOptions(category, name, uiState.sessionId)
+            result.onSuccess { options ->
+                if (options.isNotEmpty()) {
+                    attributeOptions = options
                 }
             }
         }
@@ -355,70 +366,68 @@ fun VisionCartApp(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        floatingActionButton = {
-            if (currentRoute == Screen.Home.route) {
-                FloatingActionButton(
-                    onClick = { navigate(Screen.Favorites.route) },
-                    containerColor = Color(0xFF0A7C66)
-                ) {
-                    Icon(Icons.Default.Favorite, contentDescription = "收藏", tint = Color.White)
-                }
+        bottomBar = {
+            NavigationBar(
+                containerColor = Color.White,
+                contentColor = Color(0xFF0A7C66)
+            ) {
+                NavigationBarItem(
+                    selected = currentRoute == Screen.Home.route,
+                    onClick = { if (currentRoute != Screen.Home.route) navigateHome(clearBackStack = true) },
+                    icon = { Icon(Icons.Outlined.ImageSearch, contentDescription = null) },
+                    label = { Text("首页") },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color(0xFF0A7C66),
+                        selectedTextColor = Color(0xFF0A7C66),
+                        unselectedIconColor = Color(0xFF9EAAA6),
+                        unselectedTextColor = Color(0xFF9EAAA6),
+                        indicatorColor = Color(0xFFEAF3F0)
+                    )
+                )
+                NavigationBarItem(
+                    selected = currentRoute == Screen.Favorites.route,
+                    onClick = { if (currentRoute != Screen.Favorites.route) navigate(Screen.Favorites.route) },
+                    icon = { Icon(Icons.Default.Favorite, contentDescription = null) },
+                    label = { Text("收藏") },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color(0xFF0A7C66),
+                        selectedTextColor = Color(0xFF0A7C66),
+                        unselectedIconColor = Color(0xFF9EAAA6),
+                        unselectedTextColor = Color(0xFF9EAAA6),
+                        indicatorColor = Color(0xFFEAF3F0)
+                    )
+                )
+                NavigationBarItem(
+                    selected = currentRoute == Screen.History.route,
+                    onClick = { if (currentRoute != Screen.History.route) navigate(Screen.History.route) },
+                    icon = { Icon(Icons.Default.History, contentDescription = null) },
+                    label = { Text("历史") },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color(0xFF0A7C66),
+                        selectedTextColor = Color(0xFF0A7C66),
+                        unselectedIconColor = Color(0xFF9EAAA6),
+                        unselectedTextColor = Color(0xFF9EAAA6),
+                        indicatorColor = Color(0xFFEAF3F0)
+                    )
+                )
             }
         },
         topBar = {
             when (currentRoute) {
                 Screen.Home.route -> {
+                    var showUserMenu by remember { mutableStateOf(false) }
+                    val nickname = userEmail.substringBefore("@").ifBlank { "用户" }
+                    val initial = nickname.firstOrNull()?.uppercase() ?: "U"
+
                     TopAppBar(
                         title = {
-                            Text(
-                                "🛒",
-                                fontSize = 22.sp
-                            )
+                            Text("🛒", fontSize = 22.sp)
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
                             containerColor = Color(0xFFF8FBF9),
                             titleContentColor = Color(0xFF10201C)
                         ),
                         actions = {
-                            // Show user email hint
-                            if (userEmail.isNotBlank()) {
-                                Surface(
-                                    color = Color(0xFFEAF3F0),
-                                    shape = RoundedCornerShape(999.dp),
-                                    modifier = Modifier.padding(end = 4.dp)
-                                ) {
-                                    Text(
-                                        userEmail,
-                                        color = Color(0xFF53615E),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier
-                                            .widthIn(max = 132.dp)
-                                            .padding(horizontal = 9.dp, vertical = 5.dp)
-                                    )
-                                }
-                            } else {
-                                Surface(
-                                    color = Color(0xFFEAF3F0),
-                                    shape = CircleShape,
-                                    modifier = Modifier.padding(end = 4.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.Person,
-                                        contentDescription = "账号",
-                                        tint = Color(0xFF0A7C66),
-                                        modifier = Modifier.padding(6.dp).size(18.dp)
-                                    )
-                                }
-                            }
-                            IconButton(onClick = { navigate(Screen.History.route) }) {
-                                Icon(
-                                    Icons.Default.History,
-                                    contentDescription = "历史",
-                                    tint = Color(0xFF53615E)
-                                )
-                            }
                             IconButton(onClick = { onOverlay() }) {
                                 Icon(
                                     Icons.Outlined.Window,
@@ -426,29 +435,79 @@ fun VisionCartApp(
                                     tint = if (isOverlayActive) Color(0xFF0A7C66) else Color(0xFF53615E)
                                 )
                             }
-                            IconButton(onClick = {
-                                // Logout
-                                scope.launch {
-                                    try {
-                                        ApiClient.api.logout()
-                                    } catch (error: Exception) {
-                                        Log.w("VisionCart", "Logout request failed; clearing local session anyway", error)
+                            // User avatar + nickname
+                            Box {
+                                Surface(
+                                    onClick = { showUserMenu = true },
+                                    color = Color(0xFFEAF3F0),
+                                    shape = RoundedCornerShape(999.dp),
+                                    modifier = Modifier.padding(end = 8.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(start = 4.dp, end = 10.dp, top = 4.dp, bottom = 4.dp)
+                                    ) {
+                                        Surface(
+                                            color = Color(0xFF0A7C66),
+                                            shape = CircleShape,
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                                Text(
+                                                    initial,
+                                                    color = Color.White,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            nickname,
+                                            color = Color(0xFF10201C),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 80.dp)
+                                        )
                                     }
-                                    ApiClient.authToken = null
-                                    ApiClient.currentUserId = null
-                                    TokenManager.clearToken(context)
-                                    repository.clearLocalDataOnLogout()
-                                    viewModel.resetState()
-                                    currentUserId = null
-                                    isLoggedIn = false
-                                    navigateHome(clearBackStack = true)
                                 }
-                            }) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.Logout,
-                                    contentDescription = "退出登录",
-                                    tint = Color(0xFF53615E)
-                                )
+                                DropdownMenu(
+                                    expanded = showUserMenu,
+                                    onDismissRequest = { showUserMenu = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(userEmail, style = MaterialTheme.typography.bodySmall, color = Color(0xFF53615E)) },
+                                        onClick = { showUserMenu = false },
+                                        enabled = false
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("退出登录", color = Color(0xFFD32F2F)) },
+                                        onClick = {
+                                            showUserMenu = false
+                                            scope.launch {
+                                                // 归档当前会话到 MySQL
+                                                val currentSessionId = viewModel.uiState.value.sessionId
+                                                if (!currentSessionId.isNullOrBlank()) {
+                                                    try { repository.archiveSession(currentSessionId) } catch (_: Exception) {}
+                                                }
+                                                try { ApiClient.api.logout() } catch (_: Exception) {}
+                                                ApiClient.authToken = null
+                                                ApiClient.refreshTokenValue = null
+                                                ApiClient.currentUserId = null
+                                                TokenManager.clearToken(context)
+                                                repository.clearLocalDataOnLogout()
+                                                viewModel.resetState()
+                                                currentUserId = null
+                                                isLoggedIn = false
+                                                navigateHome(clearBackStack = true)
+                                            }
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = Color(0xFFD32F2F))
+                                        }
+                                    )
+                                }
                             }
                         }
                     )
@@ -502,8 +561,8 @@ fun VisionCartApp(
                     },
                     onOverlay = onOverlay,
                     onAttributeClick = ::onAttributeClick,
-                    onProductClick = { url, title ->
-                        navigate(Screen.ProductDetail.createRoute(url, title))
+                    onProductClick = { url, _ ->
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     },
                     modifier = Modifier.padding(padding)
                 )
@@ -522,7 +581,7 @@ fun VisionCartApp(
                     viewModel = viewModel,
                     onBack = { navigateBackOrHome() },
                     onProductClick = { url ->
-                        navigate(Screen.ProductDetail.createRoute(url, ""))
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     },
                     modifier = Modifier.padding(padding).background(Color(0xFFF8FBF9))
                 )
@@ -652,7 +711,9 @@ private fun HomeScreen(
                 onAttributeClick = onAttributeClick,
                 onRetry = uiState.imageUri?.let { uri ->
                     { viewModel.analyzeImage(uri) }
-                }
+                },
+                progressStep = uiState.progressStep,
+                confidenceHint = uiState.confidenceHint
             )
         }
 
@@ -665,12 +726,70 @@ private fun HomeScreen(
             }
         }
 
-        // Suggestion Cards
-        if (uiState.suggestionCards.isNotEmpty()) {
+        // Suggestion Cards (quick suggestions only, insight cards shown inline)
+        val quickSuggestions = uiState.suggestionCards.filterNot { it.id.startsWith("insight_") }
+        val insightSuggestions = uiState.suggestionCards.filter { it.id.startsWith("insight_") }.take(1)
+        if (quickSuggestions.isNotEmpty()) {
             item {
                 SuggestionChipsRow(
-                    cards = uiState.suggestionCards,
+                    cards = quickSuggestions,
                     onCardClick = { viewModel.executeSuggestion(it) }
+                )
+            }
+        }
+
+        // Undo bar
+        if (uiState.undoAction != null) {
+            item {
+                val toneColor = when (uiState.undoTone) {
+                    "saving" -> Color(0xFFB66100)
+                    "trust" -> Color(0xFF1D63A3)
+                    "popularity" -> Color(0xFFC33A58)
+                    "filter" -> Color(0xFF0A7C66)
+                    else -> Color(0xFF53615E)
+                }
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = toneColor.copy(alpha = 0.08f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "已应用: ${uiState.undoAction}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF10201C)
+                            )
+                            uiState.undoMetric?.takeIf { it.isNotBlank() }?.let { metric ->
+                                Text(
+                                    metric,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = toneColor
+                                )
+                            }
+                        }
+                        TextButton(onClick = { viewModel.undoLastAction() }) {
+                            Text("撤销", color = Color(0xFF0A7C66), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (uiState.products.isNotEmpty() || uiState.currentFilter.sortBy != null) {
+            item {
+                SortOptionsRow(
+                    filter = uiState.currentFilter,
+                    onSortSelected = { sortBy, sortOrder ->
+                        viewModel.applySortMode(sortBy, sortOrder)
+                    }
                 )
             }
         }
@@ -679,19 +798,44 @@ private fun HomeScreen(
         item {
             FilterSummary(
                 filter = uiState.currentFilter,
-                onClear = {
-                    viewModel.clearFilter()
-                }
+                onClear = { viewModel.clearFilter() },
+                onRemoveTag = { fieldName -> viewModel.removeFilterField(fieldName) },
+                filterTags = uiState.filterTags,
+                structuredFilterTags = uiState.structuredFilterTags,
+                canUndo = uiState.canUndo,
+                onUndo = { viewModel.undoLastAction() },
+                keptPreviousResults = uiState.keptPreviousResults,
+                statusMessage = uiState.filterStatusMessage
             )
         }
 
-        // Products Loading
-        if (uiState.productsLoading) {
+        // NLP filtering progress bar (non-blocking, shows above products)
+        if (uiState.nlpFiltering) {
+            item {
+                NlpFilteringBar(
+                    message = uiState.nlpMessage ?: "正在筛选…",
+                    onCancel = { viewModel.cancelNlp() }
+                )
+            }
+        }
+
+        // Products Loading — only show skeleton when no products yet
+        if (uiState.productsLoading && uiState.products.isEmpty()) {
             item { LoadingIndicator() }
         }
 
         // Products List
         if (uiState.products.isNotEmpty()) {
+            if (uiState.searchRelaxed) {
+                item {
+                    Text(
+                        "未找到精确匹配，已为您放宽条件",
+                        color = Color(0xFFFF9800),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    )
+                }
+            }
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
@@ -711,10 +855,11 @@ private fun HomeScreen(
                     )
                 }
             }
-            items(uiState.products) { product ->
+            itemsIndexed(uiState.products, key = { _, product -> product.id }) { index, product ->
                 ProductCardView(
                     product = product,
                     isFavorite = favoriteIds.contains(product.id),
+                    showRating = uiState.currentFilter.sortBy == "rating",
                     onFavoriteClick = { viewModel.toggleFavorite(product) },
                     onClick = {
                         if (product.detailUrl.isNotBlank()) {
@@ -722,9 +867,34 @@ private fun HomeScreen(
                         }
                     }
                 )
+                // Insert AI insight cards after the 5th product
+                if (insightSuggestions.isNotEmpty() && index == 4) {
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider(
+                        color = Color(0xFFE0E8E4),
+                        thickness = 1.dp,
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    insightSuggestions.forEach { card ->
+                        GuideInsightCard(
+                            card = card,
+                            onClick = { viewModel.executeSuggestion(it) }
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    HorizontalDivider(
+                        color = Color(0xFFE0E8E4),
+                        thickness = 1.dp,
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
             }
         } else if (uiState.recognitionState is UiState.Success && !uiState.productsLoading) {
-            item { EmptyState("没有高相关商品，试试纠正品牌或放宽筛选条件") }
+            item {
+                EmptyState(message = "没有高相关商品，试试点击上方属性修正识别结果")
+            }
         }
     }
     // Pinned NLP Input Bar — always visible at bottom
@@ -927,10 +1097,69 @@ private fun SecondaryActionButton(
 
 // ==================== Default Options ====================
 
-private fun getDefaultOptions(attribute: String): List<String> = when (attribute) {
-    "颜色" -> listOf("黑色", "白色", "红色", "蓝色", "深蓝色", "藏青", "灰色", "绿色", "黄色", "粉色", "棕色", "米白色", "紫色", "橙色", "卡其色", "酒红色", "天蓝色", "墨绿色")
-    "品牌" -> listOf("罗技", "雷蛇", "卓威", "富勒", "雷神", "英菲克", "Apple", "华为", "小米", "未知")
-    "材质" -> listOf("网面", "飞织", "真皮", "PU皮", "帆布", "橡胶", "EVA", "Boost", "React", "Gore-Tex", "皮革", "合成革", "棉", "涤纶", "尼龙")
-    "款式" -> listOf("跑鞋", "篮球鞋", "板鞋", "休闲鞋", "凉鞋", "拖鞋", "登山鞋", "足球鞋", "帆布鞋", "老爹鞋", "运动鞋", "小白鞋", "高帮", "低帮", "中帮")
-    else -> listOf("选项1", "选项2", "选项3")
+private fun getDefaultOptions(attribute: String, category: String = ""): List<String> {
+    val cat = category.lowercase()
+    return when (attribute) {
+        "品牌" -> when {
+            cat.contains("鞋") || cat.contains("靴") || cat.contains("拖鞋") || cat.contains("凉鞋") ->
+                listOf("Nike", "耐克", "Adidas", "阿迪达斯", "李宁", "安踏", "特步", "PUMA", "彪马", "New Balance", "新百伦", "FILA", "斐乐", "Converse", "匡威", "Vans", "范斯", "Reebok", "锐步", "Skechers", "斯凯奇", "ASICS", "亚瑟士", "Salomon", "萨洛蒙", "Hoka", "昂跑", "未知")
+            cat.contains("手机") || cat.contains("平板") || cat.contains("pad") ->
+                listOf("Apple", "苹果", "Huawei", "华为", "Xiaomi", "小米", "OPPO", "vivo", "Samsung", "三星", "Honor", "荣耀", "OnePlus", "一加", "Realme", "真我", "iQOO", "魅族", "索尼", "Google", "Nothing", "未知")
+            cat.contains("电脑") || cat.contains("笔记本") || cat.contains("外设") || cat.contains("鼠标") || cat.contains("键盘") || cat.contains("显示器") ->
+                listOf("Apple", "苹果", "Huawei", "华为", "Xiaomi", "小米", "Lenovo", "联想", "Dell", "戴尔", "HP", "惠普", "ASUS", "华硕", "Acer", "宏碁", "Microsoft", "微软", "ThinkPad", "Logitech", "罗技", "Razer", "雷蛇", "ZOWIE", "卓威", "未知")
+            cat.contains("耳机") || cat.contains("音箱") || cat.contains("音频") || cat.contains("音响") ->
+                listOf("Apple", "苹果", "Sony", "索尼", "Bose", "JBL", "Sennheiser", "森海塞尔", "Huawei", "华为", "Xiaomi", "小米", "Beats", "Marshall", "马歇尔", "Harman Kardon", "哈曼卡顿", "Edifier", "漫步者", "未知")
+            cat.contains("手表") || cat.contains("手环") || cat.contains("穿戴") ->
+                listOf("Apple", "苹果", "Huawei", "华为", "Xiaomi", "小米", "Samsung", "三星", "Garmin", "佳明", "OPPO", "vivo", "Fitbit", "Amazfit", "华米", "未知")
+            cat.contains("相机") || cat.contains("镜头") || cat.contains("摄影") || cat.contains("摄像") ->
+                listOf("Canon", "佳能", "Sony", "索尼", "Nikon", "尼康", "Fujifilm", "富士", "Panasonic", "松下", "DJI", "大疆", "GoPro", "Leica", "徕卡", "未知")
+            cat.contains("剃须") || cat.contains("个护") || cat.contains("护理") || cat.contains("电动牙刷") || cat.contains("吹风") || cat.contains("美容仪") ->
+                listOf("飞利浦", "Philips", "博朗", "Braun", "松下", "Panasonic", "飞科", "奔腾", "须眉", "素士", "Oral-B", "欧乐B", "戴森", "Dyson", "未知")
+            cat.contains("家电") || cat.contains("冰箱") || cat.contains("洗衣机") || cat.contains("空调") || cat.contains("电视") || cat.contains("厨") || cat.contains("清洁") || cat.contains("吸尘") || cat.contains("扫地") ->
+                listOf("美的", "格力", "海尔", "小米", "华为", "Samsung", "三星", "LG", "Sony", "索尼", "Panasonic", "松下", "西门子", "博世", "戴森", "Dyson", "飞利浦", "九阳", "苏泊尔", "石头", "追觅", "科沃斯", "未知")
+            cat.contains("衣") || cat.contains("服") || cat.contains("裤") || cat.contains("裙") || cat.contains("t恤") || cat.contains("衬衫") || cat.contains("夹克") || cat.contains("外套") || cat.contains("卫衣") || cat.contains("毛衣") || cat.contains("西装") ->
+                listOf("Nike", "耐克", "Adidas", "阿迪达斯", "优衣库", "UNIQLO", "ZARA", "H&M", "李宁", "安踏", "特步", "PUMA", "Converse", "GAP", "Levi's", "李维斯", "MUJI", "无印良品", "太平鸟", "海澜之家", "波司登", "未知")
+            cat.contains("包") || cat.contains("箱") || cat.contains("行李") ->
+                listOf("LV", "Louis Vuitton", "路易威登", "Gucci", "古驰", "Chanel", "香奈儿", "Hermès", "爱马仕", "Coach", "蔻驰", "Michael Kors", "MK", "Longchamp", "珑骧", "Samsonite", "新秀丽", "Herschel", "未知")
+            cat.contains("美妆") || cat.contains("护肤") || cat.contains("化妆") || cat.contains("口红") || cat.contains("面膜") || cat.contains("精华") || cat.contains("防晒") ->
+                listOf("兰蔻", "Lancôme", "雅诗兰黛", "Estée Lauder", "SK-II", "欧莱雅", "L'Oréal", "资生堂", "Shiseido", "完美日记", "花西子", "珀莱雅", "薇诺娜", "自然堂", "MAC", "YSL", "迪奥", "Dior", "香奈儿", "Chanel", "海蓝之谜", "La Mer", "未知")
+            cat.contains("食") || cat.contains("零食") || cat.contains("饮料") || cat.contains("茶") || cat.contains("咖啡") || cat.contains("酒") ->
+                listOf("三只松鼠", "良品铺子", "百草味", "蒙牛", "伊利", "康师傅", "农夫山泉", "元气森林", "星巴克", "瑞幸", "雀巢", "可口可乐", "百事", "统一", "未知")
+            cat.contains("母婴") || cat.contains("玩具") || cat.contains("婴儿") || cat.contains("童装") || cat.contains("纸尿裤") || cat.contains("奶粉") ->
+                listOf("babycare", "好孩子", "帮宝适", "花王", "美赞臣", "飞鹤", "乐高", "LEGO", "费雪", "Fisher-Price", "巴拉巴拉", "安奈儿", "未知")
+            cat.contains("汽车") || cat.contains("车载") ->
+                listOf("特斯拉", "Tesla", "比亚迪", "宝马", "BMW", "奔驰", "Mercedes", "大众", "丰田", "本田", "蔚来", "小鹏", "理想", "未知")
+            cat.contains("宠物") || cat.contains("猫") || cat.contains("狗") ->
+                listOf("皇家", "Royal Canin", "渴望", "Orijen", "冠能", "Pro Plan", "网易严选", "麦富迪", "卫仕", "未知")
+            else -> listOf("Apple", "华为", "小米", "Nike", "Adidas", "罗技", "索尼", "三星", "未知")
+        }
+        "颜色" -> when {
+            cat.contains("鞋") -> listOf("黑色", "白色", "灰色", "红色", "蓝色", "绿色", "粉色", "橙色", "紫色", "棕色", "米色", "银色", "金色", "荧光绿", "荧光粉")
+            cat.contains("衣") || cat.contains("服") || cat.contains("裤") || cat.contains("裙") -> listOf("黑色", "白色", "灰色", "红色", "蓝色", "深蓝", "藏青", "绿色", "粉色", "黄色", "棕色", "卡其色", "米色", "紫色", "橙色", "酒红", "军绿", "驼色")
+            cat.contains("手机") || cat.contains("数码") || cat.contains("电脑") -> listOf("黑色", "白色", "银色", "金色", "灰色", "蓝色", "绿色", "紫色", "红色", "粉色", "星光色", "远峰蓝", "暗夜紫")
+            cat.contains("包") -> listOf("黑色", "白色", "棕色", "米色", "红色", "蓝色", "绿色", "粉色", "灰色", "酒红", "驼色", "拼色")
+            cat.contains("美妆") || cat.contains("护肤") -> listOf("自然色", "象牙白", "小麦色", "粉调", "黄调", "冷白皮", "暖白皮")
+            cat.contains("食") -> listOf("原味", "麻辣", "番茄", "牛肉", "鸡肉", "海鲜", "芝士", "巧克力", "草莓", "柠檬")
+            else -> listOf("黑色", "白色", "红色", "蓝色", "灰色", "绿色", "粉色", "棕色", "紫色", "橙色", "银色", "金色")
+        }
+        "材质" -> when {
+            cat.contains("鞋") -> listOf("网面", "飞织", "真皮", "PU皮", "帆布", "橡胶", "EVA", "Boost", "React", "Gore-Tex", "编织", "麂皮", "翻毛皮", "合成革", "碳板")
+            cat.contains("衣") || cat.contains("服") || cat.contains("裤") || cat.contains("裙") -> listOf("棉", "纯棉", "涤纶", "尼龙", "真丝", "丝绸", "羊毛", "羊绒", "羽绒", "皮革", "雪纺", "牛仔", "灯芯绒", "亚麻", "莫代尔", "莱卡", "聚酯纤维", "氨纶")
+            cat.contains("包") -> listOf("真皮", "牛皮", "羊皮", "PU皮", "帆布", "尼龙", "编织", "草编", "PVC", "漆皮", "麂皮", "鳄鱼皮")
+            cat.contains("手机") || cat.contains("数码") -> listOf("金属", "铝合金", "玻璃", "陶瓷", "塑料", "素皮", "碳纤维", "钛合金")
+            cat.contains("家具") || cat.contains("家居") -> listOf("实木", "板材", "皮革", "布艺", "藤编", "金属", "玻璃", "大理石", "岩板")
+            cat.contains("食") -> listOf("袋装", "罐装", "瓶装", "盒装", "散装", "独立包装")
+            else -> listOf("棉", "涤纶", "尼龙", "真皮", "PU皮", "金属", "塑料", "橡胶", "玻璃", "木材")
+        }
+        "款式" -> when {
+            cat.contains("鞋") -> listOf("跑鞋", "篮球鞋", "足球鞋", "板鞋", "休闲鞋", "凉鞋", "拖鞋", "登山鞋", "帆布鞋", "老爹鞋", "高帮", "低帮", "中帮", "切尔西靴", "马丁靴", "雪地靴", "豆豆鞋", "乐福鞋")
+            cat.contains("衣") || cat.contains("服") || cat.contains("裤") || cat.contains("裙") -> listOf("休闲", "商务", "运动", "时尚", "简约", "复古", "宽松", "修身", "短款", "长款", "oversize", "工装", "街头", "学院风", "韩版", "日系", "欧美", "国潮", "通勤", "度假")
+            cat.contains("包") -> listOf("手提包", "单肩包", "双肩包", "斜挎包", "钱包", "手拿包", "旅行包", "腰包", "腋下包", "托特包", "邮差包", "水桶包", "贝壳包", "信封包", "链条包")
+            cat.contains("手机") || cat.contains("数码") -> listOf("旗舰", "中端", "入门", "游戏", "拍照", "商务", "轻薄", "折叠")
+            cat.contains("家具") || cat.contains("家居") -> listOf("现代", "简约", "北欧", "中式", "美式", "日式", "轻奢", "工业风", "田园", "地中海")
+            cat.contains("美妆") || cat.contains("护肤") -> listOf("保湿", "美白", "抗老", "控油", "祛痘", "防晒", "修复", "补水", "紧致", "淡斑")
+            else -> listOf("休闲", "商务", "运动", "时尚", "简约", "复古", "潮流", "经典")
+        }
+        else -> emptyList()
+    }
 }

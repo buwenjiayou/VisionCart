@@ -17,7 +17,8 @@ class PlatformCircuitBreakerTest {
         props.getCircuitBreaker().setFailureThreshold(3);
         props.getCircuitBreaker().setOpenDurationMs(100);
         props.getCircuitBreaker().setHalfOpenProbeCount(2);
-        circuitBreaker = new PlatformCircuitBreaker(props);
+        circuitBreaker = new PlatformCircuitBreaker(props,
+                org.mockito.Mockito.mock(com.visioncart.service.metrics.PerformanceMetricsService.class));
     }
 
     @Test
