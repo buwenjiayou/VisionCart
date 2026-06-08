@@ -48,6 +48,115 @@ public class EbaySearchService implements PlatformSearchService {
         return false;
     }
 
+    /**
+     * P0-3: 通过 eBay Browse API getItem 精确查询单个商品（用于价格刷新）。
+     * productId 格式: "ebay_{itemId}"，detailUrl 格式: "https://www.ebay.com/itm/{itemId}"
+     */
+    @Override
+    public Optional<ProductCard> fetchByProductId(String productId, String detailUrl) {
+        VisionCartProperties.Ebay ebay = properties.getEbay();
+        if (StringUtils.isAnyBlank(ebay.getAppId(), ebay.getCertId())) {
+            return Optional.empty();
+        }
+
+        String itemId = parseEbayItemId(productId, detailUrl);
+        if (itemId.isBlank()) {
+            return Optional.empty();
+        }
+
+        String token = getAppToken(ebay);
+        if (StringUtils.isBlank(token)) {
+            return Optional.empty();
+        }
+
+        try {
+            // eBay Browse API: GET /buy/browse/v1/item/{itemId}
+            String baseUrl = ebay.getBrowseUrl().replace("/item_summary/search", "");
+            String url = baseUrl + "/item/" + itemId;
+
+            String body = restClient.get()
+                    .uri(url)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                    .header("X-EBAY-C-MARKETPLACE-ID", ebay.getMarketplaceId())
+                    .retrieve()
+                    .body(String.class);
+
+            JsonNode item = objectMapper.readTree(body);
+            if (item.has("errors") && item.path("errors").isArray() && !item.path("errors").isEmpty()) {
+                log.warn("eBay getItem returned errors for itemId={}: {}", itemId, item.path("errors"));
+                return Optional.empty();
+            }
+
+            ProductCard card = mapSingleItem(item);
+            log.info("fetchByProductId: eBay itemId={} -> title='{}', price={}", itemId, card.title(), card.price());
+            return Optional.of(card);
+        } catch (Exception e) {
+            log.warn("fetchByProductId failed for eBay itemId={}: {}", itemId, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private String parseEbayItemId(String productId, String detailUrl) {
+        // From productId: "ebay_123456789"
+        if (StringUtils.isNotBlank(productId) && productId.startsWith("ebay_")) {
+            return productId.substring("ebay_".length());
+        }
+        // From detailUrl: "https://www.ebay.com/itm/123456789"
+        if (StringUtils.isNotBlank(detailUrl)) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("ebay\\.com/itm/(\\d+)").matcher(detailUrl);
+            if (m.find()) return m.group(1);
+        }
+        // Direct itemId
+        if (StringUtils.isNotBlank(productId) && productId.matches("\\d+")) {
+            return productId;
+        }
+        return "";
+    }
+
+    private ProductCard mapSingleItem(JsonNode item) {
+        String itemId = item.path("itemId").asText("");
+        String title = item.path("title").asText("eBay Item");
+        String imageUrl = "";
+        JsonNode imgNode = item.path("image");
+        if (imgNode.isObject()) {
+            imageUrl = imgNode.path("imageUrl").asText("");
+        }
+        BigDecimal price = BigDecimal.ZERO;
+        JsonNode priceNode = item.path("price");
+        if (priceNode.isObject()) {
+            price = new BigDecimal(priceNode.path("value").asText("0"));
+        }
+        BigDecimal origPrice = null;
+        JsonNode originalPriceNode = item.path("originalPrice");
+        if (originalPriceNode.isObject() && !originalPriceNode.path("value").isMissingNode()) {
+            origPrice = new BigDecimal(originalPriceNode.path("value").asText("0"));
+        }
+        String condition = item.path("condition").asText("");
+        double rating = 0;
+        Double sellerReputationScore = null;
+        JsonNode sellerNode = item.path("seller");
+        if (sellerNode.isObject()) {
+            double feedback = sellerNode.path("feedbackPercentage").asDouble(0);
+            if (feedback > 0) {
+                rating = feedback / 20.0;
+                sellerReputationScore = feedback / 100.0;
+            }
+        }
+        long sales = item.path("watchCount").asLong(0);
+        String detailUrl = SearchTextUtils.normalizeUrl(item.path("itemWebUrl").asText(""));
+        if (StringUtils.isBlank(detailUrl)) {
+            detailUrl = "https://www.ebay.com/itm/" + itemId;
+        }
+        List<String> tags = new ArrayList<>();
+        tags.add("eBay");
+        if ("NEW".equals(condition)) tags.add("全新");
+        return new ProductCard(
+                "ebay_" + itemId, title, imageUrl, price, origPrice, "eBay", false, "",
+                rating, sales, 0.0, tags, detailUrl, "", rating > 0 ? "seller" : "none", "")
+                .withReputationSignals(null, null, null, sellerReputationScore,
+                        sellerReputationScore != null ? "seller" : "none");
+    }
+
     @Override
     public List<ProductCard> search(Map<String, String> attributes, SearchFilter filter, int page, int pageSize) {
         VisionCartProperties.Ebay ebay = properties.getEbay();
@@ -190,9 +299,14 @@ public class EbaySearchService implements PlatformSearchService {
             String shopName = item.path("seller").path("username").asText("eBay Seller");
             String brand = SearchTextUtils.inferBrand(title, shopName);
             double rating = 0.0;
+            Double sellerReputationScore = null;
             JsonNode sellerNode = item.path("seller");
             if (sellerNode.has("feedbackPercentage")) {
-                rating = sellerNode.path("feedbackPercentage").asDouble(0) / 20.0;
+                double feedback = sellerNode.path("feedbackPercentage").asDouble(0);
+                if (feedback > 0) {
+                    rating = feedback / 20.0;
+                    sellerReputationScore = feedback / 100.0;
+                }
             }
             long sales = item.path("itemCreationDate").isMissingNode() ? 0 : item.path("watchCount").asLong(0);
             String detailUrl = SearchTextUtils.normalizeUrl(item.path("itemWebUrl").asText(""));
@@ -219,9 +333,10 @@ public class EbaySearchService implements PlatformSearchService {
                     tags,
                     detailUrl,
                     brand,
-                    "seller",
+                    rating > 0 ? "seller" : "none",
                     null
-            ));
+            ).withReputationSignals(null, null, null, sellerReputationScore,
+                    sellerReputationScore != null ? "seller" : "none"));
         }
 
         return products;

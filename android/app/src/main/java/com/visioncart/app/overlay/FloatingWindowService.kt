@@ -127,6 +127,7 @@ import com.visioncart.app.data.repository.VisionCartRepository
 import com.visioncart.app.ui.components.MultiProductSelectionPanel
 import com.visioncart.app.ui.components.SortOptionsRow
 import com.visioncart.app.ui.components.SuggestionChipsRow
+import com.visioncart.app.ui.components.productReputationDisplayText
 import com.visioncart.app.ui.components.rememberAuthenticatedImageModel
 import com.visioncart.app.ui.viewmodel.ActionStateReducer
 import kotlinx.coroutines.Dispatchers
@@ -1262,7 +1263,7 @@ private fun OverlayPanel(
         return parts.distinct().joinToString("\n").ifBlank { null }
     }
 
-    fun applyActionResult(result: ActionResult) {
+    fun applyActionResult(result: ActionResult, updateFilterTags: Boolean = true) {
         val displayMessage = actionMessage(result)
         if (!result.filterApplied) {
             displayMessage?.let {
@@ -1273,7 +1274,9 @@ private fun OverlayPanel(
         }
         products = result.allDisplayProducts.take(50)
         currentFilter = result.appliedFilter ?: currentFilter
-        filterTags = result.filterTags
+        if (updateFilterTags) {
+            filterTags = result.filterTags
+        }
         suggestionCards = result.suggestionCards ?: suggestionCards
         displayMessage?.let {
             resultMessage = it
@@ -1636,7 +1639,7 @@ private fun OverlayPanel(
                                                 payload = UserActionPayload(action = action)
                                             )
                                         ).onSuccess { result ->
-                                            applyActionResult(result)
+                                            applyActionResult(result, updateFilterTags = false)
                                             if (result.canUndo) {
                                                 undoAction = card.title
                                             }
@@ -1703,6 +1706,7 @@ private fun OverlayPanel(
                         SortOptionsRow(
                             filter = currentFilter,
                             onSortSelected = { sortBy, sortOrder ->
+                                undoAction = null
                                 currentFilter = currentFilter.copy(
                                     sortBy = sortBy,
                                     sortOrder = if (sortBy == null) "desc" else sortOrder
@@ -1749,7 +1753,10 @@ private fun OverlayPanel(
                     }
                 } else {
                     items(products) { product ->
-                        CompactProductCard(product)
+                        CompactProductCard(
+                            product = product,
+                            showReputation = shouldShowOverlayReputation(currentFilter.sortBy)
+                        )
                     }
                 }
             }
@@ -1829,8 +1836,13 @@ private fun tagToFilterField(tag: String): String? {
     }
 }
 
+private fun shouldShowOverlayReputation(sortBy: String?): Boolean {
+    return sortBy == "rating" || sortBy == "reviews" || sortBy == "review_quality" ||
+        sortBy == "rating_desc" || sortBy == "shop_trust" || sortBy == "seller_trust"
+}
+
 @Composable
-private fun CompactProductCard(product: ProductCard) {
+private fun CompactProductCard(product: ProductCard, showReputation: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(10.dp),
@@ -1895,6 +1907,17 @@ private fun CompactProductCard(product: ProductCard) {
                     style = MaterialTheme.typography.labelSmall,
                     maxLines = 1
                 )
+                val reputationText = if (showReputation) productReputationDisplayText(product) else null
+                if (!reputationText.isNullOrBlank()) {
+                    Text(
+                        reputationText,
+                        color = Color(0xFFEF6C00),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }

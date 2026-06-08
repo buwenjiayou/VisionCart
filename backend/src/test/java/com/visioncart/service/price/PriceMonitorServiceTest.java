@@ -11,6 +11,7 @@ import com.visioncart.repository.PriceHistoryRepository;
 import com.visioncart.service.search.SearchOrchestrator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.math.BigDecimal;
@@ -45,7 +46,7 @@ class PriceMonitorServiceTest {
         messagingTemplate = mock(SimpMessagingTemplate.class);
         properties = new VisionCartProperties();
 
-        service = new PriceMonitorService(searchOrchestrator, historyRepository, alertRepository,
+        service = new PriceMonitorService(searchOrchestrator, List.of(), historyRepository, alertRepository,
                 favoriteRepository, messagingTemplate, properties);
     }
 
@@ -173,6 +174,29 @@ class PriceMonitorServiceTest {
                 h.getPlatform().equals("淘宝") &&
                 h.getPrice().compareTo(new BigDecimal("459")) == 0
         ));
+    }
+
+    @Test
+    void shouldCheckHistoryLowBeforeRecordingCurrentPriceSample() {
+        FavoriteProduct favorite = createFavorite("tb_123", "taobao", "Nike Air Max", new BigDecimal("599"));
+
+        ProductCard card = new ProductCard("tb_123", "Nike Air Max", "img.jpg",
+                new BigDecimal("459"), null, "taobao", false, "shop", 4.5, 100,
+                0.9, List.of(), "https://item.taobao.com/item.htm?id=123");
+        when(searchOrchestrator.search(any(SearchRequest.class)))
+                .thenReturn(new SearchResult(1, List.of(card), List.of(), List.of()));
+        when(favoriteRepository.save(any(FavoriteProduct.class))).thenReturn(favorite);
+        when(alertRepository.findByUserIdAndProductIdAndActiveTrue(eq(1L), eq("tb_123")))
+                .thenReturn(Optional.empty());
+        when(historyRepository.findMinPriceSince(eq("tb_123"), eq("taobao"), any(Instant.class)))
+                .thenReturn(new BigDecimal("500"));
+
+        service.refreshPrice(favorite, 1L);
+
+        InOrder inOrder = inOrder(historyRepository);
+        inOrder.verify(historyRepository).findMinPriceSince(eq("tb_123"), eq("taobao"), any(Instant.class));
+        inOrder.verify(historyRepository).save(any(PriceHistory.class));
+        verify(messagingTemplate, atLeastOnce()).convertAndSend(eq("/topic/price-alert/1"), any(Map.class));
     }
 
     @Test

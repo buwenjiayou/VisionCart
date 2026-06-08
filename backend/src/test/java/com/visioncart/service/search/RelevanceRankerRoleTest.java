@@ -184,6 +184,71 @@ class RelevanceRankerRoleTest {
         assertNotRejected(ranker.tier(airpods, intent));
     }
 
+    // ====== 场景7: iQOO 手机壳品牌修正回归测试 ======
+
+    @Test
+    void iqooBrandMatchesTitle() {
+        ProductCard p = productWithoutRole("iQOO 磁吸手机壳");
+        assertTrue(BrandMatcher.productMatchesExpectedBrand(p, "iQOO"),
+                "productMatchesExpectedBrand should match iQOO in title");
+    }
+
+    @Test
+    void vivoBrandButIqooTitleIsNotConflict() {
+        // product.brand=vivo，但标题含 iQOO → 不应判冲突
+        ProductCard p = new ProductCard(
+                "id-1", "vivo iQOO 手机壳", "", BigDecimal.ONE, BigDecimal.ONE,
+                "test", false, "shop", 4.5, 100, 0.8, List.of(), "", "vivo", "none", null
+        );
+        assertFalse(BrandMatcher.hasConflictingBrand(p, "iQOO"),
+                "vivo brand + iQOO in title should NOT be conflicting");
+    }
+
+    @Test
+    void phoneCaseCoreTokenPrefersLongestMatch() {
+        assertEquals("手机壳", SearchTextUtils.coreProductToken("手机壳"),
+                "coreProductToken should return '手机壳' not '手机'");
+        assertEquals("手机", SearchTextUtils.coreProductToken("手机"),
+                "coreProductToken('手机') should still return '手机'");
+        assertEquals("手机膜", SearchTextUtils.coreProductToken("手机膜"),
+                "coreProductToken should return '手机膜' not '手机'");
+    }
+
+    @Test
+    void reliableBrandPhoneCaseSurvivesIntentFilter() {
+        // 模拟：搜索"手机壳"，品牌修正为 iQOO，brand_reliable=true
+        SearchIntent intent = brandIntent(
+                "手机壳", "手机壳", List.of("iQOO 手机壳"),
+                "iQOO", true);
+
+        // 标题含 iQOO 的手机壳 → 应通过
+        ProductCard iqooCase = product("iQOO 磁吸手机壳", "phone", "accessory");
+        RelevanceRanker.RelevanceTier tier = ranker.tier(iqooCase, intent);
+        assertNotEquals(RelevanceRanker.RelevanceTier.REJECTED, tier,
+                "iQOO phone case should NOT be REJECTED, got " + tier);
+
+        // 标题不含 iQOO 的手机壳 → 应被拒绝（可靠品牌要求匹配）
+        ProductCard genericCase = product("通用透明手机壳", "phone", "accessory");
+        assertRejected(ranker.tier(genericCase, intent));
+    }
+
+    @Test
+    void reliableBrandPhoneCaseWithVivoBrandPasses() {
+        // product.brand=vivo 但标题含 iQOO → 配件场景应通过
+        SearchIntent intent = brandIntent(
+                "手机壳", "手机壳", List.of("iQOO 手机壳"),
+                "iQOO", true);
+
+        ProductCard vivoCase = new ProductCard(
+                "id-2", "iQOO 磁吸手机壳", "", BigDecimal.ONE, BigDecimal.ONE,
+                "test", false, "shop", 4.5, 100, 0.8, List.of(), "", "vivo", "none", null,
+                "phone", "accessory"
+        );
+        RelevanceRanker.RelevanceTier tier = ranker.tier(vivoCase, intent);
+        assertNotEquals(RelevanceRanker.RelevanceTier.REJECTED, tier,
+                "iQOO case with brand=vivo should NOT be REJECTED, got " + tier);
+    }
+
     // ====== 辅助方法 ======
 
     private SearchIntent intent(String category, String coreProduct, List<String> keywords) {
@@ -191,6 +256,16 @@ class RelevanceRankerRoleTest {
         String role = CategoryNormalizer.intentRole(category, keywords);
         return new SearchIntent(
                 "", false, keywords, List.of(), category, coreProduct,
+                List.of(), List.of(), List.of(), code, role, false
+        );
+    }
+
+    private SearchIntent brandIntent(String category, String coreProduct, List<String> keywords,
+                                      String brand, boolean reliableBrand) {
+        String code = CategoryNormalizer.normalize(category, keywords);
+        String role = CategoryNormalizer.intentRole(category, keywords);
+        return new SearchIntent(
+                brand, reliableBrand, keywords, List.of(), category, coreProduct,
                 List.of(), List.of(), List.of(), code, role, false
         );
     }

@@ -38,7 +38,9 @@ public class ActionCompiler {
                     FilterClause.rerank("sort-price-asc", "按价格排序", "sort_by", "eq", "price_asc"));
             case "sort_by_sales_desc" -> List.of(
                     FilterClause.rerank("sort-sales-desc", "按销量排序", "sort_by", "eq", "sales_desc"));
-            case "sort_by_rating_desc", "sort_by_review_quality" -> List.of(
+            case "sort_by_rating_desc", "sort_by_review_quality",
+                    "sort_rating_desc", "sort_review_quality", "sort_rating",
+                    "sort_reviews", "sort_shop_trust", "sort_seller_trust" -> List.of(
                     FilterClause.rerank("sort-review-quality", "口碑优先", "sort_by", "eq", "review_quality"));
             case "filter_self_operated" -> List.of(
                     FilterClause.structured("filter-self-operated", "自营", "self_operated", "eq", true));
@@ -94,7 +96,9 @@ public class ActionCompiler {
             case "sort_relevance" -> applySort(currentFilter, null, null);
             case "sort_by_price_asc" -> applySort(currentFilter, "price", "asc");
             case "sort_by_sales_desc" -> applySort(currentFilter, "sales", "desc");
-            case "sort_by_rating_desc", "sort_by_review_quality" -> applySort(currentFilter, "rating", "desc");
+            case "sort_by_rating_desc", "sort_by_review_quality",
+                    "sort_rating_desc", "sort_review_quality", "sort_rating",
+                    "sort_reviews", "sort_shop_trust", "sort_seller_trust" -> applySort(currentFilter, "review_quality", "desc");
             case "filter_self_operated" -> applySelfOperated(currentFilter, true);
             case "filter_coupon" -> applyKeyword(currentFilter, "[coupon]");
             case "filter_discount" -> applyKeyword(currentFilter, "[discount]");

@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -25,19 +26,28 @@ public class LlmProductJudge {
     private static final Set<String> ALLOWED_BUCKETS = Set.of(
             "GOOD_MATCH", "WEAK_MATCH", "RISKY_MATCH", "REJECT");
 
+    /** P0-4: 硬超时 1800ms，防止模型接口卡住拖慢 NLP 请求 */
+    private static final long JUDGE_TIMEOUT_MS = 1800;
+
     private final ObjectProvider<ChatClient.Builder> chatClientBuilder;
     private final ObjectMapper objectMapper;
     private final PromptLoader promptLoader;
     private final VisionCartProperties properties;
+    private final java.util.concurrent.ExecutorService aiExecutor;
+    private final com.visioncart.service.metrics.PerformanceMetricsService metricsService;
 
     public LlmProductJudge(ObjectProvider<ChatClient.Builder> chatClientBuilder,
                            ObjectMapper objectMapper,
                            PromptLoader promptLoader,
-                           VisionCartProperties properties) {
+                           VisionCartProperties properties,
+                           @org.springframework.beans.factory.annotation.Qualifier("aiSuggestionExecutor") java.util.concurrent.ExecutorService aiExecutor,
+                           com.visioncart.service.metrics.PerformanceMetricsService metricsService) {
         this.chatClientBuilder = chatClientBuilder;
         this.objectMapper = objectMapper;
         this.promptLoader = promptLoader;
         this.properties = properties;
+        this.aiExecutor = aiExecutor;
+        this.metricsService = metricsService;
     }
 
     public List<JudgeScore> judge(String userQuery,
@@ -79,17 +89,25 @@ public class LlmProductJudge {
                     objectMapper.writeValueAsString(safeList(judgePlan.negativeSignals())),
                     productsJson);
 
-            String raw = RetryPolicy.executeWithRetry(() ->
-                            builder.build()
-                                    .prompt()
-                                    .system(systemPrompt)
-                                    .user(userPrompt)
-                                    .call()
-                                    .content(),
-                    properties.getAi().getNlpRetryCount(),
-                    properties.getAi().getNlpRetryBaseDelayMs());
+            // P0-4: 硬超时保护 — 用 Future.get 限制单次 judge 耗时
+            java.util.concurrent.Future<String> future = aiExecutor.submit(() ->
+                    RetryPolicy.executeWithRetry(() ->
+                                    builder.build()
+                                            .prompt()
+                                            .system(systemPrompt)
+                                            .user(userPrompt)
+                                            .call()
+                                            .content(),
+                            properties.getAi().getNlpRetryCount(),
+                            properties.getAi().getNlpRetryBaseDelayMs())
+            );
 
+            String raw = future.get(JUDGE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
             return parseResults(raw, productById.keySet());
+        } catch (java.util.concurrent.TimeoutException e) {
+            log.warn("LLM product judge timeout after {}ms, fallback to local ranking", JUDGE_TIMEOUT_MS);
+            metricsService.recordNlpJudgeTimeout();
+            return List.of();
         } catch (Exception e) {
             log.warn("LLM product judge failed, falling back to local preference scoring: {}", e.getMessage());
             return List.of();
@@ -134,7 +152,8 @@ public class LlmProductJudge {
     private int configuredLimit(Integer planValue, int configuredValue, int fallback) {
         int value = planValue != null && planValue > 0 ? planValue : configuredValue;
         if (value <= 0) value = fallback;
-        return Math.min(Math.max(value, 1), 200);
+        // Hard cap at 12: LLM Judge is only for small, complex selection tasks
+        return Math.min(Math.max(value, 1), 12);
     }
 
     private double clampScore(double score) {

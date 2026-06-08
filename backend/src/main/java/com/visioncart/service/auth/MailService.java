@@ -8,7 +8,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.MailException;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -26,7 +25,6 @@ public class MailService {
         this.mailSender = mailSender;
     }
 
-    @Async("mailExecutor")
     public void sendVerificationCode(String to, String code) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
@@ -63,6 +61,7 @@ public class MailService {
             log.info("验证码邮件已发送: to={}", to);
         } catch (MailException | MessagingException e) {
             log.error("发送验证码邮件失败: to={}", to, e);
+            throw new IllegalStateException("验证码邮件发送失败", e);
         }
     }
 }

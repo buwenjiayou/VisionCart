@@ -190,15 +190,23 @@ object ActionStateReducer {
         } else {
             result.products.take(MAX_PRODUCTS)
         }
-        val newTags = result.filterTags.map { it.label }
+        val actionSource = result.actionSource
+        val shouldExposeFilterTags = actionSource != "suggestion" && actionSource != "sort"
+        val newTags = if (shouldExposeFilterTags) result.filterTags.map { it.label } else current.filterTags
+        val newStructuredTags = if (shouldExposeFilterTags) result.filterTags else current.structuredFilterTags
+        val deriveFromFilter = when (actionSource) {
+            "suggestion" -> false
+            else -> true
+        }
 
         return current.copy(
             products = displayProducts,
             currentFilter = result.appliedFilter ?: current.currentFilter,
             filterTags = newTags,
-            structuredFilterTags = result.filterTags,
+            structuredFilterTags = newStructuredTags,
+            deriveFilterTagsFromFilter = deriveFromFilter,
             poolSize = result.totalInPool,
-            canUndo = result.canUndo,
+            canUndo = if (actionSource == "sort") false else result.canUndo,
             filterApplied = true,
             keptPreviousResults = result.keptPreviousResults,
             toastMessage = displayMessage,
@@ -219,6 +227,7 @@ object ActionStateReducer {
             currentFilter = result.appliedFilter ?: current.currentFilter,
             filterTags = newTags,
             structuredFilterTags = result.filterTags,
+            deriveFilterTagsFromFilter = true,
             poolSize = result.totalInPool,
             canUndo = result.canUndo,
             toastMessage = resolveMessage(result.messageCode, result.message),

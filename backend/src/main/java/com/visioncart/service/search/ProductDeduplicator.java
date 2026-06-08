@@ -60,9 +60,30 @@ public class ProductDeduplicator {
 
     private String titleFingerprint(ProductCard product) {
         String title = product.title() == null ? "" : product.title();
-        // Normalize: strip non-Chinese/non-letter chars, lowercase
-        String normalized = title.replaceAll("[^\\p{IsHan}A-Za-z]", "").toLowerCase();
-        // Use first 24 chars as fingerprint
-        return normalized.length() <= 24 ? normalized : normalized.substring(0, 24);
+        // Normalize: strip non-Chinese/non-letter/non-digit chars, lowercase
+        // Problem 10 fix: preserve digits — "iPhone 15 Pro" vs "iPhone 16 Pro",
+        // "RTX 4060" vs "RTX 4070" must NOT be merged.
+        String normalized = title.replaceAll("[^\\p{IsHan}A-Za-z0-9]", "").toLowerCase();
+        String modelToken = significantModelToken(title);
+        String prefix = normalized.length() <= 32 ? normalized : normalized.substring(0, 32);
+        return modelToken.isBlank() ? prefix : prefix + "#" + modelToken;
+    }
+
+    private String significantModelToken(String title) {
+        String text = title == null ? "" : title.toLowerCase(java.util.Locale.ROOT);
+        String[] patterns = {
+                "\\biphone\\s*(\\d{1,2})\\s*(pro\\s*max|pro|max|plus|mini)?\\b",
+                "\\bmate\\s*(\\d{2,3})\\s*(pro|rs)?\\b",
+                "\\brtx\\s*(\\d{3,4})\\b",
+                "\\bgtx\\s*(\\d{3,4})\\b",
+                "\\brx\\s*(\\d{3,4})\\b"
+        };
+        for (String pattern : patterns) {
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(pattern).matcher(text);
+            if (matcher.find()) {
+                return matcher.group().replaceAll("\\s+", "");
+            }
+        }
+        return "";
     }
 }

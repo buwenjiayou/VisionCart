@@ -9,7 +9,7 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: prod
       SERVER_ADDRESS: 0.0.0.0
-      PORT: ${PORT:-8080}
+      PORT: 8080
       MYSQL_URL: ${DOCKER_MYSQL_URL:-jdbc:mysql://mysql:3306/visioncart?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
       MYSQL_USERNAME: ${MYSQL_USERNAME:-visioncart}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-visioncart}
@@ -18,7 +18,7 @@ services:
       FLYWAY_ENABLED: "true"
       SPRING_JPA_HIBERNATE_DDL_AUTO: validate
     ports:
-      - "${PORT:-8080}:8080"
+      - "${HOST_PORT:-8080}:8080"
     volumes:
       - backend-data:/app/data
     depends_on:

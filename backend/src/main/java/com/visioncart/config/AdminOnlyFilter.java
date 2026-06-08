@@ -8,6 +8,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -33,6 +34,11 @@ public class AdminOnlyFilter extends OncePerRequestFilter {
             return;
         }
 
+        if (isPrometheusPath(request.getRequestURI()) && hasMonitoringRole()) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         Long userId = currentUserId();
         if (!properties.getSecurity().isAdmin(userId)) {
             response.setStatus(HttpServletResponse.SC_FORBIDDEN);
@@ -51,6 +57,19 @@ public class AdminOnlyFilter extends OncePerRequestFilter {
                         || path.startsWith("/actuator/metrics")
                         || path.equals("/actuator/prometheus")
         );
+    }
+
+    private boolean isPrometheusPath(String path) {
+        return "/actuator/prometheus".equals(path);
+    }
+
+    private boolean hasMonitoringRole() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        return auth != null
+                && auth.isAuthenticated()
+                && auth.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .anyMatch(MonitoringTokenFilter.MONITORING_ROLE::equals);
     }
 
     private Long currentUserId() {

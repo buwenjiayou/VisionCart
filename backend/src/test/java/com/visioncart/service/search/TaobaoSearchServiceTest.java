@@ -7,6 +7,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -91,10 +92,48 @@ class TaobaoSearchServiceTest {
         assertThat(products.get(0).ratingSource()).isEqualTo("shop_dsr");
     }
 
+    @Test
+    void reputationSortsDoNotSendSalesSortToTaobao() throws Exception {
+        VisionCartProperties.Taobao tb = taobaoConfig();
+
+        for (String sortBy : List.of("rating", "reviews", "review_quality", "rating_desc", "shop_trust", "seller_trust")) {
+            Map<String, String> params = buildParams(sortBy, tb);
+
+            assertThat(params).doesNotContainKey("sort");
+        }
+    }
+
+    @Test
+    void salesSortStillSendsTotalSalesDescendingToTaobao() throws Exception {
+        Map<String, String> params = buildParams("sales", taobaoConfig());
+
+        assertThat(params).containsEntry("sort", "total_sales_des");
+    }
+
     @SuppressWarnings("unchecked")
     private List<ProductCard> mapResponse(String body) throws Exception {
         Method method = TaobaoSearchService.class.getDeclaredMethod("mapResponse", String.class);
         method.setAccessible(true);
         return (List<ProductCard>) method.invoke(service, body);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, String> buildParams(String sortBy, VisionCartProperties.Taobao tb) throws Exception {
+        Method method = TaobaoSearchService.class.getDeclaredMethod(
+                "buildParams", String.class, com.visioncart.api.dto.SearchFilter.class,
+                int.class, int.class, VisionCartProperties.Taobao.class);
+        method.setAccessible(true);
+        com.visioncart.api.dto.SearchFilter filter = new com.visioncart.api.dto.SearchFilter(
+                null, List.of(), null, List.of(), List.of(), null,
+                sortBy, "desc", null);
+        return (Map<String, String>) method.invoke(service, "商品", filter, 1, 50, tb);
+    }
+
+    private VisionCartProperties.Taobao taobaoConfig() {
+        VisionCartProperties.Taobao tb = new VisionCartProperties.Taobao();
+        tb.setAppKey("app-key");
+        tb.setAppSecret("app-secret");
+        tb.setAdzoneId("123");
+        return tb;
     }
 }

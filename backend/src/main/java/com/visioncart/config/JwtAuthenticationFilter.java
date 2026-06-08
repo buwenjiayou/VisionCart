@@ -33,11 +33,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         String path = request.getRequestURI();
 
-        // Completely skip: public auth endpoints, health, static resources
-        if (path.equals("/api/v1/auth/send-code") ||
+        // Completely skip: CORS preflight, public auth endpoints, health, static resources
+        if ("OPTIONS".equalsIgnoreCase(request.getMethod()) ||
+            path.equals("/api/v1/auth/send-code") ||
             path.equals("/api/v1/auth/login") ||
-            path.startsWith("/swagger") ||
-            path.startsWith("/v3/api-docs") ||
+            path.equals("/api/v1/auth/refresh") ||
             path.startsWith("/webjars") ||
             path.equals("/api/v1/health") ||
             path.equals("/actuator/health") ||
@@ -50,7 +50,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         // Skip non-API, non-actuator paths (static resources, etc.)
         boolean isApiPath = path.startsWith("/api/");
         boolean isActuatorPath = path.startsWith("/actuator/");
-        if (!isApiPath && !isActuatorPath) {
+        boolean isSwaggerPath = path.startsWith("/swagger-ui/")
+                || path.equals("/swagger-ui.html")
+                || path.startsWith("/v3/api-docs");
+        if (!isApiPath && !isActuatorPath && !isSwaggerPath) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        if (SecurityContextHolder.getContext().getAuthentication() != null) {
             filterChain.doFilter(request, response);
             return;
         }

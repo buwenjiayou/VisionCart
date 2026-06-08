@@ -110,7 +110,7 @@ public class SessionContextService {
                 return fromHistory(sessionId, history.get());
             }
         }
-        SessionContext fromCandidates = fromCandidates(sessionId, sessionCache.getCandidates(sessionId));
+        SessionContext fromCandidates = fromCandidates(sessionId, sessionCache.getBestCandidates(sessionId));
         if (fromCandidates.resolved()) {
             return fromCandidates;
         }
@@ -133,7 +133,7 @@ public class SessionContextService {
         if (sessionId == null || sessionId.isBlank()) {
             return SessionContext.empty(sessionId);
         }
-        SessionContext fromCandidates = fromCandidates(sessionId, sessionCache.getCandidates(sessionId));
+        SessionContext fromCandidates = fromCandidates(sessionId, sessionCache.getBestCandidates(sessionId));
         return fromCandidates.resolved() ? fromCandidates : SessionContext.empty(sessionId);
     }
 

@@ -108,7 +108,7 @@ public class SuggestionController {
             return ApiResponse.ok(cardsResponse(cachedCards, "READY"));
         }
 
-        List<com.visioncart.api.dto.ProductCard> candidates = sessionCache.getCandidates(sessionId);
+        List<com.visioncart.api.dto.ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
 
         // 缓存里只有普通卡没有 insight：尝试补生成 insight
         List<SuggestionCard> baseCards = cachedCards.isEmpty()
@@ -305,7 +305,7 @@ public class SuggestionController {
     private List<com.visioncart.api.dto.ProductCard> safeSessionProducts(String sessionId,
                                                                           List<com.visioncart.api.dto.ProductCard> clientProducts) {
         if (sessionId != null && !sessionId.isBlank()) {
-            List<com.visioncart.api.dto.ProductCard> cached = sessionCache.getCandidates(sessionId);
+            List<com.visioncart.api.dto.ProductCard> cached = sessionCache.getBestCandidates(sessionId);
             if (!cached.isEmpty()) {
                 return cached;
             }

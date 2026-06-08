@@ -29,9 +29,11 @@ public class RecognitionHistory {
     private String imageHash;
 
     @Lob
+    @Column(columnDefinition = "TEXT")
     private String categoryJson;
 
     @Lob
+    @Column(columnDefinition = "TEXT")
     private String attributesJson;
 
     @Column(length = 512)
@@ -43,11 +45,11 @@ public class RecognitionHistory {
     private Long userId;
 
     @Lob
-    @Column(name = "display_products_snapshot")
+    @Column(name = "display_products_snapshot", columnDefinition = "TEXT")
     private String displayProductsSnapshot;
 
     @Lob
-    @Column(name = "applied_filters_json")
+    @Column(name = "applied_filters_json", columnDefinition = "TEXT")
     private String appliedFiltersJson;
 
     private Instant createdAt = Instant.now();

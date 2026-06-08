@@ -9,31 +9,39 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfigurationSource;
 
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final MonitoringTokenFilter monitoringTokenFilter;
     private final RateLimitFilter rateLimitFilter;
     private final AdminOnlyFilter adminOnlyFilter;
+    private final CorsConfigurationSource corsConfigurationSource;
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
+                          MonitoringTokenFilter monitoringTokenFilter,
                           RateLimitFilter rateLimitFilter,
-                          AdminOnlyFilter adminOnlyFilter) {
+                          AdminOnlyFilter adminOnlyFilter,
+                          CorsConfigurationSource corsConfigurationSource) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+        this.monitoringTokenFilter = monitoringTokenFilter;
         this.rateLimitFilter = rateLimitFilter;
         this.adminOnlyFilter = adminOnlyFilter;
+        this.corsConfigurationSource = corsConfigurationSource;
     }
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
+            .cors(cors -> cors.configurationSource(corsConfigurationSource))
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 // Public endpoints
-                .requestMatchers("/api/v1/auth/**").permitAll()
+                .requestMatchers("/api/v1/auth/send-code", "/api/v1/auth/login", "/api/v1/auth/refresh").permitAll()
                 .requestMatchers("/api/v1/health").permitAll()
 
                 // Metrics: require auth (ADMIN in production)
@@ -61,9 +69,10 @@ public class SecurityConfig {
                 // Default: deny unknown endpoints
                 .anyRequest().authenticated()
             )
+            .addFilterBefore(monitoringTokenFilter, UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
-            .addFilterAfter(adminOnlyFilter, JwtAuthenticationFilter.class)
-            .addFilterAfter(rateLimitFilter, JwtAuthenticationFilter.class);
+            .addFilterAfter(adminOnlyFilter, UsernamePasswordAuthenticationFilter.class)
+            .addFilterAfter(rateLimitFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }

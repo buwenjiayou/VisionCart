@@ -125,7 +125,7 @@ public class NlpFilterController {
                         List<ProductCard> historicalProducts = loadHistoricalProducts(sessionId);
                         if (!historicalProducts.isEmpty()) {
                             log.info("Loaded {} historical products for expired session {}", historicalProducts.size(), sessionId);
-                            sessionCache.saveCandidates(sessionId, historicalProducts);
+                            sessionCache.saveDefaultClassifiedPool(sessionId, historicalProducts);
                             // Continue with filtering below
                         } else {
                             return ResponseEntity.ok(ApiResponse.ok(new NlpFilterResult(
@@ -141,7 +141,7 @@ public class NlpFilterController {
                     List<ProductCard> historicalProducts = loadHistoricalProducts(sessionId);
                     if (!historicalProducts.isEmpty()) {
                         log.info("Loaded {} historical products as fallback for session {}", historicalProducts.size(), sessionId);
-                        sessionCache.saveCandidates(sessionId, historicalProducts);
+                        sessionCache.saveDefaultClassifiedPool(sessionId, historicalProducts);
                         // Continue with filtering below
                     } else {
                         return ResponseEntity.ok(ApiResponse.ok(new NlpFilterResult(
@@ -171,7 +171,7 @@ public class NlpFilterController {
             }
 
             // 3. Get candidates from session cache
-            List<ProductCard> candidates = sessionCache.getCandidates(sessionId);
+            List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
 
             // 4. Intent checks BEFORE any filter state mutation
             //    These must not corrupt the filter state.
@@ -181,7 +181,7 @@ public class NlpFilterController {
                 String newCategory = extractNewCategory(userInput);
                 String productName = request.context() != null ? request.context().productName() : "商品";
                 // Do NOT update filter state — preserve existing results
-                List<ProductCard> currentProducts = sessionCache.getCandidates(sessionId);
+                List<ProductCard> currentProducts = sessionCache.getBestCandidates(sessionId);
                 SearchFilter currentFilter = conversationManager.getFilterState(sessionId);
                 CandidateFilterService.FilterResult currentResult = filterService.filter(
                         currentProducts, currentFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
@@ -198,7 +198,7 @@ public class NlpFilterController {
                 // Do NOT update filter state
                 SearchFilter currentFilter = conversationManager.getFilterState(sessionId);
                 List<String> currentTags = generateFilterTags(currentFilter);
-                List<ProductCard> currentProducts = sessionCache.getCandidates(sessionId);
+                List<ProductCard> currentProducts = sessionCache.getBestCandidates(sessionId);
                 CandidateFilterService.FilterResult currentResult = filterService.filter(
                         currentProducts, currentFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
                 return ResponseEntity.ok(ApiResponse.ok(new NlpFilterResult(
@@ -213,7 +213,7 @@ public class NlpFilterController {
             SearchFilter previousFilter = conversationManager.getFilterState(sessionId);
             // previousProducts = what user is currently seeing (filtered by existing filter state)
             List<ProductCard> previousProducts = filterService.filter(
-                    sessionCache.getCandidates(sessionId), previousFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products();
+                    sessionCache.getBestCandidates(sessionId), previousFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products();
 
             // 6. Merge filter WITHOUT committing to Redis — trial first
             SearchFilter newFilter = nlpResult.filter();
@@ -313,7 +313,7 @@ public class NlpFilterController {
                     SearchRequest expandRequest = new SearchRequest(
                             sessionId, attributes, broadFilter, 1, 50, 1000, "overlay");
                     searchOrchestrator.search(expandRequest);
-                    List<ProductCard> expandedCandidates = sessionCache.getCandidates(sessionId);
+                    List<ProductCard> expandedCandidates = sessionCache.getBestCandidates(sessionId);
                     if (!expandedCandidates.isEmpty() && expandedCandidates.size() > candidates.size()) {
                         log.info("Expanded pool from {} to {} candidates", candidates.size(), expandedCandidates.size());
                         // Re-run semantic pool preparation on expanded pool
@@ -341,7 +341,10 @@ public class NlpFilterController {
 
             if (execResult.committed()) {
                 // Commit: save undo point, update filter state, use tentative filter
-                undoService.saveUndoPoint(sessionId, previousFilter, previousProducts, userInput, "nlp", userInput, null);
+                // 保存 undo point 时同时保存 classifiedPool 快照
+                com.visioncart.service.search.SearchCandidatePool currentPool =
+                        sessionCache.getClassifiedPool(sessionId).orElse(null);
+                undoService.saveUndoPoint(sessionId, previousFilter, previousProducts, userInput, "nlp", userInput, null, currentPool);
                 conversationManager.setFilterState(sessionId, tentativeFilter);
                 responseFilter = tentativeFilter;
                 filterTags = generateFilterTags(tentativeFilter);
@@ -410,7 +413,7 @@ public class NlpFilterController {
             }
             SearchFilter updated = conversationManager.removeFilterField(sessionId, fieldName);
 
-            List<ProductCard> candidates = sessionCache.getCandidates(sessionId);
+            List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
             CandidateFilterService.FilterResult result = filterService.filter(
                     candidates, updated, Map.of(), DEFAULT_PAGE_SIZE, 1);
             List<String> filterTags = generateFilterTags(updated);
@@ -438,6 +441,10 @@ public class NlpFilterController {
      * Delete a specific filter tag by its structured tag ID or filterPath.
      * Supports precise deletion using the structured FilterTag's filterPath
      * (e.g. "capabilities.airplane_allowed", "colors.black", "brands.小米").
+     *
+     * Action-only tags (preferences/exclusions/semantic) are routed to undo
+     * because they were applied as side effects of the NLP action, not as
+     * direct filter field mutations.
      */
     @DeleteMapping("/filter/{sessionId}/tag/{tagId}")
     public ResponseEntity<ApiResponse<NlpFilterResult>> removeFilterTag(
@@ -454,17 +461,48 @@ public class NlpFilterController {
             }
 
             // Resolve tagId to a filterPath
-            // tagId can be: "clause-airplane_allowed", "field-colors-black", "capabilities.airplane_allowed"
+            // tagId can be: "clause-airplane_allowed", "field-colors-black", "capabilities.airplane_allowed",
+            //               "preference-适合年轻人", "exclusion-不要山寨"
             String filterPath = resolveTagIdToFilterPath(tagId);
             if (filterPath == null) {
                 return ResponseEntity.badRequest()
                         .body(ApiResponse.fail(400, "无法识别的标签ID: " + tagId));
             }
 
+            // P0-2: Action-only tags (preferences/exclusions/semantic) cannot be removed
+            // by mutating filter state — they were applied as side effects of the NLP action.
+            // Route to undo instead.
+            if (isActionOnlyTag(filterPath)) {
+                NlpUndoService.UndoResult undoResult = undoService.undo(sessionId);
+                if (undoResult == null) {
+                    return ResponseEntity.ok(ApiResponse.fail(404, "没有可撤回的筛选"));
+                }
+                SearchFilter restoredFilter = undoResult.filter() != null ? undoResult.filter() : SearchFilter.empty();
+                conversationManager.setFilterState(sessionId, restoredFilter);
+
+                List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
+                CandidateFilterService.FilterResult result = filterService.filter(
+                        candidates, restoredFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
+                List<String> filterTags = generateFilterTags(restoredFilter);
+                List<FilterTag> structuredFilterTags = generateStructuredFilterTags(restoredFilter, List.of());
+
+                if (result.products() != null && !result.products().isEmpty()) {
+                    sessionHistoryService.archiveDisplayedProducts(sessionId, result.products());
+                }
+
+                return ResponseEntity.ok(ApiResponse.ok(new NlpFilterResult(
+                        result.products(), restoredFilter, filterTags, structuredFilterTags,
+                        result.totalInPool(), result.resultCount(),
+                        false, false, false, false, null, false,
+                        "已撤回筛选「" + undoResult.undoneQuery() + "」",
+                        undoService.canUndo(sessionId),
+                        true, false, List.of(), List.of())));
+            }
+
             // Use the existing removeFilterField with dot-notation support
             SearchFilter updated = conversationManager.removeFilterField(sessionId, filterPath);
 
-            List<ProductCard> candidates = sessionCache.getCandidates(sessionId);
+            List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
             CandidateFilterService.FilterResult result = filterService.filter(
                     candidates, updated, Map.of(), DEFAULT_PAGE_SIZE, 1);
             List<String> filterTags = generateFilterTags(updated);
@@ -492,6 +530,8 @@ public class NlpFilterController {
      * Supports formats:
      * - "clause-airplane_allowed" → "capabilities.airplane_allowed"
      * - "field-colors-black" → "colors.black"
+     * - "preference-适合年轻人" → "preferences.适合年轻人"
+     * - "exclusion-不要山寨" → "exclusions.不要山寨"
      * - "capabilities.airplane_allowed" (direct filterPath)
      * - "airplane_allowed" (capability code → "capabilities.airplane_allowed")
      */
@@ -505,6 +545,21 @@ public class NlpFilterController {
         if (tagId.startsWith("clause-")) {
             String code = tagId.substring("clause-".length());
             return "capabilities." + code;
+        }
+
+        // preference-{label} → preferences.{label}
+        if (tagId.startsWith("preference-")) {
+            return "preferences." + tagId.substring("preference-".length());
+        }
+
+        // exclusion-{label} → exclusions.{label}
+        if (tagId.startsWith("exclusion-")) {
+            return "exclusions." + tagId.substring("exclusion-".length());
+        }
+
+        // semantic-{label} → semantic.{label}
+        if (tagId.startsWith("semantic-")) {
+            return "semantic." + tagId.substring("semantic-".length());
         }
 
         // field-{path} → replace first hyphen with dot
@@ -525,6 +580,20 @@ public class NlpFilterController {
         }
 
         return null;
+    }
+
+    /**
+     * P0-2: Detect action-only tags that cannot be removed by filter field mutation.
+     * These were applied as side effects of NLP actions (preferences, exclusions, semantic judgments)
+     * and must be reverted via undo, not removeFilterField.
+     */
+    private boolean isActionOnlyTag(String filterPath) {
+        return filterPath != null && (
+                filterPath.startsWith("preferences.")
+                || filterPath.startsWith("exclusions.")
+                || filterPath.startsWith("semantic.")
+                || filterPath.startsWith("criteria.")
+        );
     }
 
     /**
@@ -563,7 +632,7 @@ public class NlpFilterController {
                         .body(ApiResponse.fail(403, "无权访问该识别任务"));
             }
 
-            List<ProductCard> candidates = sessionCache.getCandidates(sessionId);
+            List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
             SearchFilter previousFilter = conversationManager.getFilterState(sessionId);
 
             // Build FilterClauses from the new filter's structural fields
@@ -1120,7 +1189,13 @@ public class NlpFilterController {
             }
 
             // Re-filter with restored filter
-            List<ProductCard> candidates = sessionCache.getCandidates(sessionId);
+            if (undoResult.restoredClassifiedPool() != null) {
+                sessionCache.saveClassifiedPool(sessionId, undoResult.restoredClassifiedPool());
+                sessionCache.saveCandidates(sessionId,
+                        undoResult.restoredClassifiedPool().toProductCards(),
+                        undoResult.restoredClassifiedPool().searchIdentity());
+            }
+            List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
             CandidateFilterService.FilterResult result = filterService.filter(
                     candidates, restoredFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
             List<String> filterTags = generateFilterTags(restoredFilter);

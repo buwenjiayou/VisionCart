@@ -2,6 +2,7 @@ package com.visioncart.service.metrics;
 
 import io.micrometer.core.instrument.*;
 import io.micrometer.core.instrument.Timer;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -220,6 +221,58 @@ public class PerformanceMetricsService {
                         .tag("platform", platform)
                         .register(registry))
                 .increment();
+    }
+
+    // ==================== 搜索质量指标 (P1-1) ====================
+
+    /**
+     * 记录搜索首屏精确率（EXACT_MAIN 在 top N 中的比例）
+     */
+    public void recordSearchFirstScreenExactRate(String productFamily, double rate) {
+        setGauge("search.first_screen_exact_main_rate", rate,
+                "family", StringUtils.defaultString(productFamily, "unknown"));
+    }
+
+    /**
+     * 记录搜索 related/accessory 比例
+     */
+    public void recordSearchRelatedRate(String productFamily, double rate) {
+        setGauge("search.related_accessory_rate", rate,
+                "family", StringUtils.defaultString(productFamily, "unknown"));
+    }
+
+    /**
+     * 记录搜索零结果
+     */
+    public void recordSearchZeroResult(String productFamily, String strategy) {
+        incrementCounter("search.zero_result",
+                "family", StringUtils.defaultString(productFamily, "unknown"),
+                "strategy", StringUtils.defaultString(strategy, "unknown"));
+    }
+
+    /**
+     * 记录搜索 fallback（策略放宽）
+     */
+    public void recordSearchFallbackUsed(String productFamily, String strategy) {
+        incrementCounter("search.fallback_used",
+                "family", StringUtils.defaultString(productFamily, "unknown"),
+                "strategy", StringUtils.defaultString(strategy, "unknown"));
+    }
+
+    /**
+     * 记录品牌放宽
+     */
+    public void recordSearchBrandRelax(String productFamily, String strategy) {
+        incrementCounter("search.brand_relax",
+                "family", StringUtils.defaultString(productFamily, "unknown"),
+                "strategy", StringUtils.defaultString(strategy, "unknown"));
+    }
+
+    /**
+     * 记录 LLM Judge 超时
+     */
+    public void recordNlpJudgeTimeout() {
+        incrementCounter("nlp.judge_timeout");
     }
 
     // ==================== AI 导购卡指标 ====================

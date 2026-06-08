@@ -20,6 +20,7 @@ public final class BrandMatcher {
             List.of("Honor", "荣耀"),
             List.of("OPPO"),
             List.of("vivo"),
+            List.of("iQOO"),
             List.of("Samsung", "三星"),
             List.of("OnePlus", "一加"),
             List.of("Realme", "真我"),
@@ -156,12 +157,20 @@ public final class BrandMatcher {
             return false;
         }
 
+        String text = searchableText(product);
+
+        // 关键：商品文本明确包含目标品牌/适配品牌时，不算冲突。
+        // 解决 "product.brand=vivo 但标题含 iQOO 手机壳" 被误判冲突的问题。
+        if (textContainsCanonical(text, expected)) {
+            return false;
+        }
+
         String productBrand = SearchTextUtils.useful(product.brand());
         if (!productBrand.isBlank()) {
             return !sameBrand(expectedBrand, productBrand);
         }
 
-        String detected = firstKnownCanonical(searchableText(product));
+        String detected = firstKnownCanonical(text);
         return !detected.isBlank() && !expected.equals(detected);
     }
 
@@ -240,9 +249,18 @@ public final class BrandMatcher {
 
     private static boolean containsAlias(String normalizedText, String latinText, String normalizedAlias) {
         if (normalizedAlias.matches("[a-z0-9]+")) {
-            return Pattern.compile("(^|\\s)" + Pattern.quote(normalizedAlias) + "($|\\s)")
+            boolean boundaryMatch = Pattern.compile("(^|\\s)" + Pattern.quote(normalizedAlias) + "($|\\s)")
                     .matcher(latinText)
                     .find();
+            if (boundaryMatch) return true;
+            // 长品牌允许无空格粘连匹配，但必须在词首（避免 "asus" 匹配 "pegasus"）
+            // 不对短品牌（如 MI、HP）这么做，避免误杀
+            if (normalizedAlias.length() >= 4) {
+                return Pattern.compile("(^|[^a-z])" + Pattern.quote(normalizedAlias))
+                        .matcher(latinText)
+                        .find();
+            }
+            return false;
         }
         return normalizedText.contains(normalizedAlias);
     }

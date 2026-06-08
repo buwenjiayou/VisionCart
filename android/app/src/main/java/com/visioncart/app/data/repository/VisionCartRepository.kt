@@ -255,26 +255,20 @@ class VisionCartRepository(private val context: Context) {
     fun subscribeSearchProgress(
         sessionId: String,
         timeoutMs: Long = 15_000,
-        onProgress: (List<ProductCard>) -> Unit
+        onProgress: (SearchProgressMessage) -> Unit
     ) {
         try {
             val token = ApiClient.authToken ?: return
             val baseUrl = com.visioncart.app.BuildConfig.API_BASE_URL
             val topic = "/topic/search/$sessionId"
             val stompClient = StompClient(ApiClient.okHttpClient)
-            val moshiAdapter = moshi.adapter<List<ProductCard>>(
-                Types.newParameterizedType(List::class.java, ProductCard::class.java)
-            )
+            val progressAdapter = moshi.adapter(SearchProgressMessage::class.java)
 
             stompClient.connectAndListen(baseUrl, token, topic, timeoutMs) { body ->
                 try {
-                    val jsonObject = org.json.JSONObject(body)
-                    val productsArray = jsonObject.optJSONArray("products")
-                    if (productsArray != null && productsArray.length() > 0) {
-                        val products = moshiAdapter.fromJson(productsArray.toString()) ?: emptyList()
-                        if (products.isNotEmpty()) {
-                            onProgress(products)
-                        }
+                    val message = progressAdapter.fromJson(body)
+                    if (message != null && message.products.isNotEmpty()) {
+                        onProgress(message)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to parse search progress: ${e.message}")

@@ -433,6 +433,10 @@ public class RecognitionOrchestrator {
                                      Long userId,
                                      boolean domestic,
                                      byte[] historyImageBytes) {
+        if (taskManager.isTerminal(sessionId)) {
+            log.info("Skipping completion for session {} because task is already terminal", sessionId);
+            return;
+        }
         RecognitionResult withSession = withSessionId(result, sessionId);
         saveHistory(withSession, originalFilename, imageSize, imageHash, userId, historyImageBytes);
         // 标记完成（不含平台价格），让客户端立即看到识别结果
@@ -450,8 +454,16 @@ public class RecognitionOrchestrator {
         // 异步补充平台价格统计，完成后仅推送 WebSocket 更新（不再重复 markCompleted 避免竞态）
         CompletableFuture.runAsync(() -> {
             try {
+                if (taskManager.isFailed(sessionId)) {
+                    log.info("Skipping platform stats enrichment for failed session {}", sessionId);
+                    return;
+                }
                 sendProgress(sessionId, "正在搜索全网商品");
                 RecognitionResult enriched = enrichWithPlatformStats(withSession, domestic);
+                if (taskManager.isFailed(sessionId)) {
+                    log.info("Skipping enriched result update for failed session {}", sessionId);
+                    return;
+                }
                 sendProgress(sessionId, "正在生成导购建议");
                 if (enriched.platformStats() != null && !enriched.platformStats().isEmpty()) {
                     taskManager.updateResult(sessionId, enriched);

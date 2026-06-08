@@ -62,6 +62,83 @@ public class TaobaoSearchService implements PlatformSearchService {
         return "淘宝";
     }
 
+    /**
+     * P0-3: 通过 itemId 精确查询单个淘宝商品（用于价格刷新）。
+     * 优先从 productId 解析（格式: taobao_{itemId}），其次从 detailUrl 解析 id= 参数。
+     */
+    @Override
+    public Optional<ProductCard> fetchByProductId(String productId, String detailUrl) {
+        VisionCartProperties.Taobao tb = properties.getTaobao();
+        if (StringUtils.isAnyBlank(tb.getAppKey(), tb.getAppSecret())) {
+            return Optional.empty();
+        }
+
+        String itemId = parseItemIdFromProductId(productId);
+        if (itemId.isBlank()) {
+            itemId = parseItemIdFromUrl(detailUrl);
+        }
+        if (itemId.isBlank()) {
+            return Optional.empty();
+        }
+
+        try {
+            Map<String, TaobaoDetail> details = loadDetails(List.of(itemId), tb);
+            TaobaoDetail detail = details.get(itemId);
+            if (detail == null) {
+                return Optional.empty();
+            }
+            ProductCard card = detailToProductCard(detail);
+            log.info("fetchByProductId: Taobao itemId={} -> title='{}', price={}", itemId, card.title(), card.price());
+            return Optional.of(card);
+        } catch (Exception e) {
+            log.warn("fetchByProductId failed for Taobao itemId={}: {}", itemId, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private String parseItemIdFromProductId(String productId) {
+        if (StringUtils.isBlank(productId)) return "";
+        // Format: "taobao_123456" or just "123456"
+        if (productId.startsWith("taobao_")) {
+            return productId.substring("taobao_".length());
+        }
+        // If it looks like a numeric ID
+        if (productId.matches("\\d+")) {
+            return productId;
+        }
+        return "";
+    }
+
+    private String parseItemIdFromUrl(String url) {
+        if (StringUtils.isBlank(url)) return "";
+        // Match id=123456 in URL
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)(?:id|item_id|num_iid)=([A-Za-z0-9_-]+)").matcher(url);
+        return m.find() ? m.group(1) : "";
+    }
+
+    private ProductCard detailToProductCard(TaobaoDetail detail) {
+        List<String> tags = new ArrayList<>(detail.tags());
+        String salesSource = StringUtils.defaultIfBlank(detail.salesSource(), "monthly");
+        return new ProductCard(
+                "taobao_" + detail.itemId(),
+                StringUtils.defaultIfBlank(detail.title(), "淘宝商品"),
+                StringUtils.defaultIfBlank(detail.imageUrl(), ""),
+                detail.price(),
+                detail.originalPrice().compareTo(BigDecimal.ZERO) > 0 ? detail.originalPrice() : null,
+                "淘宝",
+                detail.selfOperated(),
+                StringUtils.defaultIfBlank(detail.shopName(), ""),
+                detail.rating(),
+                detail.sales(),
+                0.0,
+                tags,
+                StringUtils.defaultIfBlank(detail.detailUrl(), ""),
+                detail.brand(),
+                detail.rating() > 0 ? detail.ratingSource() : "none",
+                SearchTextUtils.salesLabel(detail.sales(), salesSource)
+        );
+    }
+
     @Override
     public List<ProductCard> search(Map<String, String> attributes, SearchFilter filter, int page, int pageSize) {
         VisionCartProperties.Taobao tb = properties.getTaobao();
@@ -170,8 +247,8 @@ public class TaobaoSearchService implements PlatformSearchService {
                         ? "price_asc" : "price_des";
                 case "sales" -> "total_sales_des";
                 // 淘宝API无真正的评分排序，tk_rate_des是佣金比率排序（非客户评分）
-                // 评分排序依赖后端本地 applySort 按 shop_dsr 字段排序
-                case "rating" -> "total_sales_des";
+                // 评分/口碑排序依赖后端本地 applySort 按 shop_dsr/seller 信号排序，不能下发销量排序。
+                case "rating", "reviews", "review_quality", "rating_desc", "shop_trust", "seller_trust" -> null;
                 default -> null;
             };
             if (sort != null) {
@@ -343,7 +420,8 @@ public class TaobaoSearchService implements PlatformSearchService {
                     brand,
                     ratingInfo.source(),
                     SearchTextUtils.salesLabel(salesInfo.sales(), salesInfo.source())
-            ));
+            ).withReputationSignals(ratingInfo.itemRating(), ratingInfo.shopReputationScore(),
+                    null, null, ratingInfo.evidence()));
         }
 
         return products;
@@ -472,7 +550,8 @@ public class TaobaoSearchService implements PlatformSearchService {
         if (basicInfo.path("free_shipment").asBoolean(false)) tags.add("包邮");
         addPromotionTags(tags, priceInfo);
         return new TaobaoDetail(itemId, inputItemId, title, imageUrl, price, originalPrice, shopName, brand,
-                rating, ratingInfo.source(), sales.sales(), sales.source(), tags, detailUrl, "天猫".equals(userType));
+                rating, ratingInfo.source(), ratingInfo.itemRating(), ratingInfo.shopReputationScore(),
+                ratingInfo.evidence(), sales.sales(), sales.source(), tags, detailUrl, "天猫".equals(userType));
     }
 
     private ProductCard applyDetail(ProductCard base, TaobaoDetail detail) {
@@ -489,6 +568,11 @@ public class TaobaoSearchService implements PlatformSearchService {
         String salesSource = detail.sales() >= base.sales() ? detail.salesSource() : salesSourceFromLabel(base.salesLabel());
         double rating = detail.rating() > 0 ? detail.rating() : base.rating();
         String ratingSource = detail.rating() > 0 ? detail.ratingSource() : base.ratingSource();
+        Double itemRating = detail.itemRating() != null ? detail.itemRating() : base.itemRating();
+        Double shopReputationScore = detail.shopReputationScore() != null
+                ? detail.shopReputationScore() : base.shopReputationScore();
+        String reputationEvidence = detail.reputationEvidence() != null
+                && !"none".equals(detail.reputationEvidence()) ? detail.reputationEvidence() : base.reputationEvidence();
         return new ProductCard(
                 base.id(),
                 StringUtils.defaultIfBlank(detail.title(), base.title()),
@@ -506,7 +590,8 @@ public class TaobaoSearchService implements PlatformSearchService {
                 StringUtils.defaultIfBlank(detail.brand(), base.brand()),
                 rating > 0 ? ratingSource : "none",
                 SearchTextUtils.salesLabel(sales, salesSource)
-        );
+        ).withReputationSignals(itemRating, shopReputationScore, base.shopReputationLevel(),
+                base.sellerReputationScore(), reputationEvidence);
     }
 
     private String firstText(JsonNode item, String... names) {
@@ -616,21 +701,43 @@ public class TaobaoSearchService implements PlatformSearchService {
     }
 
     private RatingInfo ratingInfo(JsonNode item, JsonNode basicInfo) {
+        // seller_info node may contain shop_dsr and other rating fields
+        JsonNode sellerInfo = item.path("seller_info");
+
         String rawItemScore = firstText(basicInfo, "item_score");
         if (StringUtils.isBlank(rawItemScore)) {
             rawItemScore = firstText(item, "item_score");
         }
-        double rating = parseRating(rawItemScore);
-        if (rating > 0) {
-            return new RatingInfo(rating, "item_rating");
+        if (StringUtils.isBlank(rawItemScore)) {
+            rawItemScore = firstText(sellerInfo, "item_score");
         }
+        double itemRating = parseRating(rawItemScore);
 
+        // shop_dsr: check basicInfo → item root → seller_info
         String rawShopDsr = firstText(basicInfo, "shop_dsr");
         if (StringUtils.isBlank(rawShopDsr)) {
             rawShopDsr = firstText(item, "shop_dsr");
         }
-        rating = parseRating(rawShopDsr);
-        return rating > 0 ? new RatingInfo(rating, "shop_dsr") : new RatingInfo(0, "none");
+        if (StringUtils.isBlank(rawShopDsr)) {
+            rawShopDsr = firstText(sellerInfo, "shop_dsr");
+        }
+        double shopDsr = parseRating(rawShopDsr);
+
+        // shop_score / seller_rate as final fallback
+        if (shopDsr <= 0) {
+            String rawShopScore = firstText(sellerInfo, "shop_score", "seller_rate", "score");
+            if (StringUtils.isBlank(rawShopScore)) {
+                rawShopScore = firstText(basicInfo, "shop_score");
+            }
+            shopDsr = parseRating(rawShopScore);
+        }
+
+        double legacyRating = itemRating > 0 ? itemRating : shopDsr;
+        String legacySource = itemRating > 0 ? "item_rating" : (shopDsr > 0 ? "shop_dsr" : "none");
+        String evidence = shopDsr > 0 ? "shop_dsr" : (itemRating > 0 ? "item_rating" : "none");
+        Double itemSignal = itemRating > 0 ? itemRating : null;
+        Double shopSignal = shopDsr > 0 ? Math.min(1.0, shopDsr / 5.0) : null;
+        return new RatingInfo(legacyRating, legacySource, itemSignal, shopSignal, evidence);
     }
 
     private double parseRating(String... values) {
@@ -659,7 +766,13 @@ public class TaobaoSearchService implements PlatformSearchService {
 
     private record SalesInfo(long sales, String source) {}
 
-    private record RatingInfo(double rating, String source) {}
+    private record RatingInfo(
+            double rating,
+            String source,
+            Double itemRating,
+            Double shopReputationScore,
+            String evidence
+    ) {}
 
     private record CachedDetail(TaobaoDetail detail) {}
 
@@ -674,6 +787,9 @@ public class TaobaoSearchService implements PlatformSearchService {
             String brand,
             double rating,
             String ratingSource,
+            Double itemRating,
+            Double shopReputationScore,
+            String reputationEvidence,
             long sales,
             String salesSource,
             List<String> tags,

@@ -32,6 +32,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -50,6 +51,8 @@ public class SearchOrchestrator {
     private static final Duration SEARCH_LOCK_TTL = Duration.ofSeconds(30);
     private static final Duration SEARCH_RUN_TTL = Duration.ofMinutes(2);
     private static final int MIN_RESULT_TARGET = 30;
+    private static final int UNKNOWN_BRAND_POOL_MIN = 20;
+    private static final int UNKNOWN_BRAND_POOL_MULTIPLIER = 4;
 
     private final List<PlatformSearchService> platformServices;
     private final ProductDeduplicator deduplicator;
@@ -71,6 +74,12 @@ public class SearchOrchestrator {
     private final VisionCartProperties properties;
     private final ProductSortService productSortService;
     private final ProductReputationService reputationService;
+    private final IntentAwareSorter intentAwareSorter;
+    private final QueryBudgetAllocator queryBudgetAllocator;
+    private final ProductIntentBuilder productIntentBuilder;
+    private final QueryPlanner queryPlanner;
+    private final IntentGate intentGate;
+    private final com.visioncart.service.search.strategy.VerticalStrategyRegistry strategyRegistry;
     private final Map<String, String> localSearchRuns = new java.util.concurrent.ConcurrentHashMap<>();
 
     public SearchOrchestrator(List<PlatformSearchService> platformServices,
@@ -91,7 +100,11 @@ public class SearchOrchestrator {
                               SimpMessagingTemplate messagingTemplate,
                               PerformanceMetricsService metricsService,
                               ProductSortService productSortService,
-                              ProductReputationService reputationService) {
+                              ProductReputationService reputationService,
+                              ProductIntentBuilder productIntentBuilder,
+                              QueryPlanner queryPlanner,
+                              IntentGate intentGate,
+                              com.visioncart.service.search.strategy.VerticalStrategyRegistry strategyRegistry) {
         this.platformServices = platformServices;
         this.deduplicator = deduplicator;
         this.ranker = ranker;
@@ -112,18 +125,25 @@ public class SearchOrchestrator {
         this.properties = properties;
         this.productSortService = productSortService;
         this.reputationService = reputationService;
+        this.intentAwareSorter = new IntentAwareSorter(productSortService);
+        this.queryBudgetAllocator = new QueryBudgetAllocator();
+        this.productIntentBuilder = productIntentBuilder;
+        this.queryPlanner = queryPlanner;
+        this.intentGate = intentGate;
+        this.strategyRegistry = strategyRegistry;
     }
 
-    /** Enrich products with ratingDisplayLabel from ProductReputationService */
+    /**
+     * Enrich products with reputation index (口碑指数) and rating display label.
+     * Uses pool-relative scoring so sales normalization is consistent within a result set.
+     */
     private List<ProductCard> enrichRatingLabels(List<ProductCard> products) {
         if (products == null || products.isEmpty()) return products;
-        return products.stream()
-                .map(p -> {
-                    String label = reputationService.score(p).displayLabel();
-                    return (label != null && !label.equals("暂无评分"))
-                            ? p.withRatingDisplayLabel(label) : p;
-                })
-                .toList();
+        return reputationService.attachReputation(products);
+    }
+
+    private List<ProductCard> enrichRatingLabels(List<ProductCard> products, SearchFilter filter) {
+        return enrichRatingLabels(products);
     }
 
     public SearchResult search(SearchRequest request) {
@@ -143,51 +163,45 @@ public class SearchOrchestrator {
         String sessionId = request.sessionId();
         String lockKey = null;
         String lockValue = null;
+        String lockHash = null;
         boolean lockAcquired = false;
+        boolean lockChecked = false;
 
         if (sessionId != null && !sessionId.isBlank()) {
             // Lock key includes filter+attributes+recallSize hash so different searches don't collide
             String lockInput = request.effectiveFilter().toString()
                     + "|" + (request.attributes() != null ? request.attributes().toString() : "")
                     + "|recall=" + request.effectiveRecallSize();
-            String lockHash = HashUtils.md5Hex(lockInput);
+            lockHash = HashUtils.md5Hex(lockInput);
             lockKey = SEARCH_LOCK_PREFIX + sessionId + ":" + lockHash.substring(0, 8);
             lockValue = java.util.UUID.randomUUID().toString();
             try {
                 lockAcquired = Boolean.TRUE.equals(
                         redisTemplate.opsForValue().setIfAbsent(lockKey, lockValue, SEARCH_LOCK_TTL));
+                lockChecked = true;
             } catch (Exception e) {
                 log.warn("Redis lock check failed, proceeding without lock: {}", e.getMessage());
             }
 
-            if (!lockAcquired) {
-                // Another search is in progress. Wait for the session cache, but do not return a false empty
-                // result if the original platform search is simply slower than this request.
-                log.info("Search lock held for session {}, waiting for cached result", sessionId);
-                // Wait long enough for a full multi-platform search to complete (not just one platform)
-                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(10_000);
-                while (System.nanoTime() < deadline) {
-                    try {
-                        Thread.sleep(500);
-                    } catch (InterruptedException ignored) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                    List<ProductCard> sessionCached = sessionCache.getCandidates(sessionId);
-                    if (!sessionCached.isEmpty()) {
-                        int pageSize = targetPageSize(request);
-                        List<ProductCard> page = enrichRatingLabels(sessionCached.subList(0, Math.min(pageSize, sessionCached.size())));
-                        List<SuggestionCard> lockCards = suggestionService.cards(request.clientType(), page);
-                        return new SearchResult(sessionCached.size(), page, List.of(), lockCards);
-                    }
+            if (lockChecked && !lockAcquired) {
+                List<ProductCard> sessionCached = sessionCache.getBestCandidates(sessionId);
+                if (!sessionCached.isEmpty() && sessionCache.matchesSearchIdentity(sessionId, lockHash)) {
+                    int pageSize = targetPageSize(request);
+                    List<ProductCard> page = sessionCached.stream()
+                            .limit(pageSize)
+                            .toList();
+                    log.info("Search lock held for session {}, returning matching cached candidates", sessionId);
+                    return new SearchResult(sessionCached.size(), page, stats(sessionCached), List.of(),
+                            false, currentSearchRunId(sessionId));
                 }
-                log.warn("Search lock wait expired for session {}, running duplicate search instead of returning empty", sessionId);
+                log.info("Search lock held for session {}, returning in-progress response", sessionId);
+                return new SearchResult(0, List.of(), List.of(), List.of(), false, currentSearchRunId(sessionId));
             }
         }
 
         try {
             String searchRunToken = beginSearchRun(sessionId);
-            return doSearch(request, domestic, userId, searchRunToken);
+            return doSearch(request, domestic, userId, searchRunToken, lockHash);
         } finally {
             // Only release lock if this thread acquired it (atomic check-and-delete via Lua)
             if (lockAcquired && lockKey != null) {
@@ -208,13 +222,39 @@ public class SearchOrchestrator {
         }
     }
 
-    private SearchResult doSearch(SearchRequest request, boolean domestic, Long userId, String searchRunToken) {
+    private SearchResult doSearch(SearchRequest request, boolean domestic, Long userId,
+                                  String searchRunToken, String searchIdentity) {
         // Start total search timer
         io.micrometer.core.instrument.Timer.Sample searchTimer = metricsService.startSearchTotalTimer();
 
         Map<String, String> attributes = enrichAttributes(request, userId);
         SearchFilter filter = request.effectiveFilter();
         SearchIntent intent = SearchIntent.from(attributes, filter);
+
+        // Build ProductIntent for structured intent analysis
+        ProductIntent productIntent = productIntentBuilder.build(attributes, request.sessionId());
+
+        // 解析垂直策略（高频类目有专属策略，其他走默认）
+        com.visioncart.service.search.strategy.VerticalSearchStrategy strategy =
+                strategyRegistry.resolve(productIntent);
+        QueryPlan queryPlan = strategy.buildQueryPlan(productIntent, filter);
+        long telemetryStartNanos = System.nanoTime();
+        SearchTelemetry telemetry = new SearchTelemetry(searchRunToken)
+                .put("strategy", strategy.getClass().getSimpleName())
+                .put("queryPlan", queryPlan.debug())
+                .put("primaryQueries", queryPlan.primaryQueries())
+                .put("secondaryQueries", queryPlan.secondaryQueries())
+                .put("fallbackQueries", queryPlan.fallbackQueries());
+
+        log.info("ProductIntent: canonicalProduct={}, role={}, productBrand={}, compatibleBrand={}, " +
+                        "features={}, relatedOnly={}, primaryQueries={}, strategy={}",
+                productIntent.canonicalProduct(), productIntent.productRole(),
+                productIntent.productBrand(), productIntent.compatibleBrand(),
+                productIntent.featureTerms(), productIntent.relatedOnlyTerms(),
+                queryPlan.primaryQueries(), strategy.getClass().getSimpleName());
+
+        // 注入 QueryPlan 查询到 attributes，让平台服务使用分层查询
+        injectPlanQueries(attributes, queryPlan);
 
         // Check cache (cache full ranked list, paginate on hit)
         String cacheKey = buildCacheKey(attributes, filter, domestic, request.effectiveRecallSize());
@@ -227,18 +267,40 @@ public class SearchOrchestrator {
             // Write to session cache even on global cache hit (for NLP filtering)
             if (request.sessionId() != null && !request.sessionId().isBlank()
                     && isCurrentSearchRun(request.sessionId(), searchRunToken)) {
-                sessionCache.saveCandidates(request.sessionId(), cached);
+                sessionCache.saveCandidates(request.sessionId(), cached, searchIdentity);
             }
             // Apply pagination before diversification
             int pageNum = Math.max(1, request.effectivePage());
             int pageSize = targetPageSize(request);
+            List<ProductCard> displayCached = diversifyUnknownBrandResults(cached, productIntent, pageSize);
             int from = (pageNum - 1) * pageSize;
-            List<ProductCard> pageSlice = from >= cached.size() ? List.of()
-                    : cached.subList(from, Math.min(cached.size(), from + pageSize));
-            List<ProductCard> page = enrichRatingLabels(diversifyPlatforms(pageSlice, pageSize));
+            List<ProductCard> pageSlice = from >= displayCached.size() ? List.of()
+                    : displayCached.subList(from, Math.min(displayCached.size(), from + pageSize));
+            List<ProductCard> page = enrichRatingLabels(diversifyPlatforms(pageSlice, pageSize), filter);
+            // 缓存命中也要保存 classifiedPool，供后续排序/筛选/NLP 使用
+            if (request.sessionId() != null && !request.sessionId().isBlank()
+                    && isCurrentSearchRun(request.sessionId(), searchRunToken)) {
+                com.visioncart.service.search.strategy.VerticalSearchStrategy cachedStrategy =
+                        strategyRegistry.resolve(productIntent);
+                List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> cachedClassified;
+                boolean hasIntent = productIntent != null && !productIntent.canonicalProduct().isBlank();
+                if (hasIntent) {
+                    cachedClassified = cachedStrategy.classifyAll(cached, productIntent);
+                } else {
+                    cachedClassified = cached.stream()
+                            .map(p -> new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(
+                                    p, IntentGate.IntentTier.EXACT_MAIN))
+                            .toList();
+                }
+                SearchCandidatePool cachedPool = new SearchCandidatePool(
+                        request.sessionId(), searchRunToken, searchIdentity,
+                        productIntent, cachedStrategy.getClass().getSimpleName(),
+                        filter, cachedClassified, cached.size(), cached, filter, filter.sortBy(), page);
+                sessionCache.saveClassifiedPool(request.sessionId(), cachedPool);
+            }
             List<SuggestionCard> cards = mergeInsightCards(request.sessionId(), searchRunToken, request.clientType(), cached, attributes, filter,
                     suggestionService.cards(request.clientType(), page, attributes, filter));
-            return new SearchResult(cached.size(), page, stats(cached), cards);
+            return new SearchResult(cached.size(), page, stats(cached), cards, false, searchRunToken);
         }
 
         // Record cache miss
@@ -281,7 +343,7 @@ public class SearchOrchestrator {
                     // Push partial results to client via WebSocket (staged delivery)
                     if (sessionId != null && !sessionId.isBlank()
                             && isCurrentSearchRun(sessionId, searchRunToken)) {
-                        sendSearchProgress(sessionId, all, request, searchRunToken);
+                        sendSearchProgress(sessionId, all, request, searchRunToken, productIntent, strategy);
                     }
                 }
             } catch (Exception e) {
@@ -294,10 +356,19 @@ public class SearchOrchestrator {
         List<ProductCard> scored = ranker.withSimilarity(all, intent);
         List<ProductCard> deduped = deduplicator.deduplicate(scored);
         List<ProductCard> afterFilter = applyFilter(deduped, filter);
-        List<ProductCard> filtered = applyIntentFilter(afterFilter, intent, targetCount);
+        List<ProductCard> filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount);
         if (filtered.size() < targetCount) {
             Map<String, String> supplementalAttributes = supplementalAttributes(attributes);
             if (!supplementalAttributes.equals(attributes)) {
+                // Problem 3 fix: supplemental search must rebuild ProductIntent + QueryPlan
+                // to prevent bypassing the intent gate with stale/raw attributes
+                ProductIntent suppProductIntent = productIntentBuilder.build(supplementalAttributes, request.sessionId());
+                com.visioncart.service.search.strategy.VerticalSearchStrategy suppStrategy =
+                        strategyRegistry.resolve(suppProductIntent);
+                QueryPlan suppPlan = suppStrategy.buildQueryPlan(suppProductIntent, filter);
+                // Inject secondary queries for supplemental recall (wider net than primary)
+                injectSupplementalPlanQueries(supplementalAttributes, suppPlan);
+
                 // Parallel supplemental recall
                 java.util.concurrent.CompletionService<List<ProductCard>> suppCompletion =
                         new java.util.concurrent.ExecutorCompletionService<>(platformSearchExecutor);
@@ -326,13 +397,56 @@ public class SearchOrchestrator {
                     scored = ranker.withSimilarity(merged, intent);
                     deduped = deduplicator.deduplicate(scored);
                     afterFilter = applyFilter(deduped, filter);
-                    filtered = applyIntentFilter(afterFilter, intent, targetCount);
+                    // Problem 3 fix: use the ORIGINAL productIntent for filtering (not the supplemental one)
+                    // because supplementalAttributes strips brand info — we still want brand-gated filtering
+                    filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount);
                     all = merged;
                     log.info("Supplemental recall: {} products, intentFiltered={}", supplemental.size(), filtered.size());
                 }
             }
         }
-        List<ProductCard> ranked = applySort(ranker.rank(filtered, intent), filter);
+        // Problem 1 fix: tier-based sorting — EXACT_MAIN > COMPATIBLE_MAIN > SAME_FAMILY > RELATED_ACCESSORY
+        // Prevents RELATED_ACCESSORY from appearing before EXACT_MAIN due to price/sales/rating
+        if (filtered.size() < targetCount
+                && !intent.strictIntent()
+                && !queryPlan.fallbackQueries().isEmpty()) {
+            Map<String, String> fallbackAttributes = new LinkedHashMap<>(attributes);
+            injectFallbackPlanQueries(fallbackAttributes, queryPlan);
+
+            java.util.concurrent.CompletionService<List<ProductCard>> fallbackCompletion =
+                    new java.util.concurrent.ExecutorCompletionService<>(platformSearchExecutor);
+            int fallbackSubmitted = 0;
+            for (PlatformSearchService ps : eligible) {
+                try {
+                    fallbackCompletion.submit(() -> fetchSinglePlatform(ps, fallbackAttributes, filter, request));
+                    fallbackSubmitted++;
+                } catch (java.util.concurrent.RejectedExecutionException e) {
+                    log.warn("{} fallback search skipped: executor queue full", ps.platform());
+                }
+            }
+            List<ProductCard> fallback = new ArrayList<>();
+            for (int i = 0; i < fallbackSubmitted; i++) {
+                try {
+                    List<ProductCard> fallbackResult = fallbackCompletion.take().get(
+                            platformTimeout.toMillis() + 500, TimeUnit.MILLISECONDS);
+                    if (fallbackResult != null) fallback.addAll(fallbackResult);
+                } catch (Exception e) {
+                    log.warn("Fallback platform search failed: {}", e.getMessage());
+                }
+            }
+            if (!fallback.isEmpty()) {
+                List<ProductCard> merged = new ArrayList<>(all);
+                merged.addAll(fallback);
+                scored = ranker.withSimilarity(merged, intent);
+                deduped = deduplicator.deduplicate(scored);
+                afterFilter = applyFilter(deduped, filter);
+                filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount);
+                all = merged;
+                log.info("Fallback recall: {} products, intentFiltered={}", fallback.size(), filtered.size());
+            }
+        }
+
+        List<ProductCard> ranked = rankForIntent(filtered, productIntent, strategy, intent, filter);
         log.info("Filter pipeline: {} raw -> {} deduped -> {} afterFilter -> {} intentFiltered -> {} ranked",
                 all.size(), deduped.size(), afterFilter.size(), filtered.size(), ranked.size());
 
@@ -344,19 +458,26 @@ public class SearchOrchestrator {
             Map<String, String> relaxedAttributes = new LinkedHashMap<>(attributes);
             relaxedAttributes.remove(SearchTextUtils.ATTR_BRAND);
             relaxedAttributes.remove(SearchTextUtils.ATTR_BRAND_RELIABLE);
+            relaxedAttributes.remove(SearchQueryBuilder.ATTR_PLAN_QUERIES); // 品牌降级时移除旧 plan queries
             SearchIntent relaxedIntent = SearchIntent.from(relaxedAttributes, filter);
+            ProductIntent relaxedProductIntent = productIntentBuilder.build(relaxedAttributes, request.sessionId());
             List<ProductCard> relaxedScored = ranker.withSimilarity(all, relaxedIntent);
             List<ProductCard> relaxedFiltered = applyIntentFilter(
                     applyFilter(deduplicator.deduplicate(relaxedScored), filter),
-                    relaxedIntent, targetCount);
-            ranked = applySort(ranker.rank(relaxedFiltered, relaxedIntent), filter);
+                    relaxedIntent, relaxedProductIntent, filter, targetCount);
+            ranked = rankForIntent(relaxedFiltered, relaxedProductIntent, strategy, relaxedIntent, filter);
             relaxed = !ranked.isEmpty();
             if (relaxed) {
+                // 品牌降级成功：重建 classifiedPool 使用放宽后的 intent
+                afterFilter = relaxedFiltered;
+                productIntent = relaxedProductIntent;
                 log.info("Brand fallback found {} results", ranked.size());
             }
         }
 
+        boolean hasProductIntent = productIntent != null && !productIntent.canonicalProduct().isBlank();
         if (ranked.isEmpty()
+                && !hasProductIntent
                 && !afterFilter.isEmpty()
                 && !intent.strictIntent()
                 && (intent.brand().isBlank() || !intent.hasReliableBrand())) {
@@ -367,29 +488,154 @@ public class SearchOrchestrator {
         }
 
         // Save final candidates AFTER all fallbacks — ensures cache reflects best available pool.
-        List<ProductCard> rawPage = diversifyPlatforms(ranked, targetCount);
-        if (sessionId != null && !sessionId.isBlank() && isCurrentSearchRun(sessionId, searchRunToken)) {
-            sessionCache.saveCandidates(sessionId, ranked);
+        // 关键改动：保存 classifiedPool（Top300）作为会话事实源，排序/筛选/NLP 都基于它重算 displayPage
+        List<ProductCard> enrichedRanked = enrichRatingLabels(ranked, filter);
+        List<ProductCard> displayCandidates = diversifyUnknownBrandResults(enrichedRanked, productIntent, targetCount);
+        List<ProductCard> rawPage = diversifyPlatforms(displayCandidates, targetCount);
+        boolean currentSearchRun = sessionId == null || sessionId.isBlank()
+                || isCurrentSearchRun(sessionId, searchRunToken);
+        if (!currentSearchRun) {
+            log.info("Ignoring stale search result for session={}, run={}", sessionId, searchRunToken);
+            metricsService.stopSearchTotalTimer(searchTimer, false);
+            return new SearchResult(0, List.of(), List.of(), List.of(), false, searchRunToken);
+        }
+        // 保存 classifiedPool（Top300 带 tier 分类）
+        // 关键：所有搜索都生成 classifiedPool，即使没有垂直意图也用默认 tier
+        int classifiedPoolSize = enrichedRanked.size(); // fallback
+        if (sessionId != null && !sessionId.isBlank()) {
+            sessionCache.saveCandidates(sessionId, enrichedRanked, searchIdentity);
+
+            com.visioncart.service.search.strategy.VerticalSearchStrategy resolvedStrategy =
+                    strategyRegistry.resolve(productIntent);
+            List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> classifiedPool;
+            if (hasProductIntent) {
+                // 有垂直意图：用策略的 classify 做精细分类
+                classifiedPool = resolvedStrategy.classifyAll(afterFilter, productIntent);
+            } else {
+                // 无垂直意图：所有商品统一归为 EXACT_MAIN（保持排序即可）
+                classifiedPool = afterFilter.stream()
+                        .map(p -> new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(
+                                p, IntentGate.IntentTier.EXACT_MAIN))
+                        .toList();
+            }
+            SearchCandidatePool pool = new SearchCandidatePool(
+                    sessionId, searchRunToken, searchIdentity,
+                    productIntent, resolvedStrategy.getClass().getSimpleName(),
+                    filter, classifiedPool, all.size(), all, filter, filter.sortBy(), rawPage);
+            sessionCache.saveClassifiedPool(sessionId, pool);
+            classifiedPoolSize = classifiedPool.size();
+            log.info("Saved classifiedPool: {} products (from {} afterFilter), hasIntent={}, strategy={}",
+                    classifiedPoolSize, afterFilter.size(), hasProductIntent,
+                    resolvedStrategy.getClass().getSimpleName());
+
             // Send final WebSocket message with staging=false to indicate search completion
-            // IMPORTANT: send page (展示列表), not ranked (全量候选)
+            // totalCount 使用 classifiedPool.size() 而非 displayPage.size()
             try {
-                var doneMsg = new com.visioncart.api.dto.SearchProgressMessage(sessionId, rawPage, ranked.size(), false);
+                var doneMsg = new com.visioncart.api.dto.SearchProgressMessage(sessionId, rawPage, classifiedPoolSize, false, searchRunToken);
                 messagingTemplate.convertAndSend("/topic/search/" + sessionId, doneMsg);
             } catch (Exception e) {
                 log.debug("Failed to send search completion message: {}", e.getMessage());
             }
         }
-        List<SuggestionCard> cards = mergeInsightCards(request.sessionId(), searchRunToken, request.clientType(), ranked, attributes, filter,
+        List<SuggestionCard> cards = mergeInsightCards(request.sessionId(), searchRunToken, request.clientType(), enrichedRanked, attributes, filter,
                 suggestionService.cards(request.clientType(), rawPage, attributes, filter));
 
         // Write cache
-        putToCache(cacheKey, ranked);
+        putToCache(cacheKey, enrichedRanked);
+
+        telemetry.put("relaxed", relaxed)
+                .put("tierCounts", tierCounts(ranked, productIntent, strategy))
+                .put("top20", top20TierShare(ranked, productIntent, strategy))
+                .recordLatency(Duration.ofNanos(System.nanoTime() - telemetryStartNanos));
+        log.info("SearchTelemetry {}", telemetry.fields());
 
         // Stop total search timer
         metricsService.stopSearchTotalTimer(searchTimer, false);
 
-        List<ProductCard> page = enrichRatingLabels(rawPage);
-        return new SearchResult(ranked.size(), page, stats(ranked), cards, relaxed);
+        return new SearchResult(classifiedPoolSize, rawPage, stats(enrichedRanked), cards, relaxed, searchRunToken);
+    }
+
+    // ==================== classifiedPool 重排序 ====================
+
+    /**
+     * 基于 classifiedPool 重新排序，不重新搜索。
+     * 用于排序切换、NLP 排序、标签删除后的重算。
+     *
+     * <p>核心流程：
+     * <ol>
+     *   <li>从 sessionCache 获取 classifiedPool（Top300 带 tier）</li>
+     *   <li>对 classifiedPool 应用新的筛选条件</li>
+     *   <li>tier-aware 排序</li>
+     *   <li>strategy.mix() 生成 displayPage（Top50）</li>
+     *   <li>口碑标注 + 平台多样化</li>
+     * </ol>
+     */
+    public SearchResult resortSession(String sessionId, SearchFilter newFilter, int pageSize) {
+        SearchCandidatePool pool = sessionCache.getClassifiedPool(sessionId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "No classified pool for session " + sessionId));
+
+        // 1. 对 classifiedPool 应用新的筛选条件
+        List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> filteredPool =
+                applyFilterToClassifiedPool(pool.classifiedPool(), newFilter);
+
+        // 2. tier-aware 排序（每个 tier 内按用户排序）
+        List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> sorted =
+                intentAwareSorter.sortClassified(filteredPool, newFilter);
+
+        // 3. mix 生成 displayPage
+        com.visioncart.service.search.strategy.VerticalSearchStrategy strategy =
+                strategyRegistry.resolve(pool.productIntent());
+        List<ProductCard> displayPage = strategy.mix(pool.productIntent(), sorted, pageSize);
+
+        // 4. 口碑标注 + 平台多样化（仅在 displayPage 上）
+        displayPage = enrichRatingLabels(displayPage, newFilter);
+        displayPage = diversifyPlatforms(displayPage, pageSize);
+
+        // 5. 更新 session candidates cache（供后续 NLP 使用）
+        sessionCache.saveCandidates(sessionId, displayPage, pool.searchIdentity());
+
+        SearchCandidatePool updatedPool = pool.withCurrentState(newFilter, displayPage);
+        sessionCache.saveClassifiedPool(sessionId, updatedPool);
+        sessionCache.saveCandidates(sessionId, updatedPool.toProductCards(), pool.searchIdentity());
+
+        return new SearchResult(
+                filteredPool.size(),  // total = filteredPool.size(), 不是 displayPage.size()
+                displayPage,
+                stats(displayPage),
+                List.of(),  // suggestionCards（重排序不重新生成）
+                false,
+                pool.searchRunId()
+        );
+    }
+
+    /**
+     * 对 classifiedPool 应用筛选条件，保留 tier 信息。
+     * 复用 applyFilter() 的单产品过滤逻辑，但不重新做 validity/dedup（classifiedPool 已经做过）。
+     */
+    private List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> applyFilterToClassifiedPool(
+            List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> pool,
+            SearchFilter filter) {
+        // 先提取 ProductCard，复用现有的 applyFilter 逻辑
+        List<ProductCard> products = pool.stream()
+                .map(com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct::product)
+                .toList();
+        List<ProductCard> filtered = applyFilter(products, filter);
+
+        // 重建 ClassifiedProduct（保持 tier）
+        java.util.Set<String> filteredIds = filtered.stream()
+                .map(ProductCard::id)
+                .collect(Collectors.toSet());
+        return pool.stream()
+                .filter(cp -> filteredIds.contains(cp.product().id()))
+                .toList();
+    }
+
+    /**
+     * 获取当前 session 的 classifiedPool（供外部调用）。
+     */
+    public java.util.Optional<SearchCandidatePool> getClassifiedPool(String sessionId) {
+        return sessionCache.getClassifiedPool(sessionId);
     }
 
     private String beginSearchRun(String sessionId) {
@@ -419,6 +665,21 @@ public class SearchOrchestrator {
             log.debug("Redis unavailable for search run token check, using local memory: {}", e.getMessage());
         }
         return token.equals(localSearchRuns.get(sessionId));
+    }
+
+    private String currentSearchRunId(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return null;
+        }
+        try {
+            String current = redisTemplate.opsForValue().get(SEARCH_RUN_PREFIX + sessionId);
+            if (current != null && !current.isBlank()) {
+                return current;
+            }
+        } catch (Exception e) {
+            log.debug("Redis unavailable for search run token lookup, using local memory: {}", e.getMessage());
+        }
+        return localSearchRuns.get(sessionId);
     }
 
     private int targetPageSize(SearchRequest request) {
@@ -563,20 +824,35 @@ public class SearchOrchestrator {
         return List.of();
     }
 
-    private void sendSearchProgress(String sessionId, List<ProductCard> products, SearchRequest request, String searchRunToken) {
+    private void sendSearchProgress(String sessionId, List<ProductCard> products, SearchRequest request,
+                                     String searchRunToken, ProductIntent productIntent,
+                                     com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
         try {
             if (!isCurrentSearchRun(sessionId, searchRunToken)) {
                 return;
             }
             int pageSize = targetPageSize(request);
-            // 轻量净化：去重 + 基本有效性过滤（有标题、价格 > 0）+ 平台均衡
+            // 轻量净化：去重 + 基本有效性过滤（有标题、价格 > 0）
             List<ProductCard> deduped = deduplicator.deduplicate(products);
             List<ProductCard> valid = deduped.stream()
                     .filter(p -> p.title() != null && !p.title().isBlank())
                     .filter(p -> p.price() != null && p.price().compareTo(java.math.BigDecimal.ZERO) > 0)
                     .toList();
-            List<ProductCard> page = diversifyPlatforms(valid, pageSize);
-            var msg = new com.visioncart.api.dto.SearchProgressMessage(sessionId, page, products.size(), true);
+
+            // Problem 12 fix: apply lightweight intent gate to progress results
+            // Filter out REJECT tier products to prevent irrelevant items flashing on screen
+            if (productIntent != null && !productIntent.canonicalProduct().isBlank() && strategy != null) {
+                valid = valid.stream()
+                        .filter(p -> {
+                            IntentGate.IntentTier tier = strategy.classify(productIntent, p);
+                            return tier != IntentGate.IntentTier.REJECT;
+                        })
+                        .toList();
+            }
+
+            List<ProductCard> displayCandidates = diversifyUnknownBrandResults(valid, productIntent, pageSize);
+            List<ProductCard> page = enrichRatingLabels(diversifyPlatforms(displayCandidates, pageSize), request.effectiveFilter());
+            var msg = new com.visioncart.api.dto.SearchProgressMessage(sessionId, page, products.size(), true, searchRunToken);
             messagingTemplate.convertAndSend("/topic/search/" + sessionId, msg);
             log.debug("Sent search progress for session {}: {} raw -> {} deduped -> {} page", sessionId, products.size(), valid.size(), page.size());
         } catch (Exception e) {
@@ -591,6 +867,7 @@ public class SearchOrchestrator {
         copyIfPresent(source, relaxed, SearchTextUtils.ATTR_CATEGORY);
         copyIfPresent(source, relaxed, SearchTextUtils.ATTR_KEYWORD);
         copyIfPresent(source, relaxed, SearchTextUtils.ATTR_KEYWORDS);
+        // 补充搜索不使用 plan queries（使用更简单的查询）
         return relaxed;
     }
 
@@ -598,6 +875,66 @@ public class SearchOrchestrator {
         String value = source.get(key);
         if (StringUtils.isNotBlank(SearchTextUtils.useful(value))) {
             target.put(key, value);
+        }
+    }
+
+    /**
+     * 将 QueryPlan 的分层查询注入 attributes，让 SearchQueryBuilder 优先使用。
+     *
+     * <p>Problem 2 fix: 分层注入，不一次性把所有 tier 打出去。
+     * <ul>
+     *   <li>主流程只注入 primaryQueries（精准查询）</li>
+     *   <li>补召回时追加 secondaryQueries</li>
+     *   <li>fallbackQueries 作为最后手段</li>
+     * </ul>
+     */
+    private void injectPlanQueries(Map<String, String> attributes, QueryPlan plan) {
+        if (plan == null) return;
+        // Problem 2 fix: only inject primary queries initially.
+        // Secondary and fallback queries are added during supplemental recall.
+        List<String> primary = new ArrayList<>(queryBudgetAllocator.queries(plan, RetrievalLevel.PRIMARY));
+        if (!primary.isEmpty()) {
+            try {
+                attributes.put(SearchQueryBuilder.ATTR_PLAN_QUERIES,
+                        objectMapper.writeValueAsString(primary));
+            } catch (JsonProcessingException e) {
+                log.warn("Failed to inject plan queries: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 补召回时注入 primary + secondary 查询（比主流程更宽，但仍不含 fallback 泛词）。
+     */
+    private void injectSupplementalPlanQueries(Map<String, String> attributes, QueryPlan plan) {
+        if (plan == null) return;
+        List<String> queries = new ArrayList<>();
+        queries.addAll(queryBudgetAllocator.queries(plan, RetrievalLevel.SECONDARY));
+        List<String> unique = queries.stream().distinct().limit(6).toList();
+        if (!unique.isEmpty()) {
+            try {
+                attributes.put(SearchQueryBuilder.ATTR_PLAN_QUERIES,
+                        objectMapper.writeValueAsString(unique));
+            } catch (JsonProcessingException e) {
+                log.warn("Failed to inject supplemental plan queries: {}", e.getMessage());
+            }
+        }
+    }
+
+    private void injectFallbackPlanQueries(Map<String, String> attributes, QueryPlan plan) {
+        if (plan == null) return;
+        List<String> unique = queryBudgetAllocator.queries(plan, RetrievalLevel.FALLBACK)
+                .stream()
+                .distinct()
+                .limit(8)
+                .toList();
+        if (!unique.isEmpty()) {
+            try {
+                attributes.put(SearchQueryBuilder.ATTR_PLAN_QUERIES,
+                        objectMapper.writeValueAsString(unique));
+            } catch (JsonProcessingException e) {
+                log.warn("Failed to inject fallback plan queries: {}", e.getMessage());
+            }
         }
     }
 
@@ -774,6 +1111,71 @@ public class SearchOrchestrator {
         return page;
     }
 
+    private List<ProductCard> diversifyUnknownBrandResults(List<ProductCard> products,
+                                                           ProductIntent productIntent,
+                                                           int pageSize) {
+        if (products == null || products.size() <= 1 || pageSize <= 1
+                || productIntent == null || productIntent.hasReliableBrand()) {
+            return products == null ? List.of() : products;
+        }
+        Map<String, List<ProductCard>> byBrand = new LinkedHashMap<>();
+        for (ProductCard product : products) {
+            byBrand.computeIfAbsent(displayBrandKey(product), ignored -> new ArrayList<>()).add(product);
+        }
+        if (byBrand.size() <= 1) {
+            return products;
+        }
+
+        int windowSize = Math.min(pageSize, products.size());
+        List<ProductCard> window = new ArrayList<>(windowSize);
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        boolean added;
+        do {
+            added = false;
+            for (List<ProductCard> bucket : byBrand.values()) {
+                if (window.size() >= windowSize) {
+                    break;
+                }
+                if (!bucket.isEmpty()) {
+                    ProductCard product = bucket.remove(0);
+                    if (seen.add(displayProductKey(product))) {
+                        window.add(product);
+                        added = true;
+                    }
+                }
+            }
+        } while (added && window.size() < windowSize);
+
+        seen = window.stream()
+                .map(this::displayProductKey)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        for (ProductCard product : products) {
+            if (seen.add(displayProductKey(product))) {
+                window.add(product);
+            }
+        }
+        return window;
+    }
+
+    private String displayBrandKey(ProductCard product) {
+        String brand = SearchTextUtils.useful(product == null ? null : product.brand());
+        if (!brand.isBlank()) {
+            return BrandMatcher.canonical(brand);
+        }
+        String inferred = BrandMatcher.inferBrand(product == null ? "" : product.title(),
+                product == null ? "" : product.shopName());
+        String canonical = BrandMatcher.canonical(inferred);
+        return canonical.isBlank() ? "__unknown__" : canonical;
+    }
+
+    private String displayProductKey(ProductCard product) {
+        if (product == null) return "";
+        String id = StringUtils.defaultString(product.id());
+        if (!id.isBlank()) return id;
+        return StringUtils.defaultString(product.platform()) + "|"
+                + StringUtils.defaultString(product.title());
+    }
+
     private List<ProductCard> applyFilter(List<ProductCard> products, SearchFilter filter) {
         String positiveKeyword = SearchTextUtils.positiveKeyword(filter.keyword());
         List<String> negativeTerms = SearchTextUtils.negativeTerms(filter.keyword());
@@ -855,11 +1257,18 @@ public class SearchOrchestrator {
         ).toLowerCase();
     }
 
-    private List<ProductCard> applyIntentFilter(List<ProductCard> products, SearchIntent intent, int targetCount) {
+    private List<ProductCard> applyIntentFilter(List<ProductCard> products, SearchIntent intent,
+                                                 ProductIntent productIntent, SearchFilter filter, int targetCount) {
         if (!intent.hasSpecificSignals()) {
             return products;
         }
 
+        // 有 ProductIntent 时使用垂直策略分层过滤
+        if (productIntent != null && !productIntent.canonicalProduct().isBlank()) {
+            return strategyFilter(products, productIntent, intent, filter, targetCount);
+        }
+
+        // 降级：使用 RelevanceRanker 的 tier 过滤
         List<ProductCard> strong = products.stream()
                 .filter(product -> ranker.tier(product, intent) == RelevanceRanker.RelevanceTier.STRONG)
                 .toList();
@@ -885,8 +1294,154 @@ public class SearchOrchestrator {
         return List.of();
     }
 
+    /**
+     * 基于垂直策略的分层过滤。
+     * 使用 VerticalSearchStrategy.classify() 分类，strategy.mix() 混合结果。
+     *
+     * <p>Problem 4 fix: 策略返回空时，不绕开门控降级到旧 ranker，
+     * 而是用放宽的策略重新分类（去掉品牌硬约束）。
+     */
+    private List<ProductCard> strategyFilter(List<ProductCard> products, ProductIntent productIntent,
+                                              SearchIntent intent, SearchFilter filter, int targetCount) {
+        com.visioncart.service.search.strategy.VerticalSearchStrategy strategy =
+                strategyRegistry.resolve(productIntent);
+
+        // 使用策略的 classify 方法对每个商品分类
+        List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> classified =
+                products.stream()
+                        .map(p -> new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(
+                                p, strategy.classify(productIntent, p)))
+                        .toList();
+
+        // 统计分类结果
+        Map<IntentGate.IntentTier, Long> tierStats = classified.stream()
+                .collect(Collectors.groupingBy(
+                        com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct::tier,
+                        Collectors.counting()));
+        log.info("Strategy filter ({}): {} products -> {}", strategy.getClass().getSimpleName(),
+                products.size(), tierStats);
+
+        // 使用策略的 mix 方法混合结果
+        List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> sortedClassified =
+                intentAwareSorter.sortClassified(classified, filter);
+        int mixTargetCount = displayCandidateWindow(productIntent, targetCount, sortedClassified.size());
+        List<ProductCard> result = strategy.mix(productIntent, sortedClassified, mixTargetCount);
+
+        // P0-1 fix: 策略返回空时，先尝试策略自身的放宽（去掉品牌约束）。
+        // 仍为空时，用 ranker REJECTED 兜底（保留非 REJECT 商品），但不再绕开策略。
+        if (result.isEmpty() && !intent.strictIntent() && strategy.allowBrandRelaxation(productIntent)) {
+            ProductIntent relaxedIntent = productIntent.withRelaxedBrand();
+            List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> relaxedClassified =
+                    products.stream()
+                            .map(p -> new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(
+                                    p, strategy.classify(relaxedIntent, p)))
+                            .toList();
+            int relaxedMixTargetCount = displayCandidateWindow(
+                    relaxedIntent, targetCount, relaxedClassified.size());
+            List<ProductCard> relaxedResult = strategy.mix(
+                    relaxedIntent, intentAwareSorter.sortClassified(relaxedClassified, filter), relaxedMixTargetCount);
+            if (!relaxedResult.isEmpty()) {
+                log.info("Strategy relaxed (no brand): {} products", relaxedResult.size());
+                return relaxedResult;
+            }
+        }
+
+        // P0-1 fix: 不再 fallback 到旧 ranker。可以放宽策略，但不能绕开策略。
+        // 品牌不可放宽或放宽后仍为空 → 返回空，由上层决定是否补召回。
+
+        log.info("Strategy result: {} products", result.size());
+        return result;
+    }
+
+    /**
+     * Problem 1 fix: 按 IntentTier 排序，确保 EXACT_MAIN 排在 RELATED_ACCESSORY 前面。
+     * 解决 RELATED_ACCESSORY 靠低价/高销量/口碑排序压过 EXACT_MAIN 的问题。
+     */
+    private List<ProductCard> applyTierSort(List<ProductCard> products,
+                                             ProductIntent productIntent,
+                                             com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
+        if (productIntent == null || productIntent.canonicalProduct().isBlank() || products.size() <= 1) {
+            return products;
+        }
+        Map<String, IntentGate.IntentTier> tierMap = new LinkedHashMap<>();
+        for (ProductCard p : products) {
+            tierMap.put(p.id(), strategy.classify(productIntent, p));
+        }
+        return products.stream()
+                .sorted(Comparator.comparingInt(
+                        (ProductCard p) -> tierOrdinal(tierMap.getOrDefault(p.id(), IntentGate.IntentTier.REJECT))))
+                .toList();
+    }
+
+    private int tierOrdinal(IntentGate.IntentTier tier) {
+        return switch (tier) {
+            case EXACT_MAIN -> 0;
+            case COMPATIBLE_MAIN -> 1;
+            case SAME_FAMILY -> 2;
+            case RELATED_ACCESSORY -> 3;
+            case SUBSTITUTE -> 4;
+            case REJECT -> 5;
+        };
+    }
+
+    private List<ProductCard> rankForIntent(List<ProductCard> products,
+                                             ProductIntent productIntent,
+                                             com.visioncart.service.search.strategy.VerticalSearchStrategy strategy,
+                                             SearchIntent intent,
+                                             SearchFilter filter) {
+        if (products == null || products.isEmpty()) {
+            return List.of();
+        }
+        if (productIntent != null && !productIntent.canonicalProduct().isBlank() && strategy != null) {
+            return intentAwareSorter.sortProducts(products, productIntent, strategy, filter);
+        }
+        return applySort(ranker.rank(products, intent), filter);
+    }
+
+    private int displayCandidateWindow(ProductIntent productIntent, int targetCount, int availableCount) {
+        if (targetCount <= 0 || availableCount <= 0) {
+            return Math.max(0, targetCount);
+        }
+        if (productIntent == null || productIntent.hasReliableBrand()) {
+            return targetCount;
+        }
+        int expanded = Math.max(UNKNOWN_BRAND_POOL_MIN, targetCount * UNKNOWN_BRAND_POOL_MULTIPLIER);
+        return Math.min(availableCount, Math.max(targetCount, expanded));
+    }
+
     private List<ProductCard> applySort(List<ProductCard> products, SearchFilter filter) {
         return productSortService.applySort(products, filter);
+    }
+
+    private Map<IntentGate.IntentTier, Long> tierCounts(List<ProductCard> products,
+                                                         ProductIntent productIntent,
+                                                         com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
+        if (productIntent == null || strategy == null || products == null) {
+            return Map.of();
+        }
+        return products.stream()
+                .collect(Collectors.groupingBy(product -> strategy.classify(productIntent, product),
+                        java.util.LinkedHashMap::new,
+                        Collectors.counting()));
+    }
+
+    private Map<String, Long> top20TierShare(List<ProductCard> products,
+                                             ProductIntent productIntent,
+                                             com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
+        if (productIntent == null || strategy == null || products == null) {
+            return Map.of();
+        }
+        Map<String, Long> result = new LinkedHashMap<>();
+        List<ProductCard> top20 = products.stream().limit(20).toList();
+        long exact = top20.stream()
+                .filter(product -> strategy.classify(productIntent, product) == IntentGate.IntentTier.EXACT_MAIN)
+                .count();
+        long related = top20.stream()
+                .filter(product -> strategy.classify(productIntent, product) == IntentGate.IntentTier.RELATED_ACCESSORY)
+                .count();
+        result.put("exactMain", exact);
+        result.put("relatedAccessory", related);
+        return result;
     }
 
     private List<PlatformPriceStat> stats(List<ProductCard> products) {

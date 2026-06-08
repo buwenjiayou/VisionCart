@@ -6,8 +6,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import java.util.List;
 import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,5 +63,45 @@ class AdminOnlyFilterTest {
 
         verify(chain).doFilter(request, response);
         assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void allowsPrometheusForMonitoringRole() throws Exception {
+        VisionCartProperties properties = new VisionCartProperties();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(
+                        "prometheus-monitor",
+                        null,
+                        List.of(new SimpleGrantedAuthority(MonitoringTokenFilter.MONITORING_ROLE))
+                )
+        );
+        AdminOnlyFilter filter = new AdminOnlyFilter(properties);
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/actuator/prometheus");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        verify(chain).doFilter(request, response);
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void rejectsOtherMetricsForMonitoringRole() throws Exception {
+        VisionCartProperties properties = new VisionCartProperties();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(
+                        "prometheus-monitor",
+                        null,
+                        List.of(new SimpleGrantedAuthority(MonitoringTokenFilter.MONITORING_ROLE))
+                )
+        );
+        AdminOnlyFilter filter = new AdminOnlyFilter(properties);
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/metrics/summary");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, mock(FilterChain.class));
+
+        assertThat(response.getStatus()).isEqualTo(403);
     }
 }

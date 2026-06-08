@@ -63,7 +63,16 @@ data class SearchResult(
     val products: List<ProductCard>,
     @Json(name = "platform_stats") val platformStats: List<PlatformPriceStat> = emptyList(),
     @Json(name = "suggestion_cards") val suggestionCards: List<SuggestionCard> = emptyList(),
-    val relaxed: Boolean = false
+    val relaxed: Boolean = false,
+    @Json(name = "search_run_id") val searchRunId: String? = null
+)
+
+data class SearchProgressMessage(
+    @Json(name = "session_id") val sessionId: String? = null,
+    val products: List<ProductCard> = emptyList(),
+    @Json(name = "total_count") val totalCount: Int = 0,
+    val staging: Boolean = true,
+    @Json(name = "search_run_id") val searchRunId: String? = null
 )
 
 data class ProductCard(
@@ -85,7 +94,18 @@ data class ProductCard(
     @Json(name = "sales_label") val salesLabel: String? = null,
     @Json(name = "main_category_code") val mainCategoryCode: String? = null,
     @Json(name = "product_role") val productRole: String? = null,
-    @Json(name = "rating_display_label") val ratingDisplayLabel: String? = null
+    @Json(name = "rating_display_label") val ratingDisplayLabel: String? = null,
+    /** Unified reputation index 0~100 ("口碑指数") */
+    @Json(name = "reputation_index") val reputationIndex: Int? = null,
+    /** Raw reputation score 0~1 (internal) */
+    @Json(name = "reputation_score") val reputationScore: Double? = null,
+    /** Reputation confidence 0~1 */
+    @Json(name = "reputation_confidence") val reputationConfidence: Double? = null,
+    @Json(name = "item_rating") val itemRating: Double? = null,
+    @Json(name = "shop_reputation_score") val shopReputationScore: Double? = null,
+    @Json(name = "shop_reputation_level") val shopReputationLevel: String? = null,
+    @Json(name = "seller_reputation_score") val sellerReputationScore: Double? = null,
+    @Json(name = "reputation_evidence") val reputationEvidence: String? = null
 )
 
 data class PlatformPriceStat(

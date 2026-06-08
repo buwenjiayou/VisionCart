@@ -2,170 +2,286 @@ package com.visioncart.service.search;
 
 import com.visioncart.api.dto.ProductCard;
 import com.visioncart.api.dto.ReputationScore;
+import com.visioncart.config.VisionCartProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Locale;
 
 /**
- * Multi-signal reputation scoring service.
- * Decomposes cross-platform ratings into explainable, confidence-weighted reputation scores.
- *
- * <p>Scoring formula:
- * <pre>
- * reputationScore =
-     *     itemRatingScore   * itemRatingConfidence   * 0.55
-     *   + shopOrSellerScore * shopOrSellerConfidence * 0.15
-     *   + salesScore                                  * 0.10
-     *   + similarityScore                             * 0.20
- * </pre>
- *
- * <p>Rating source classification:
- * <ul>
- *   <li>{@code item_rating} — product-level rating (Taobao item_score, PDD goods_eval_score). Strong signal.</li>
- *   <li>{@code shop_dsr} — shop-level DSR/reputation. Weak signal. PDD 高/中/低 mapped here.</li>
- *   <li>{@code seller} — seller-level reputation (eBay feedbackPercentage). Medium signal.</li>
- *   <li>{@code none} — no rating data. Zero confidence.</li>
- * </ul>
+ * Shop/seller reputation scoring service.
+ * Product-level item ratings are display-only and do not contribute to shop trust sorting.
  */
 @Service
 public class ProductReputationService {
 
-    // === Weight constants ===
-    private static final double W_ITEM_RATING = 0.55;
-    private static final double W_SHOP_SELLER = 0.15;
-    private static final double W_SALES = 0.10;
-    private static final double W_SIMILARITY = 0.20;
+    private final VisionCartProperties.Search.Reputation config;
 
-    /**
-     * Compute reputation score for a product within a pool (for sales normalization).
-     */
+    public ProductReputationService() {
+        this(new VisionCartProperties.Search.Reputation());
+    }
+
+    @Autowired
+    public ProductReputationService(VisionCartProperties properties) {
+        this(properties == null ? new VisionCartProperties.Search.Reputation()
+                : properties.getSearch().getReputation());
+    }
+
+    ProductReputationService(VisionCartProperties.Search.Reputation config) {
+        this.config = config == null ? new VisionCartProperties.Search.Reputation() : config;
+    }
+
     public ReputationScore score(ProductCard product, List<ProductCard> pool) {
-        if (product == null) return ReputationScore.EMPTY;
-
-        String source = normalizeSource(product.ratingSource());
-        double rating = product.rating();
-
-        // Item rating signal (only from actual product-level ratings)
-        double itemScore = itemRatingScore(rating, source);
-        double itemConf = itemRatingConfidence(source);
-
-        // Shop/seller reputation signal
-        double shopScore = shopOrSellerScore(rating, source);
-        double shopConf = shopOrSellerConfidence(source);
-
-        // Sales and similarity (always available)
-        double salesScore = normalizeSales(product.sales(), pool);
-        double simScore = clamp(product.similarity());
-
-        double finalScore = itemScore * itemConf * W_ITEM_RATING
-                + shopScore * shopConf * W_SHOP_SELLER
-                + salesScore * W_SALES
-                + simScore * W_SIMILARITY;
-
-        String label = displayLabel(product, source, rating);
-
-        return new ReputationScore(finalScore, itemScore, shopScore,
-                Math.max(itemConf, shopConf), label);
+        return shopTrustScore(product, pool);
     }
 
-    /**
-     * Quick score without pool context (sales normalized to 0).
-     */
     public ReputationScore score(ProductCard product) {
-        return score(product, List.of());
+        return shopTrustScore(product, List.of());
     }
 
-    // === Item rating: only from genuine product-level ratings ===
-
-    private double itemRatingScore(double rating, String source) {
-        if (rating <= 0) return 0;
-        if ("item_rating".equals(source)) {
-            return clamp(rating / 5.0);  // normalize to 0~1
+    public ReputationScore shopTrustScore(ProductCard product, List<ProductCard> pool) {
+        if (product == null) {
+            return ReputationScore.EMPTY;
         }
-        // shop_dsr / seller / none — NOT a product rating, don't use as item signal
-        return 0;
+        TrustSignal signal = trustSignal(product);
+        double simScore = clamp(product.similarity());
+        double calibratedTrust = signal.calibratedTrust();
+        double finalScore = calibratedTrust * clamp(config.getTrustWeight())
+                + simScore * clamp(config.getRelevanceWeight());
+        return new ReputationScore(finalScore, 0, signal.score(), signal.confidence(), signal.label());
     }
 
-    private double itemRatingConfidence(String source) {
-        return switch (source) {
-            case "item_rating" -> 0.90;   // genuine product-level rating
-            default -> 0.0;               // not a product rating
-        };
+    public ReputationScore shopTrustScore(ProductCard product) {
+        return shopTrustScore(product, List.of());
     }
 
-    // === Shop/seller reputation: from DSR, seller feedback, etc. ===
+    public boolean hasShopOrSellerTrust(ProductCard product) {
+        return trustSignal(product).confidence() > 0;
+    }
 
-    private double shopOrSellerScore(double rating, String source) {
-        if (rating <= 0) return 0;
-        return switch (source) {
-            case "shop_dsr" -> clamp(rating / 5.0);   // already normalized to 0~5 by platform services
-            case "seller" -> clamp(rating / 5.0);      // eBay feedbackPercentage / 20 → 0~5
+    public List<ProductCard> attachReputation(List<ProductCard> products) {
+        return attachShopTrustReputation(products);
+    }
+
+    public List<ProductCard> attachShopTrustReputation(List<ProductCard> products) {
+        if (products == null || products.isEmpty()) {
+            return List.of();
+        }
+        return products.stream()
+                .map(p -> {
+                    ReputationScore s = shopTrustScore(p, products);
+                    int index = (int) Math.round(s.shopOrSellerScore() * s.confidence() * 100);
+                    String label = s.confidence() > 0 ? s.displayLabel() : null;
+                    return p.withReputation(index, s.score(), s.confidence(), label);
+                })
+                .toList();
+    }
+
+    private TrustSignal trustSignal(ProductCard product) {
+        String evidence = normalizeEvidence(product.reputationEvidence(), product.ratingSource());
+
+        if ("seller".equals(evidence)) {
+            double score = sellerScore(product);
+            if (score > 0) {
+                return new TrustSignal(score, sellerEvidenceConfidence(product), sellerLabel(score));
+            }
+        }
+
+        if ("pdd_shop_level".equals(evidence)) {
+            double score = product.shopReputationScore() != null
+                    ? clamp(product.shopReputationScore())
+                    : pddLevelScore(product.shopReputationLevel());
+            if (score <= 0) {
+                score = inferPddLevelScore(product.rating());
+            }
+            if (score > 0) {
+                String level = normalizePddLevel(product.shopReputationLevel(), product.rating(), score);
+                return new TrustSignal(score, shopEvidenceConfidence(product), pddLevelLabel(level));
+            }
+        }
+
+        if ("shop_dsr".equals(evidence)) {
+            double score = shopScore(product);
+            if (score > 0) {
+                double confidence = shopEvidenceConfidence(product);
+                String label = isPdd(product.platform())
+                        ? pddLevelLabel(normalizePddLevel(product.shopReputationLevel(), product.rating(), score))
+                        : shopScoreLabel(score);
+                return new TrustSignal(score, confidence, label);
+            }
+        }
+
+        return new TrustSignal(0, 0, null);
+    }
+
+    private String normalizeEvidence(String evidence, String ratingSource) {
+        String value = evidence;
+        if (value == null || value.isBlank() || "none".equalsIgnoreCase(value)) {
+            value = ratingSource;
+        }
+        if (value == null || value.isBlank()) {
+            return "none";
+        }
+        return value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private double shopScore(ProductCard product) {
+        if (product.shopReputationScore() != null && product.shopReputationScore() > 0) {
+            return clamp(product.shopReputationScore());
+        }
+        if (isPdd(product.platform())) {
+            double levelScore = pddLevelScore(product.shopReputationLevel());
+            if (levelScore > 0) {
+                return levelScore;
+            }
+            return inferPddLevelScore(product.rating());
+        }
+        return product.rating() > 0 ? clamp(product.rating() / 5.0) : 0;
+    }
+
+    private double sellerScore(ProductCard product) {
+        if (product.sellerReputationScore() != null && product.sellerReputationScore() > 0) {
+            return clamp(product.sellerReputationScore());
+        }
+        return product.rating() > 0 ? clamp(product.rating() / 5.0) : 0;
+    }
+
+    private double shopEvidenceConfidence(ProductCard product) {
+        if (isPdd(product.platform())) {
+            return clamp(config.getPddShopLevelConfidence());
+        }
+        if (isTmall(product)) {
+            return clamp(config.getTmallShopDsrConfidence());
+        }
+        if (isTaobao(product.platform())) {
+            return clamp(config.getTaobaoShopDsrConfidence());
+        }
+        return clamp(config.getUnknownShopDsrConfidence());
+    }
+
+    private double sellerEvidenceConfidence(ProductCard product) {
+        if (isEbay(product.platform())) {
+            return clamp(config.getEbaySellerConfidence());
+        }
+        return clamp(config.getUnknownSellerConfidence());
+    }
+
+    private double pddLevelScore(String level) {
+        String normalized = normalizeLevelText(level);
+        return switch (normalized) {
+            case "high" -> 0.85;
+            case "mid" -> 0.60;
+            case "low" -> 0.30;
             default -> 0;
         };
     }
 
-    private double shopOrSellerConfidence(String source) {
-        return switch (source) {
-            case "shop_dsr" -> 0.45;   // shop-level, not product-level
-            case "seller" -> 0.55;     // seller reputation, somewhat relevant
-            default -> 0.0;
+    private double inferPddLevelScore(double rating) {
+        if (rating >= 4.4) {
+            return 0.85;
+        }
+        if (rating >= 3.8) {
+            return 0.60;
+        }
+        if (rating > 0) {
+            return 0.30;
+        }
+        return 0;
+    }
+
+    private String normalizePddLevel(String level, double rating, double score) {
+        String normalized = normalizeLevelText(level);
+        if (!normalized.isBlank()) {
+            return normalized;
+        }
+        if (rating >= 4.4 || score >= 0.80) {
+            return "high";
+        }
+        if (rating >= 3.8 || score >= 0.50) {
+            return "mid";
+        }
+        return "low";
+    }
+
+    private String normalizeLevelText(String level) {
+        if (level == null || level.isBlank()) {
+            return "";
+        }
+        String normalized = level.trim().toLowerCase(Locale.ROOT);
+        if (normalized.equals("high") || normalized.equals("\u9ad8")) {
+            return "high";
+        }
+        if (normalized.equals("mid") || normalized.equals("medium") || normalized.equals("\u4e2d")) {
+            return "mid";
+        }
+        if (normalized.equals("low") || normalized.equals("\u4f4e")) {
+            return "low";
+        }
+        return "";
+    }
+
+    private String pddLevelLabel(String level) {
+        String displayLevel = switch (level) {
+            case "high" -> "\u9ad8";
+            case "mid" -> "\u4e2d";
+            case "low" -> "\u4f4e";
+            default -> "";
         };
+        return "\u5e97\u94fa\u53e3\u7891 " + displayLevel;
     }
 
-    // === Sales normalization ===
-
-    private double normalizeSales(long sales, List<ProductCard> pool) {
-        if (sales <= 0 || pool == null || pool.isEmpty()) return 0;
-        long maxSales = pool.stream().mapToLong(ProductCard::sales).max().orElse(0);
-        if (maxSales <= 0) return 0;
-        // Log-scale normalization to prevent mega-sellers from dominating
-        return Math.log1p(sales) / Math.log1p(maxSales);
+    private String shopScoreLabel(double score) {
+        return String.format(Locale.US, "\u5e97\u94fa\u8bc4\u5206 %.1f", score * 5.0);
     }
 
-    // === Utilities ===
+    private String sellerLabel(double score) {
+        return String.format(Locale.US, "\u5356\u5bb6\u4fe1\u8a89 %.0f%%", score * 100.0);
+    }
 
     private double clamp(double value) {
         return Math.max(0, Math.min(1.0, value));
     }
 
-    private String normalizeSource(String ratingSource) {
-        if (ratingSource == null || ratingSource.isBlank() || "none".equals(ratingSource)) {
-            return "none";
+    private boolean isPdd(String platform) {
+        if (platform == null) {
+            return false;
         }
-        return ratingSource.trim().toLowerCase(Locale.ROOT);
+        String normalized = platform.toLowerCase(Locale.ROOT);
+        return normalized.contains("pdd") || platform.contains("\u62fc\u591a\u591a");
     }
 
-    /**
-     * Generate a human-readable display label based on rating source.
-     * Shows the actual meaning, not a fake unified "X.X 分".
-     */
-    private String displayLabel(ProductCard product, String source, double rating) {
-        if (rating <= 0) return "暂无评分";
+    private boolean isTaobao(String platform) {
+        if (platform == null) {
+            return false;
+        }
+        String normalized = platform.toLowerCase(Locale.ROOT);
+        return normalized.contains("taobao") || platform.contains("\u6dd8\u5b9d");
+    }
 
-        String platform = platformLabel(product.platform());
-        return switch (source) {
-            case "item_rating" -> String.format(Locale.US, "%s · 商品评分 %.1f", platform, rating);
-            case "shop_dsr" -> {
-                // For PDD text DSR that was mapped, show the original meaning
-                if (rating >= 4.6) yield platform + " · 店铺口碑 高";
-                if (rating >= 3.8) yield platform + " · 店铺口碑 中";
-                yield platform + " · 店铺口碑 低";
+    private boolean isTmall(ProductCard product) {
+        if (product == null) {
+            return false;
+        }
+        String platform = product.platform();
+        if (platform != null) {
+            String normalized = platform.toLowerCase(Locale.ROOT);
+            if (normalized.contains("tmall") || platform.contains("\u5929\u732b")) {
+                return true;
             }
-            case "seller" -> String.format(Locale.US, "%s · 卖家信誉 %.0f%%", platform, rating * 20);
-            default -> "暂无评分";
-        };
+        }
+        return product.tags() != null && product.tags().stream()
+                .anyMatch(tag -> tag != null && (tag.toLowerCase(Locale.ROOT).contains("tmall")
+                        || tag.contains("\u5929\u732b")));
     }
 
-    private String platformLabel(String platform) {
-        if (platform == null) return "";
-        return switch (platform.toLowerCase(Locale.ROOT)) {
-            case "taobao", "淘宝" -> "淘宝";
-            case "pdd", "拼多多" -> "拼多多";
-            case "ebay" -> "eBay";
-            case "tmall", "天猫" -> "天猫";
-            case "jd", "京东" -> "京东";
-            default -> platform;
-        };
+    private boolean isEbay(String platform) {
+        return platform != null && platform.toLowerCase(Locale.ROOT).contains("ebay");
+    }
+
+    private record TrustSignal(double score, double confidence, String label) {
+        double calibratedTrust() {
+            return score * confidence;
+        }
     }
 }

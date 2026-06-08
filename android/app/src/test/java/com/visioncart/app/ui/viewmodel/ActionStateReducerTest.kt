@@ -1,8 +1,7 @@
 package com.visioncart.app.ui.viewmodel
 
-import com.visioncart.app.data.ActionResult
-import com.visioncart.app.data.ProductCard
-import org.junit.Assert.assertEquals
+import com.visioncart.app.data.*
+import org.junit.Assert.*
 import org.junit.Test
 
 class ActionStateReducerTest {
@@ -50,6 +49,82 @@ class ActionStateReducerTest {
         val message = "已按具体语义排序"
 
         assertEquals(message, ActionStateReducer.resolveMessage("unknown.code", message))
+    }
+
+    @Test
+    fun `suggestion result does not expose returned filter tags`() {
+        val existingTag = FilterTag(
+            id = "field-brands-Apple",
+            label = "Apple",
+            filterPath = "brands.Apple",
+            source = "structured"
+        )
+        val current = MainUiState(
+            products = listOf(product("old", "旧结果")),
+            filterTags = listOf("Apple"),
+            structuredFilterTags = listOf(existingTag),
+            deriveFilterTagsFromFilter = true
+        )
+        val suggestionTag = FilterTag(
+            id = "clause-cost-effective",
+            label = "高性价比",
+            filterPath = "preferences.cost_effective",
+            source = "preference"
+        )
+
+        val reduced = ActionStateReducer.reduceActionResult(
+            current,
+            ActionResult(
+                products = listOf(product("p1", "建议结果")),
+                filterTags = listOf(suggestionTag),
+                filterApplied = true,
+                canUndo = true,
+                actionSource = "suggestion"
+            )
+        )
+
+        assertEquals(listOf("Apple"), reduced.filterTags)
+        assertEquals(listOf(existingTag), reduced.structuredFilterTags)
+        assertFalse(reduced.deriveFilterTagsFromFilter)
+        assertTrue(reduced.canUndo)
+    }
+
+    @Test
+    fun `sort result keeps tags visible but disables undo`() {
+        val existingTag = FilterTag(
+            id = "field-brands-Apple",
+            label = "Apple",
+            filterPath = "brands.Apple",
+            source = "structured"
+        )
+        val current = MainUiState(
+            filterTags = listOf("Apple"),
+            structuredFilterTags = listOf(existingTag),
+            deriveFilterTagsFromFilter = true
+        )
+        val sortTag = FilterTag(
+            id = "field-sort",
+            label = "价格低到高",
+            filterPath = "sort",
+            source = "structured"
+        )
+
+        val reduced = ActionStateReducer.reduceActionResult(
+            current,
+            ActionResult(
+                products = listOf(product("p1", "排序结果")),
+                appliedFilter = SearchFilter(sortBy = "price", sortOrder = "asc"),
+                filterTags = listOf(sortTag),
+                filterApplied = true,
+                canUndo = true,
+                actionSource = "sort"
+            )
+        )
+
+        assertEquals(listOf("Apple"), reduced.filterTags)
+        assertEquals(listOf(existingTag), reduced.structuredFilterTags)
+        assertTrue(reduced.deriveFilterTagsFromFilter)
+        assertFalse(reduced.canUndo)
     }
 
     private fun product(id: String, title: String) = ProductCard(

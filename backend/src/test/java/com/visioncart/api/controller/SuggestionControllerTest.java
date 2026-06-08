@@ -91,7 +91,7 @@ class SuggestionControllerTest {
         when(taskManager.belongsToUser("activeSession", 7L)).thenReturn(true);
         // but history table has no record yet
         when(historyRepository.findBySessionIdAndUserId("activeSession", 7L)).thenReturn(Optional.empty());
-        when(sessionCache.getCandidates("activeSession")).thenReturn(List.of());
+        when(sessionCache.getBestCandidates("activeSession")).thenReturn(List.of());
 
         // Mock the unified action chain
         when(safeActionExecutor.compileSuggestion(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
@@ -121,7 +121,7 @@ class SuggestionControllerTest {
 
         SuggestionExecuteRequest request = new SuggestionExecuteRequest(
                 "activeSession", "sort_by_price_asc", List.of(), SearchFilter.empty(), null);
-        var response = controller.execute(request);
+        var response = controller.executeAction(request);
 
         // Should NOT be 403 — taskManager ownership is sufficient
         assertThat(response.code()).isEqualTo(200);
@@ -149,7 +149,7 @@ class SuggestionControllerTest {
 
         SuggestionExecuteRequest request = new SuggestionExecuteRequest(
                 "foreignSession", "sort_by_price_asc", List.of(), SearchFilter.empty(), null);
-        var response = controller.execute(request);
+        var response = controller.executeAction(request);
 
         assertThat(response.code()).isEqualTo(403);
     }
@@ -184,7 +184,7 @@ class SuggestionControllerTest {
         );
 
         when(historyRepository.findBySessionIdAndUserId("sess1", 7L)).thenReturn(Optional.of(history));
-        when(sessionCache.getCandidates("sess1")).thenReturn(List.of(product));
+        when(sessionCache.getBestCandidates("sess1")).thenReturn(List.of(product));
         when(suggestionService.cards(eq("app"), eq(List.of(product)))).thenReturn(List.of(card));
 
         var response = controller.cards("app", null, "sess1");
@@ -224,7 +224,7 @@ class SuggestionControllerTest {
         );
 
         when(historyRepository.findBySessionIdAndUserId("sess1", 7L)).thenReturn(Optional.of(history));
-        when(sessionCache.getCandidates("sess1")).thenReturn(List.of(product));
+        when(sessionCache.getBestCandidates("sess1")).thenReturn(List.of(product));
         when(suggestionService.cards(eq("app"), eq(List.of(product)))).thenReturn(List.of(baseCard));
         when(deepSuggestionService.insightCards(
                 org.mockito.ArgumentMatchers.anyString(),
@@ -274,7 +274,7 @@ class SuggestionControllerTest {
         );
 
         when(historyRepository.findBySessionIdAndUserId("sess1", 7L)).thenReturn(Optional.of(history));
-        when(sessionCache.getCandidates("sess1")).thenReturn(List.of(product));
+        when(sessionCache.getBestCandidates("sess1")).thenReturn(List.of(product));
         when(suggestionService.cards(eq("app"), eq(List.of(product)))).thenReturn(List.of(baseCard));
         when(deepSuggestionService.insightCards(
                 org.mockito.ArgumentMatchers.anyString(),

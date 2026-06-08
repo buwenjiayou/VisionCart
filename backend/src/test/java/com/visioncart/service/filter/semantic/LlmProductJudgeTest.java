@@ -3,11 +3,14 @@ package com.visioncart.service.filter.semantic;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.visioncart.config.VisionCartProperties;
 import com.visioncart.service.ai.PromptLoader;
+import com.visioncart.service.metrics.PerformanceMetricsService;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -16,11 +19,14 @@ class LlmProductJudgeTest {
 
     @SuppressWarnings("unchecked")
     private final ObjectProvider<ChatClient.Builder> provider = mock(ObjectProvider.class);
+    private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor();
     private final LlmProductJudge judge = new LlmProductJudge(
             provider,
             new ObjectMapper(),
             mock(PromptLoader.class),
-            new VisionCartProperties());
+            new VisionCartProperties(),
+            aiExecutor,
+            mock(PerformanceMetricsService.class));
 
     @Test
     void parseResultsIgnoresUnknownIdsAndClampsScores() throws Exception {

@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
+import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -13,6 +14,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class CropView(context: Context, private val bitmap: Bitmap) : View(context) {
+
+    constructor(context: Context) : this(context, placeholderBitmap())
+
+    constructor(context: Context, attrs: AttributeSet?) : this(context, placeholderBitmap())
 
     private enum class TouchMode { NONE, HANDLE_TL, HANDLE_TR, HANDLE_BL, HANDLE_BR, HANDLE_T, HANDLE_B, HANDLE_L, HANDLE_R, MOVE_CROP, MOVE_IMAGE }
 
@@ -180,9 +185,17 @@ class CropView(context: Context, private val bitmap: Bitmap) : View(context) {
                 invalidate()
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (event.actionMasked == MotionEvent.ACTION_UP && touchMode == TouchMode.NONE) {
+                    performClick()
+                }
                 touchMode = TouchMode.NONE
             }
         }
+        return true
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
         return true
     }
 
@@ -246,5 +259,10 @@ class CropView(context: Context, private val bitmap: Bitmap) : View(context) {
         val srcRight = (rawRight + padX).coerceIn(srcLeft + 1, bitmap.width)
         val srcBottom = (rawBottom + padY).coerceIn(srcTop + 1, bitmap.height)
         return Bitmap.createBitmap(bitmap, srcLeft, srcTop, srcRight - srcLeft, srcBottom - srcTop)
+    }
+
+    companion object {
+        private fun placeholderBitmap(): Bitmap =
+            Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
     }
 }

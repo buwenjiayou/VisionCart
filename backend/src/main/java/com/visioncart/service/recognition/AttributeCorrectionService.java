@@ -133,7 +133,7 @@ public class AttributeCorrectionService {
         persistAttributes(sessionId, historyOpt, updatedAttributes);
 
         // 5. Re-search with updated attributes + cleaned filter
-        List<ProductCard> previousProducts = sessionCache.getCandidates(sessionId);
+        List<ProductCard> previousProducts = sessionCache.getBestCandidates(sessionId);
         SearchRequest searchRequest = new SearchRequest(
                 sessionId, searchAttributes, cleanFilter, 1, DEFAULT_PAGE_SIZE, DEFAULT_RECALL_SIZE, "attribute_correction");
         log.info("Attribute correction search: session={}, field={}, value={}, searchAttrs={}, cleanFilter={}",
@@ -169,7 +169,8 @@ public class AttributeCorrectionService {
                     newProducts.stream().limit(5).map(ProductCard::id).toList());
             return ApiResponse.ok(new AttributeCorrectionResult(
                     updatedAttributes,
-                    new SearchResult(newProducts.size(), newProducts, List.of(), List.of()),
+                    new SearchResult(newProducts.size(), newProducts, List.of(), List.of(), false,
+                            searchResult.searchRunId()),
                     true,    // correctionApplied
                     true,    // productsUpdated
                     false,   // keptPreviousResults
@@ -270,51 +271,57 @@ public class AttributeCorrectionService {
             String newValue,
             Long userId) throws Exception {
 
-        Map<String, AttributeValue> updatedAttributes = new HashMap<>(parsedAttributes);
-        updatedAttributes.put(field, new AttributeValue(newValue, 1.0, true));
-
         SearchFilter currentFilter = conversationManager.getFilterState(sessionId);
         SearchFilter updatedFilter = applyAttributeToFilter(currentFilter, field, newValue);
-        List<ProductCard> previousProducts = sessionCache.getCandidates(sessionId);
+        List<ProductCard> candidatePool = sessionCache.getBestCandidates(sessionId);
+        List<ProductCard> previousProducts = filterService.filter(
+                candidatePool, currentFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products();
         List<FilterClause> clauses = compileCorrectionToClause(field, newValue);
 
         String category = sessionContextService.resolve(sessionId, userId).normalizedCategory();
         SafeActionExecutor.SafeActionResult result = safeActionExecutor.execute(
                 sessionId,
-                previousProducts,
+                candidatePool,
                 clauses,
                 currentFilter,
                 updatedFilter,
                 currentFilter,
                 previousProducts,
                 category,
-                "correction",
+                "filter_correction",
                 "修正" + field + "=" + newValue
         );
 
         if (result.committed()) {
-            persistAttributes(sessionId, historyOpt, updatedAttributes);
             sessionHistoryService.archiveDisplayedProducts(sessionId, result.products());
             log.info("Local filter correction applied: field={}, value={}, results={}",
                     field, newValue, result.products().size());
             return ApiResponse.ok(new AttributeCorrectionResult(
-                    updatedAttributes,
+                    null,
                     new SearchResult(result.products().size(), result.products(), List.of(), List.of()),
                     true,
+                    true,
+                    false,
                     null,
                     null,
+                    null,
+                    "filter.applied",
                     null
             ));
         }
 
         log.info("Local filter correction rolled back: field={}, value={}", field, newValue);
         return ApiResponse.ok(new AttributeCorrectionResult(
-                parsedAttributes,
+                null,
                 new SearchResult(result.products().size(), result.products(), List.of(), List.of()),
                 false,
+                false,
+                true,
                 result.message() != null ? result.message() : "没有找到「" + newValue + "」的商品，已保留原结果",
                 field,
-                newValue
+                newValue,
+                "filter.rollback",
+                null
         ));
     }
 

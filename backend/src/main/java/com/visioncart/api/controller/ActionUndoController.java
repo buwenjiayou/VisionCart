@@ -9,6 +9,7 @@ import com.visioncart.service.nlp.NlpConversationManager;
 import com.visioncart.service.filter.NlpUndoService;
 import com.visioncart.service.search.CandidateFilterService;
 import com.visioncart.service.search.CandidateSessionCache;
+import com.visioncart.service.search.SearchRunService;
 import com.visioncart.service.recognition.AsyncRecognitionTaskManager;
 import com.visioncart.service.recognition.SessionHistoryService;
 import org.slf4j.Logger;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Unified undo endpoint for ALL user actions.
@@ -40,6 +42,7 @@ public class ActionUndoController {
     private final SessionHistoryService sessionHistoryService;
     private final ActionExecutionService actionExecutionService;
     private final ObjectMapper objectMapper;
+    private final SearchRunService searchRunService;
 
     public ActionUndoController(NlpUndoService undoService,
                                 NlpConversationManager conversationManager,
@@ -49,7 +52,8 @@ public class ActionUndoController {
                                  RecognitionHistoryRepository historyRepository,
                                  SessionHistoryService sessionHistoryService,
                                  ActionExecutionService actionExecutionService,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper,
+                                 SearchRunService searchRunService) {
         this.undoService = undoService;
         this.conversationManager = conversationManager;
         this.sessionCache = sessionCache;
@@ -59,6 +63,7 @@ public class ActionUndoController {
         this.sessionHistoryService = sessionHistoryService;
         this.actionExecutionService = actionExecutionService;
         this.objectMapper = objectMapper;
+        this.searchRunService = searchRunService;
     }
 
     /**
@@ -118,22 +123,52 @@ public class ActionUndoController {
         }
         conversationManager.setFilterState(sessionId, restoredFilter);
 
-        // Re-filter current candidates with restored filter
-        List<ProductCard> candidates = sessionCache.getCandidates(sessionId);
-        CandidateFilterService.FilterResult filterResult = filterService.filter(
-                candidates, restoredFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
+        String undoneSource = undoResult.undoneSource();
+        boolean correctionUndo = "correction".equals(undoneSource);
+        List<ProductCard> restoredCandidateSnapshot = safeProducts(undoResult.products());
+        boolean shouldRestoreSnapshot = !restoredCandidateSnapshot.isEmpty()
+                && Set.of("nlp", "sort", "suggestion", "correction", "tag_delete").contains(undoneSource);
+
+        // 关键改动：如果 undo 携带了 classifiedPool，直接恢复（最精确）
+        if (undoResult.restoredClassifiedPool() != null) {
+            searchRunService.restoreRunPool(sessionId, undoResult.restoredClassifiedPool());
+        }
+
+        // Re-filter current candidates with restored filter. Attribute correction undo restores
+        // the pre-correction candidate pool because correction re-search may have replaced it.
+        // Other action undo keeps the candidate pool intact but restores the visible snapshot.
+        List<ProductCard> candidates = correctionUndo && shouldRestoreSnapshot
+                ? restoredCandidateSnapshot
+                : sessionCache.getBestCandidates(sessionId);
+        if (correctionUndo && shouldRestoreSnapshot) {
+            sessionCache.saveDefaultClassifiedPool(sessionId, restoredCandidateSnapshot, restoredFilter, null);
+        }
+
+        // 优先使用 undo 携带的 displayPage（精确恢复用户看到的页面顺序）
+        List<ProductCard> restoredProducts;
+        if (undoResult.restoredDisplayPage() != null && !undoResult.restoredDisplayPage().isEmpty()) {
+            restoredProducts = undoResult.restoredDisplayPage();
+        } else if (shouldRestoreSnapshot) {
+            restoredProducts = restoredCandidateSnapshot;
+        } else {
+            restoredProducts = safeProducts(filterService.filter(
+                    candidates, restoredFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products());
+        }
+        int totalInPool = candidates.isEmpty() && shouldRestoreSnapshot
+                ? restoredCandidateSnapshot.size()
+                : candidates.size();
 
         boolean canUndo = undoService.canUndo(sessionId);
         String message = "已撤回" + (undoResult.undoneSource() != null ? undoResult.undoneSource() : "")
                 + "「" + (undoResult.undoneQuery() != null ? undoResult.undoneQuery() : "") + "」";
 
         // Update MySQL product snapshot
-        if (filterResult.products() != null && !filterResult.products().isEmpty()) {
-            sessionHistoryService.archiveDisplayedProducts(sessionId, filterResult.products());
+        if (!restoredProducts.isEmpty()) {
+            sessionHistoryService.archiveDisplayedProducts(sessionId, restoredProducts);
         }
 
         log.info("Unified undo for session {}: restored '{}', {} products, canUndo={}",
-                sessionId, undoResult.undoneQuery(), filterResult.resultCount(), canUndo);
+                sessionId, undoResult.undoneQuery(), restoredProducts.size(), canUndo);
 
         // Generate structured filter tags from restored filter
         List<FilterTag> restoredTags = actionExecutionService.generateStructuredTags(restoredFilter);
@@ -164,7 +199,7 @@ public class ActionUndoController {
 
         // Build unified ActionResult
         ActionResult actionResult = new ActionResult(
-                filterResult.products(),
+                restoredProducts,
                 restoredFilter,
                 restoredTags,
                 true,       // filterApplied (undo always applies)
@@ -174,7 +209,7 @@ public class ActionUndoController {
                 List.of(),  // warnings
                 List.of(),  // explanations
                 null,       // uiAction
-                candidates.size(),
+                totalInPool,
                 null,       // suggestionCards
                 restoredAttributes != null ? restoredAttributes : null,  // updatedAttributes
                 "undo:" + (undoResult.undoneSource() != null ? undoResult.undoneSource() : "unknown"),
@@ -183,7 +218,7 @@ public class ActionUndoController {
                 "NORMAL",   // displayMode
                 "filter.undone",
                 restoredAttributes != null,  // attributesUpdated
-                null        // productsUpdated
+                correctionUndo ? !restoredCandidateSnapshot.isEmpty() : null
         );
 
         return ResponseEntity.ok(ApiResponse.ok(actionResult));
@@ -218,6 +253,10 @@ public class ActionUndoController {
             }
         });
         return converted;
+    }
+
+    private List<ProductCard> safeProducts(List<ProductCard> products) {
+        return products == null ? List.of() : products;
     }
 
     private void restoreTaskAttributes(String sessionId, Map<String, AttributeValue> restoredAttributes) {

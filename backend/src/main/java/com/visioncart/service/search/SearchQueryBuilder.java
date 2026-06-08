@@ -10,6 +10,9 @@ import java.util.Map;
 
 public final class SearchQueryBuilder {
 
+    /** attributes 中注入的 QueryPlan 查询列表 key（JSON 数组） */
+    public static final String ATTR_PLAN_QUERIES = "__plan_queries";
+
     private SearchQueryBuilder() {}
 
     public static int platformFetchSize(int pageSize) {
@@ -22,6 +25,12 @@ public final class SearchQueryBuilder {
             return explicitQueries(explicit, attributes, fallback);
         }
 
+        // 优先使用 QueryPlan 注入的查询
+        List<String> planQueries = extractPlanQueries(attributes);
+        if (planQueries != null && !planQueries.isEmpty()) {
+            return planQueries;
+        }
+
         return precisionQueries(SearchIntent.from(attributes, filter), fallback);
     }
 
@@ -31,7 +40,35 @@ public final class SearchQueryBuilder {
             return explicitQueries(explicit, attributes, fallback);
         }
 
+        // 优先使用 QueryPlan 注入的查询
+        List<String> planQueries = extractPlanQueries(attributes);
+        if (planQueries != null && !planQueries.isEmpty()) {
+            return planQueries;
+        }
+
         return precisionQueries(SearchIntent.from(attributes, filter), fallback);
+    }
+
+    /**
+     * 从 attributes 中提取 QueryPlan 注入的查询列表。
+     * 查询列表以 JSON 数组形式存储在 {@link #ATTR_PLAN_QUERIES} key 中。
+     */
+    @SuppressWarnings("unchecked")
+    private static List<String> extractPlanQueries(Map<String, String> attributes) {
+        String json = attributes == null ? null : attributes.get(ATTR_PLAN_QUERIES);
+        if (json == null || json.isBlank()) return null;
+        try {
+            List<String> queries = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readValue(json, List.class);
+            return queries.stream()
+                    .map(SearchTextUtils::useful)
+                    .filter(StringUtils::isNotBlank)
+                    .distinct()
+                    .limit(6)
+                    .toList();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static List<String> precisionQueries(SearchIntent intent, String fallback) {

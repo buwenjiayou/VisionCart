@@ -1,6 +1,8 @@
 package com.visioncart.app.ui.components
 
 import androidx.compose.foundation.clickable
+import com.visioncart.app.ui.components.bounceClick
+import com.visioncart.app.ui.components.rememberAuthenticatedImageModel
 import java.util.Locale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -452,37 +454,6 @@ fun MultiProductSelectionPanel(
 
 // ==================== Product Card ====================
 
-/**
- * Format rating display text based on ratingSource.
- * - item_rating: numeric score with "分" (e.g. "4.8 分")
- * - shop_dsr: shop reputation level (高/中/低, already mapped by backend)
- * - seller: seller feedback percentage (e.g. "98%")
- * - none/other: raw numeric value
- */
-private fun ratingDisplayText(rating: Double, ratingSource: String?): String {
-    return when (ratingSource) {
-        "item_rating" -> String.format(Locale.US, "%.1f 分", rating)
-        "shop_dsr" -> {
-            // PDD DSR levels mapped to numeric by backend: ≥4.4=高, ≥3.8=中, <3.8=低
-            when {
-                rating >= 4.4 -> "口碑 高"
-                rating >= 3.8 -> "口碑 中"
-                else -> "口碑 低"
-            }
-        }
-        "seller" -> String.format(Locale.US, "%.0f%%", rating)
-        else -> String.format(Locale.US, "%.1f", rating)
-    }
-}
-
-/** Icon for rating display: star for ratings, shield for seller reputation */
-private fun ratingIcon(ratingSource: String?): String {
-    return when (ratingSource) {
-        "seller" -> "✓"  // checkmark for seller feedback percentage
-        else -> "★"       // star for item rating and shop DSR
-    }
-}
-
 @Composable
 fun ProductCardView(
     product: ProductCard,
@@ -556,26 +527,6 @@ fun ProductCardView(
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.SemiBold
                     )
-                    if (showRating && product.rating > 0) {
-                        Spacer(Modifier.width(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                ratingIcon(product.ratingSource),
-                                color = Color(0xFFFFA726),
-                                fontSize = 12.sp
-                            )
-                            Spacer(Modifier.width(2.dp))
-                            // Prefer backend-sourced display label (e.g. "淘宝 · 商品评分 4.8")
-                            val displayText = product.ratingDisplayLabel
-                                ?: ratingDisplayText(product.rating, product.ratingSource)
-                            Text(
-                                displayText,
-                                color = Color(0xFFEF6C00),
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
                     Text(
                         " · ${product.shopName}",
                         color = Color(0xFF687A75),
@@ -594,6 +545,23 @@ fun ProductCardView(
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(Color(0xFFEAF3F0))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+                val reputationText = if (showRating) productReputationDisplayText(product) else null
+                if (!reputationText.isNullOrBlank()) {
+                    Surface(
+                        color = Color(0xFFFFF3E0),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            reputationText,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            color = Color(0xFFEF6C00),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -1114,29 +1082,28 @@ fun AttributeCorrectionDialog(
 
 // ==================== Filter Summary ====================
 
-@Composable
-fun FilterSummary(
+internal fun filterTagDeleteTarget(fieldName: String?, tagId: String?, label: String): String {
+    return fieldName ?: tagId ?: label
+}
+
+internal data class TagItem(val label: String, val fieldName: String?, val tagId: String? = null)
+
+internal fun buildFilterSummaryTags(
     filter: SearchFilter,
-    onClear: () -> Unit,
-    onRemoveTag: ((String) -> Unit)? = null,
     filterTags: List<String> = emptyList(),
     structuredFilterTags: List<com.visioncart.app.data.FilterTag> = emptyList(),
-    canUndo: Boolean = false,
-    onUndo: (() -> Unit)? = null,
-    keptPreviousResults: Boolean = false,
-    statusMessage: String? = null
-) {
-    data class TagItem(val label: String, val fieldName: String?, val tagId: String? = null)
-
+    deriveFromFilter: Boolean = true
+): List<TagItem> {
     val tags = mutableListOf<TagItem>()
 
-    // Use structured tags when available (they have filterPath for precise deletion)
     if (structuredFilterTags.isNotEmpty()) {
         structuredFilterTags.forEach { st ->
             tags.add(TagItem(st.label, st.filterPath ?: st.id, st.id))
         }
-    } else {
-        // Fallback to building tags from filter fields
+        return tags
+    }
+
+    if (deriveFromFilter) {
         filter.priceRange.min?.let { tags.add(TagItem("≥¥$it", "price_range.min")) }
         filter.priceRange.max?.let { tags.add(TagItem("≤¥$it", "price_range.max")) }
         filter.platforms.take(2).forEach { tags.add(TagItem(it, "platforms.$it")) }
@@ -1145,24 +1112,37 @@ fun FilterSummary(
         filter.brands.forEach { tags.add(TagItem(it, "brands.$it")) }
         filter.ratingMin?.let { tags.add(TagItem("≥${it}分", "rating_min")) }
         filter.keyword?.let { if (it.isNotBlank() && !it.startsWith("!")) tags.add(TagItem(it, "keyword")) }
-        filter.sortBy?.let { sort ->
-            val label = when (sort) {
-                "price" -> if (filter.sortOrder == "asc") "价格低→高" else "价格高→低"
-                "sales" -> "销量排序"
-                "rating" -> "口碑排序"
-                else -> sort
-            }
-            tags.add(TagItem(label, "sort"))
-        }
+    }
 
-        // Add capability/preference tags from backend (filterTags includes these now)
-        val existingLabels = tags.map { it.label }.toSet()
-        filterTags.forEach { tag ->
-            if (tag !in existingLabels) {
-                tags.add(TagItem(tag, null)) // no fieldName = not removable individually
-            }
+    val existingLabels = tags.map { it.label }.toSet()
+    filterTags.forEach { tag ->
+        if (tag !in existingLabels) {
+            tags.add(TagItem(tag, null))
         }
     }
+
+    return tags
+}
+
+@Composable
+fun FilterSummary(
+    filter: SearchFilter,
+    onClear: () -> Unit,
+    onRemoveTag: ((String) -> Unit)? = null,
+    filterTags: List<String> = emptyList(),
+    structuredFilterTags: List<com.visioncart.app.data.FilterTag> = emptyList(),
+    deriveFromFilter: Boolean = true,
+    canUndo: Boolean = false,
+    onUndo: (() -> Unit)? = null,
+    keptPreviousResults: Boolean = false,
+    statusMessage: String? = null
+) {
+    val tags = buildFilterSummaryTags(
+        filter = filter,
+        filterTags = filterTags,
+        structuredFilterTags = structuredFilterTags,
+        deriveFromFilter = deriveFromFilter
+    )
 
     if (tags.isEmpty() && statusMessage == null) return
 
@@ -1214,7 +1194,7 @@ fun FilterSummary(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         tags.forEach { tag ->
-                            val deleteTarget = tag.tagId ?: tag.fieldName ?: tag.label
+                            val deleteTarget = filterTagDeleteTarget(tag.fieldName, tag.tagId, tag.label)
                             AssistChip(
                                 onClick = { onRemoveTag?.invoke(deleteTarget) },
                                 label = { Text(tag.label, style = MaterialTheme.typography.labelSmall, maxLines = 1) },
@@ -1262,13 +1242,13 @@ fun FilterSummary(
 @Composable
 fun FilterStatusBar(
     status: FilterStatus,
+    modifier: Modifier = Modifier,
     explanation: String?,
     keptPreviousResults: Boolean,
     canUndo: Boolean,
     onUndo: () -> Unit,
     onRelax: (() -> Unit)? = null,
-    onRetry: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    onRetry: (() -> Unit)? = null
 ) {
     if (status == FilterStatus.NONE && explanation == null) return
 

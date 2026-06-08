@@ -21,6 +21,7 @@ public class ProductSortService {
 
     private static final int REVIEW_SORT_TOP_WINDOW = 20;
     private static final int REVIEW_SORT_MAX_PER_PLATFORM = 6;
+    private static final int DISPLAY_SORT_TOP_WINDOW = 50;
 
     private final ProductReputationService reputationService;
 
@@ -61,29 +62,41 @@ public class ProductSortService {
         }
         List<ProductCard> sorted = new ArrayList<>(products);
 
-        if ("review_quality".equals(sortKey) || "rating_desc".equals(sortKey)) {
-            // Use reputation-based scoring for review/reputation sort
+        if ("review_quality".equals(sortKey)
+                || "rating_desc".equals(sortKey)
+                || "shop_trust".equals(sortKey)
+                || "seller_trust".equals(sortKey)) {
+            // Use shop/seller trust scoring for reputation sort.
             // IdentityHashMap avoids collisions when product IDs are null/blank/duplicate
             Map<ProductCard, ReputationScore> scoreCache = new IdentityHashMap<>();
             for (ProductCard p : products) {
-                scoreCache.put(p, reputationService.score(p, products));
+                scoreCache.put(p, reputationService.shopTrustScore(p, products));
             }
             sorted.sort((a, b) -> {
                 ReputationScore sa = scoreCache.getOrDefault(a, ReputationScore.EMPTY);
                 ReputationScore sb = scoreCache.getOrDefault(b, ReputationScore.EMPTY);
-                return Double.compare(sb.score(), sa.score());
+                int trustCmp = Boolean.compare(sb.confidence() > 0, sa.confidence() > 0);
+                if (trustCmp != 0) {
+                    return trustCmp;
+                }
+                int scoreCmp = Double.compare(sb.score(), sa.score());
+                if (scoreCmp != 0) {
+                    return scoreCmp;
+                }
+                return Double.compare(b.similarity(), a.similarity());
             });
-            return diversifyForReviewSort(sorted);
+            return reputationService.attachShopTrustReputation(diversifyForReviewSort(sorted));
         }
 
         sorted.sort(switch (sortKey) {
+            case "relevance" -> Comparator.comparingDouble(ProductCard::similarity).reversed();
             case "price_asc" -> PRICE_ASC;
             case "price_desc" -> PRICE_DESC;
             case "sales_desc" -> SALES_DESC;
             case "value_score" -> Comparator.comparingDouble(this::valueScore).reversed();
             default -> (a, b) -> 0; // relevance — keep original order
         });
-        return sorted;
+        return diversifyDisplayWindow(sorted, DISPLAY_SORT_TOP_WINDOW, displayMaxPerPlatform(sorted));
     }
 
     /**
@@ -110,7 +123,8 @@ public class ProductSortService {
                 yield products.stream().sorted(cmp).toList();
             }
             case "sales" -> products.stream().sorted(SALES_DESC).toList();
-            case "rating", "reviews" -> sortByKey(products, "review_quality");
+            case "rating", "reviews", "review_quality", "rating_desc", "shop_trust", "seller_trust" ->
+                    sortByKey(products, "review_quality");
             default -> products;
         };
     }
@@ -124,18 +138,44 @@ public class ProductSortService {
     }
 
     private List<ProductCard> diversifyForReviewSort(List<ProductCard> sorted) {
+        return diversifyDisplayWindow(sorted, REVIEW_SORT_TOP_WINDOW, REVIEW_SORT_MAX_PER_PLATFORM);
+    }
+
+    private int displayMaxPerPlatform(List<ProductCard> products) {
+        long platformCount = products.stream()
+                .map(product -> product.platform() == null ? "" : product.platform())
+                .distinct()
+                .count();
+        if (platformCount <= 1) {
+            return DISPLAY_SORT_TOP_WINDOW;
+        }
+        return Math.max(8, (int) Math.ceil((double) DISPLAY_SORT_TOP_WINDOW / platformCount));
+    }
+
+    private List<ProductCard> diversifyDisplayWindow(List<ProductCard> sorted, int windowSize, int maxPerPlatform) {
+        if (sorted == null || sorted.size() <= 1 || windowSize <= 0 || maxPerPlatform <= 0) {
+            return sorted == null ? List.of() : sorted;
+        }
+        long platformCount = sorted.stream()
+                .map(product -> product.platform() == null ? "" : product.platform())
+                .distinct()
+                .count();
+        if (platformCount <= 1) {
+            return sorted;
+        }
+
         Map<String, Integer> counts = new java.util.HashMap<>();
         List<ProductCard> topWindow = new ArrayList<>();
         List<ProductCard> remainder = new ArrayList<>();
 
         for (ProductCard product : sorted) {
             String platform = product.platform() == null ? "" : product.platform();
-            if (topWindow.size() >= REVIEW_SORT_TOP_WINDOW) {
+            if (topWindow.size() >= windowSize) {
                 remainder.add(product);
                 continue;
             }
 
-            boolean platformFull = counts.getOrDefault(platform, 0) >= REVIEW_SORT_MAX_PER_PLATFORM;
+            boolean platformFull = counts.getOrDefault(platform, 0) >= maxPerPlatform;
             if (platformFull) {
                 remainder.add(product);
                 continue;

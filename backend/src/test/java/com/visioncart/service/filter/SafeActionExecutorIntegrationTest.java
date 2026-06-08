@@ -177,6 +177,32 @@ class SafeActionExecutorIntegrationTest {
         }
 
         @Test
+        @DisplayName("sort source — commit 后不保存 undo point")
+        void sortSource_sortByPrice_commitsWithoutUndo() {
+            List<ProductCard> candidates = List.of(
+                    product("商品A", "品牌A", "品类A", 200.0, 1000L, "main"),
+                    product("商品B", "品牌B", "品类B", 100.0, 2000L, "main"),
+                    product("商品C", "品牌C", "品类C", 150.0, 1500L, "main")
+            );
+
+            List<FilterClause> clauses = actionCompiler.compile("sort_by_price_asc", SearchFilter.empty());
+
+            SafeActionExecutor.SafeActionResult result = executor.execute(
+                    "sort-session", candidates, clauses,
+                    SearchFilter.empty(), SearchFilter.empty(), SearchFilter.empty(), List.of(),
+                    "数码", "sort", "sort:price_asc");
+
+            assertThat(result.committed()).isTrue();
+            assertThat(result.products()).hasSize(3);
+            assertThat(result.products().get(0).price().doubleValue()).isEqualTo(100.0);
+            assertThat(result.canUndo()).isFalse();
+
+            verify(undoService, never()).saveUndoPoint(
+                    eq("sort-session"), any(), any(), anyString(), eq("sort"), anyString());
+            verify(conversationManager).setFilterState(eq("sort-session"), any());
+        }
+
+        @Test
         @DisplayName("filter_main_product — 排除配件，commit 后保存 undo point")
         void suggestion_filterMainProduct_excludesAccessories() {
             List<ProductCard> candidates = List.of(

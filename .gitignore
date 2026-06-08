@@ -31,7 +31,11 @@ tmp/
 .local/
 tmp-*
 *.log
+*.out
+*.err
+test-output.txt
 data/
+.claude/
 
 # CodeGraph local index
 .codegraph/

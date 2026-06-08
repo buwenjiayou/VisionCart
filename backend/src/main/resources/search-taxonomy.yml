@@ -1,0 +1,91 @@
+families:
+  phone_case:
+    role: ACCESSORY_MAIN
+    primary: ["\u624b\u673a\u58f3", "\u624b\u673a\u5957", "\u4fdd\u62a4\u58f3", "\u4fdd\u62a4\u5957", "case"]
+    features: ["MagSafe", "\u78c1\u5438", "\u900f\u660e", "\u9632\u6454", "\u652f\u67b6"]
+    related_only: ["\u91d1\u5c5e\u73af", "\u5f15\u78c1\u7247", "\u6307\u73af\u6263"]
+    parent_primary: ["\u624b\u673a", "\u667a\u80fd\u624b\u673a"]
+  phone:
+    role: MAIN_PRODUCT
+    primary: ["\u624b\u673a", "\u667a\u80fd\u624b\u673a", "phone"]
+    features: ["5G", "\u5feb\u5145", "\u6298\u53e0\u5c4f"]
+    related_only: ["\u624b\u673a\u58f3", "\u624b\u673a\u819c", "\u5145\u7535\u5668", "\u6570\u636e\u7ebf"]
+    parent_primary: []
+  earbuds:
+    role: MAIN_PRODUCT
+    primary: ["\u8033\u673a", "\u84dd\u7259\u8033\u673a", "\u65e0\u7ebf\u8033\u673a", "earbuds"]
+    features: ["ANC", "\u964d\u566a", "Hi-Res"]
+    related_only: ["\u8033\u673a\u58f3", "\u8033\u673a\u5957", "\u8033\u585e", "\u5145\u7535\u76d2"]
+    parent_primary: []
+  earphone_case:
+    role: ACCESSORY_MAIN
+    primary: ["\u8033\u673a\u58f3", "\u8033\u673a\u5957", "earbuds case"]
+    features: ["\u9632\u6454", "\u6302\u7ef3"]
+    related_only: ["\u8033\u585e", "\u6e05\u6d01\u5237"]
+    parent_primary: ["\u8033\u673a", "\u84dd\u7259\u8033\u673a"]
+  watch_band:
+    role: ACCESSORY_MAIN
+    primary: ["\u8868\u5e26", "\u624b\u8868\u5e26", "watch band"]
+    features: ["\u7845\u80f6", "\u771f\u76ae", "\u7c73\u5170\u5c3c\u65af"]
+    related_only: ["\u8868\u58f3", "\u8868\u819c", "\u5145\u7535\u5e95\u5ea7"]
+    parent_primary: ["\u624b\u8868", "\u667a\u80fd\u624b\u8868"]
+  laptop_bag:
+    role: ACCESSORY_MAIN
+    primary: ["\u7535\u8111\u5305", "\u7b14\u8bb0\u672c\u5305", "laptop bag"]
+    features: ["\u9632\u9707", "\u9632\u6c34", "\u5546\u52a1"]
+    related_only: ["\u9f20\u6807\u57ab", "\u952e\u76d8\u819c", "\u6563\u70ed\u5e95\u5ea7"]
+    parent_primary: ["\u7b14\u8bb0\u672c", "\u7535\u8111", "MacBook"]
+  printer:
+    role: MAIN_PRODUCT
+    primary: ["\u6253\u5370\u673a", "\u55b7\u58a8\u6253\u5370\u673a", "\u6fc0\u5149\u6253\u5370\u673a", "printer"]
+    features: ["\u65e0\u7ebf", "\u5f69\u8272", "\u53cc\u9762"]
+    related_only: ["\u58a8\u76d2", "\u7852\u9f13", "\u78b3\u7c89", "\u8272\u5e26"]
+    parent_primary: []
+  printer_ink:
+    role: CONSUMABLE
+    primary: ["\u58a8\u76d2", "\u7852\u9f13", "\u6253\u5370\u673a\u58a8\u76d2", "toner", "ink cartridge"]
+    features: ["\u539f\u88c5", "\u517c\u5bb9", "\u5927\u5bb9\u91cf"]
+    related_only: ["\u82af\u7247", "\u52a0\u7c89"]
+    parent_primary: ["\u6253\u5370\u673a"]
+  water_purifier:
+    role: MAIN_PRODUCT
+    primary: ["\u51c0\u6c34\u5668", "\u996e\u6c34\u673a", "water purifier"]
+    features: ["RO", "\u53cd\u6e17\u900f", "\u53a8\u4e0b"]
+    related_only: ["\u6ee4\u82af", "\u51c0\u6c34\u5668\u6ee4\u82af"]
+    parent_primary: []
+  water_filter:
+    role: CONSUMABLE
+    primary: ["\u6ee4\u82af", "\u51c0\u6c34\u5668\u6ee4\u82af", "filter cartridge"]
+    features: ["RO", "PPC", "\u6d3b\u6027\u70ad"]
+    related_only: ["\u63a5\u5934", "\u6ee4\u74f6"]
+    parent_primary: ["\u51c0\u6c34\u5668"]
+  shoe:
+    role: MAIN_PRODUCT
+    primary: ["\u8fd0\u52a8\u978b", "\u8dd1\u978b", "\u978b\u5b50", "shoe"]
+    features: ["\u900f\u6c14", "\u51cf\u9707", "\u9632\u6ed1"]
+    related_only: ["\u978b\u57ab", "\u978b\u5e26", "\u978b\u6cb9"]
+    parent_primary: []
+  shoe_insole:
+    role: ACCESSORY_MAIN
+    primary: ["\u978b\u57ab", "\u8fd0\u52a8\u978b\u57ab", "insole"]
+    features: ["\u51cf\u9707", "\u900f\u6c14", "\u589e\u9ad8"]
+    related_only: ["\u8db3\u8ddf\u8d34"]
+    parent_primary: ["\u978b", "\u8fd0\u52a8\u978b"]
+  cup:
+    role: MAIN_PRODUCT
+    primary: ["\u676f\u5b50", "\u6c34\u676f", "\u4fdd\u6e29\u676f", "\u5496\u5561\u676f", "cup"]
+    features: ["\u4fdd\u6e29", "\u4e0d\u9508\u94a2", "\u5927\u5bb9\u91cf"]
+    related_only: ["\u676f\u5957", "\u676f\u76d6", "\u5438\u7ba1"]
+    parent_primary: []
+  cup_sleeve:
+    role: ACCESSORY_MAIN
+    primary: ["\u676f\u5957", "\u6c34\u676f\u5957", "cup sleeve"]
+    features: ["\u9632\u6454", "\u9694\u70ed", "\u7845\u80f6"]
+    related_only: ["\u5438\u7ba1", "\u676f\u76d6"]
+  mouse:
+    role: MAIN_PRODUCT
+    primary: ["\u9f20\u6807", "\u65e0\u7ebf\u9f20\u6807", "\u6709\u7ebf\u9f20\u6807", "\u65e0\u7ebf\u84dd\u7259\u9f20\u6807", "mouse"]
+    features: ["\u84dd\u7259", "\u9759\u97f3", "\u4eba\u4f53\u5de5\u5b66", "\u8f7b\u4fbf"]
+    related_only: ["\u9f20\u6807\u57ab", "\u9f20\u6807\u5e26"]
+    parent_primary: []
+    parent_primary: ["\u676f\u5b50", "\u6c34\u676f", "\u4fdd\u6e29\u676f"]

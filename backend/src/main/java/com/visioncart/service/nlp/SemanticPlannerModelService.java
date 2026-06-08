@@ -63,11 +63,66 @@ public class SemanticPlannerModelService {
                                     .content(),
                     2, 1000L);
 
-            return parseSemanticPlanJson(json);
+            return sanitize(parseSemanticPlanJson(json));
         } catch (Exception e) {
             log.warn("Direct semantic planning failed, will fall back to legacy path: {}", e.getMessage());
             return null;
         }
+    }
+
+    /** Max candidate limit for synchronous LLM Judge — prevents timeout on large pools. */
+    private static final int MAX_SYNC_JUDGE_CANDIDATES = 12;
+
+    /**
+     * Sanitize LLM output: clamp judge limits and strip judge from inappropriate modes.
+     * Prevents the LLM from sending 80+ products to the judge.
+     */
+    private SemanticActionPlan sanitize(SemanticActionPlan plan) {
+        if (plan == null) return null;
+
+        // PREFERENCE_RERANK must never carry a judge
+        if ("PREFERENCE_RERANK".equals(plan.executionMode()) && plan.judge() != null) {
+            log.info("Sanitize: stripping judge from PREFERENCE_RERANK plan");
+            return stripJudge(plan);
+        }
+
+        // Clamp judge candidate/return limits
+        if (plan.judge() != null && Boolean.TRUE.equals(plan.judge().required())) {
+            var judge = plan.judge();
+            int clampedCandidate = Math.min(
+                    judge.candidateLimit() != null && judge.candidateLimit() > 0 ? judge.candidateLimit() : MAX_SYNC_JUDGE_CANDIDATES,
+                    MAX_SYNC_JUDGE_CANDIDATES);
+            int clampedReturn = Math.min(
+                    judge.returnLimit() != null && judge.returnLimit() > 0 ? judge.returnLimit() : MAX_SYNC_JUDGE_CANDIDATES,
+                    MAX_SYNC_JUDGE_CANDIDATES);
+
+            if (clampedCandidate != judge.candidateLimit() || clampedReturn != judge.returnLimit()) {
+                log.info("Sanitize: clamped judge limits candidate={}→{}, return={}→{}",
+                        judge.candidateLimit(), clampedCandidate, judge.returnLimit(), clampedReturn);
+            }
+
+            var sanitizedJudge = new SemanticActionPlan.JudgePlan(
+                    judge.required(), judge.userMeaning(),
+                    judge.positiveSignals(), judge.negativeSignals(),
+                    clampedCandidate, clampedReturn, judge.minScore());
+            return new SemanticActionPlan(
+                    plan.intent(), plan.executionMode(), plan.targetProduct(),
+                    plan.hardFilters(), plan.semanticFilters(), plan.preferences(),
+                    plan.exclusions(), plan.sort(), plan.zeroResultPolicy(),
+                    plan.criteria(), plan.negativeCriteria(),
+                    sanitizedJudge, plan.rankingGoal(), plan.resultStrategy());
+        }
+
+        return plan;
+    }
+
+    private SemanticActionPlan stripJudge(SemanticActionPlan plan) {
+        return new SemanticActionPlan(
+                plan.intent(), plan.executionMode(), plan.targetProduct(),
+                plan.hardFilters(), plan.semanticFilters(), plan.preferences(),
+                plan.exclusions(), plan.sort(), plan.zeroResultPolicy(),
+                plan.criteria(), plan.negativeCriteria(),
+                null, plan.rankingGoal(), plan.resultStrategy());
     }
 
     private String systemPrompt() {

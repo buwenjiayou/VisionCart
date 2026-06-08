@@ -25,6 +25,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.mockito.ArgumentCaptor;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -85,11 +86,24 @@ class SearchOrchestratorTest {
         org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate =
                 mock(org.springframework.messaging.simp.SimpMessagingTemplate.class);
 
+        ProductTaxonomyRegistry taxonomy = new ProductTaxonomyRegistry();
+        ProductIntentBuilder productIntentBuilder = new ProductIntentBuilder(taxonomy);
+        QueryPlanner queryPlanner = new QueryPlanner(taxonomy);
+        IntentGate intentGate = new IntentGate(taxonomy, ranker);
+        com.visioncart.service.search.strategy.DefaultProductIntentStrategy defaultStrategy =
+                new com.visioncart.service.search.strategy.DefaultProductIntentStrategy(queryPlanner, intentGate);
+        com.visioncart.service.search.strategy.PhoneCaseStrategy phoneCaseStrategy =
+                new com.visioncart.service.search.strategy.PhoneCaseStrategy(queryPlanner, intentGate);
+        com.visioncart.service.search.strategy.VerticalStrategyRegistry strategyRegistry =
+                new com.visioncart.service.search.strategy.VerticalStrategyRegistry(
+                        java.util.List.of(phoneCaseStrategy), defaultStrategy);
+
         orchestrator = new SearchOrchestrator(
                 List.of(taobao, pdd), deduplicator, ranker, suggestionService, deepSuggestionService,
                 platformExecutor, aiSuggestionExecutor, properties, redisTemplate, objectMapper, circuitBreaker, regionResolver,
                 recognitionHistoryRepository, sessionCache, suggestionCardCache, messagingTemplate, metricsService,
-                new ProductSortService(new ProductReputationService()), new ProductReputationService());
+                new ProductSortService(new ProductReputationService()), new ProductReputationService(),
+                productIntentBuilder, queryPlanner, intentGate, strategyRegistry);
     }
 
     @AfterEach
@@ -118,6 +132,52 @@ class SearchOrchestratorTest {
 
         assertThat(result.products()).hasSize(2);
         assertThat(result.total()).isEqualTo(2);
+    }
+
+    @Test
+    void productIntentSearchKeepsPddVisibleInReturnedPageAndCandidateCache() {
+        List<ProductCard> taobaoProducts = new ArrayList<>();
+        List<ProductCard> pddProducts = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            taobaoProducts.add(product("tb-" + i, "\u7535\u52a8\u5243\u987b\u5200 " + i,
+                    "\u6dd8\u5b9d", BigDecimal.valueOf(100 + i)));
+            pddProducts.add(product("pdd-" + i, "\u7535\u52a8\u5243\u987b\u5200 " + i,
+                    "\u62fc\u591a\u591a", BigDecimal.valueOf(80 + i)));
+        }
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(taobaoProducts);
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(pddProducts);
+
+        SearchRequest request = new SearchRequest("sess-platform",
+                Map.of("\u7c7b\u76ee", "\u7535\u52a8\u5243\u987b\u5200",
+                        "\u5173\u952e\u8bcd", "\u7535\u52a8\u5243\u987b\u5200"),
+                null, 1, 50, "app");
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products()).extracting(ProductCard::platform)
+                .contains("\u6dd8\u5b9d", "\u62fc\u591a\u591a");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ProductCard>> captor = ArgumentCaptor.forClass(List.class);
+        verify(sessionCache, atLeastOnce()).saveCandidates(eq("sess-platform"), captor.capture(), anyString());
+        assertThat(captor.getValue().stream().limit(50).map(ProductCard::platform).toList())
+                .contains("\u6dd8\u5b9d", "\u62fc\u591a\u591a");
+    }
+
+    @Test
+    void staleSearchRunDoesNotWriteCandidatesOrReturnProducts() {
+        when(valueOps.get(startsWith("visioncart:search:run:"))).thenReturn("newer-run");
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("tb-1", "\u7535\u52a8\u5243\u987b\u5200", "\u6dd8\u5b9d", BigDecimal.valueOf(199))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("pdd-1", "\u7535\u52a8\u5243\u987b\u5200", "\u62fc\u591a\u591a", BigDecimal.valueOf(99))
+        ));
+
+        SearchResult result = orchestrator.search(new SearchRequest("sess-stale",
+                Map.of("\u7c7b\u76ee", "\u7535\u52a8\u5243\u987b\u5200"),
+                null, 1, 20, "app"));
+
+        assertThat(result.products()).isEmpty();
+        verify(sessionCache, never()).saveCandidates(eq("sess-stale"), anyList(), anyString());
     }
 
     @Test
@@ -234,8 +294,9 @@ class SearchOrchestratorTest {
     }
 
     @Test
-    void lockWaitFallsBackToRealSearchInsteadOfReturningEmpty() {
+    void lockContentionReturnsInProgressResponseWithoutDuplicatePlatformSearch() {
         when(valueOps.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenReturn(false);
+        when(sessionCache.getBestCandidates("s1")).thenReturn(List.of());
         when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
                 product("1", "Search result after lock wait", "淘宝", BigDecimal.valueOf(100))
         ));
@@ -243,8 +304,28 @@ class SearchOrchestratorTest {
 
         SearchResult result = orchestrator.search(defaultRequest());
 
+        assertThat(result.products()).isEmpty();
+        assertThat(result.total()).isEqualTo(0);
+        verify(taobao, never()).search(any(), any(), anyInt(), anyInt());
+        verify(pdd, never()).search(any(), any(), anyInt(), anyInt());
+    }
+
+    @Test
+    void lockContentionReturnsMatchingSessionCacheWithoutDuplicatePlatformSearch() {
+        when(valueOps.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenReturn(false);
+        List<ProductCard> cached = List.of(
+                product("cached-1", "Cached lock result", "taobao", BigDecimal.valueOf(100))
+        );
+        when(sessionCache.getBestCandidates("s1")).thenReturn(cached);
+        when(sessionCache.matchesSearchIdentity(eq("s1"), anyString())).thenReturn(true);
+
+        SearchResult result = orchestrator.search(defaultRequest());
+
         assertThat(result.products()).extracting(ProductCard::title)
-                .containsExactly("Search result after lock wait");
+                .containsExactly("Cached lock result");
+        assertThat(result.total()).isEqualTo(1);
+        verify(taobao, never()).search(any(), any(), anyInt(), anyInt());
+        verify(pdd, never()).search(any(), any(), anyInt(), anyInt());
     }
 
     @Test
@@ -328,14 +409,14 @@ class SearchOrchestratorTest {
     @Test
     void filtersIrrelevantProductsWhenCoreCategoryIsKnown() {
         when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
-                product("1", "肩颈按摩仪", "淘宝", BigDecimal.valueOf(99)),
-                product("2", "白色无线办公鼠标", "淘宝", BigDecimal.valueOf(39))
+                product("1", "Shoulder massager", "taobao", BigDecimal.valueOf(99)),
+                product("2", "White wireless office mouse", "taobao", BigDecimal.valueOf(39))
         ));
         when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
 
         SearchRequest request = new SearchRequest(
                 "s1",
-                Map.of("类目", "无线鼠标", "关键词", "白色无线鼠标"),
+                Map.of(SearchTextUtils.ATTR_CATEGORY, "mouse", SearchTextUtils.ATTR_KEYWORD, "wireless mouse"),
                 null,
                 1,
                 20,
@@ -345,9 +426,8 @@ class SearchOrchestratorTest {
 
         assertThat(result.products())
                 .extracting(ProductCard::title)
-                .containsExactly("白色无线办公鼠标");
+                .containsExactly("White wireless office mouse");
     }
-
     @Test
     void filtersConflictingBrandsWhenRecognitionBrandIsReliable() {
         when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
@@ -413,10 +493,10 @@ class SearchOrchestratorTest {
     void fillsStrongResultsWithSafeCandidatesToThirty() {
         List<ProductCard> products = new ArrayList<>();
         for (int i = 0; i < 5; i++) {
-            products.add(product("strong-" + i, "罗技 M650 无线鼠标款" + suffix(i), "淘宝", BigDecimal.valueOf(99 + i), "Logitech"));
+            products.add(product("strong-" + i, "Logitech M650 wireless mouse model " + suffix(i), "taobao", BigDecimal.valueOf(99 + i), "Logitech"));
         }
         for (int i = 0; i < 40; i++) {
-            products.add(product("safe-" + i, "无线办公鼠标安全候选" + suffix(i), "淘宝", BigDecimal.valueOf(49 + i), null));
+            products.add(product("safe-" + i, "Wireless office mouse safe candidate " + suffix(i), "taobao", BigDecimal.valueOf(49 + i), null));
         }
         when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(products);
         when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
@@ -424,10 +504,10 @@ class SearchOrchestratorTest {
         SearchRequest request = new SearchRequest(
                 "s1",
                 Map.of(
-                        "品牌", "罗技",
-                        "型号", "M650",
-                        "类目", "无线鼠标",
-                        "关键词", "罗技 M650 鼠标",
+                        SearchTextUtils.ATTR_BRAND, "Logitech",
+                        "model", "M650",
+                        SearchTextUtils.ATTR_CATEGORY, "mouse",
+                        SearchTextUtils.ATTR_KEYWORD, "Logitech M650 mouse",
                         SearchTextUtils.ATTR_BRAND_RELIABLE, "true"
                 ),
                 null,
@@ -440,19 +520,18 @@ class SearchOrchestratorTest {
 
         assertThat(result.products()).hasSize(30);
         assertThat(result.products()).allSatisfy(product ->
-                assertThat(product.title()).contains("鼠标"));
+                assertThat(product.title().toLowerCase(java.util.Locale.ROOT)).contains("mouse"));
         assertThat(result.products().get(0).title()).contains("M650");
     }
-
     @Test
     void supplementalRecallFillsToThirtyWhenInitialRecallIsTooSmall() {
         List<ProductCard> firstPass = new ArrayList<>();
         for (int i = 0; i < 5; i++) {
-            firstPass.add(product("first-" + i, "缃楁妧 M650 鏃犵嚎榧犳爣 " + suffix(i), "娣樺疂", BigDecimal.valueOf(100 + i), "Logitech"));
+            firstPass.add(product("first-" + i, "Logitech M650 wireless mouse " + suffix(i), "taobao", BigDecimal.valueOf(100 + i), "Logitech"));
         }
         List<ProductCard> supplemental = new ArrayList<>();
         for (int i = 0; i < 40; i++) {
-            supplemental.add(product("supp-" + i, "鏃犵嚎榧犳爣瀹夊叏鍊欓€" + suffix(i), "娣樺疂", BigDecimal.valueOf(60 + i), null));
+            supplemental.add(product("supp-" + i, "Wireless mouse supplemental candidate " + suffix(i), "taobao", BigDecimal.valueOf(60 + i), null));
         }
         when(taobao.search(any(), any(), anyInt(), anyInt()))
                 .thenReturn(firstPass)
@@ -462,10 +541,10 @@ class SearchOrchestratorTest {
         SearchRequest request = new SearchRequest(
                 "s1",
                 Map.of(
-                        SearchTextUtils.ATTR_BRAND, "缃楁妧",
-                        "鍨嬪彿", "M650",
-                        SearchTextUtils.ATTR_CATEGORY, "鏃犵嚓榧犳爣",
-                        SearchTextUtils.ATTR_KEYWORD, "缃楁妧 M650 榧犳爣",
+                        SearchTextUtils.ATTR_BRAND, "Logitech",
+                        "model", "M650",
+                        SearchTextUtils.ATTR_CATEGORY, "mouse",
+                        SearchTextUtils.ATTR_KEYWORD, "Logitech M650 mouse",
                         SearchTextUtils.ATTR_BRAND_RELIABLE, "true"
                 ),
                 null,
@@ -483,10 +562,9 @@ class SearchOrchestratorTest {
         verify(taobao, atLeast(2)).search(attributesCaptor.capture(), any(), anyInt(), anyInt());
         assertThat(attributesCaptor.getAllValues().get(1))
                 .doesNotContainKeys(SearchTextUtils.ATTR_BRAND, SearchTextUtils.ATTR_BRAND_RELIABLE)
-                .containsEntry(SearchTextUtils.ATTR_CATEGORY, "鏃犵嚓榧犳爣")
-                .containsEntry(SearchTextUtils.ATTR_KEYWORD, "缃楁妧 M650 榧犳爣");
+                .containsEntry(SearchTextUtils.ATTR_CATEGORY, "mouse")
+                .containsEntry(SearchTextUtils.ATTR_KEYWORD, "Logitech M650 mouse");
     }
-
     @Test
     void unreliableBrandDoesNotHardFilterOtherwiseSafeProducts() {
         when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
@@ -540,7 +618,76 @@ class SearchOrchestratorTest {
     }
 
     @Test
-    void returnsRelaxedProductsWhenIntentFilterRejectsAllPlatformResults() {
+    void magneticPhoneCaseSearchPrioritizesMagneticCasesOverPlainAppleCases() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("apple-plain", "苹果 iPhone 15 透明手机壳", "淘宝", BigDecimal.valueOf(29), "Apple"),
+                product("magnetic", "磁吸 MagSafe 防摔手机壳", "淘宝", BigDecimal.valueOf(39), null),
+                product("generic-plain", "通用防摔手机壳", "淘宝", BigDecimal.valueOf(19), null)
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "magnetic-case-session",
+                Map.of(
+                        SearchTextUtils.ATTR_CATEGORY, "手机配件",
+                        SearchTextUtils.ATTR_STYLE, "磁吸",
+                        "类型", "磁吸式防摔壳",
+                        SearchTextUtils.ATTR_BRAND, "Apple"
+                ),
+                null,
+                1,
+                20,
+                "recognition"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products()).isNotEmpty();
+        assertThat(result.products().get(0).title()).isEqualTo("磁吸 MagSafe 防摔手机壳");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, String>> attributesCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(taobao, atLeastOnce()).search(attributesCaptor.capture(), any(), anyInt(), anyInt());
+        String planQueries = attributesCaptor.getAllValues().get(0).get(SearchQueryBuilder.ATTR_PLAN_QUERIES);
+        assertThat(planQueries).contains("磁吸 手机壳");
+        assertThat(planQueries).doesNotContain("Apple");
+    }
+
+    @Test
+    void unknownBrandPhoneCaseSearchDoesNotFillPageWithOneBrand() {
+        List<ProductCard> platformResults = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            platformResults.add(product("apple-" + i,
+                    "苹果 iPhone " + i + " 磁吸 MagSafe 手机壳",
+                    "淘宝", BigDecimal.valueOf(20 + i), "Apple"));
+        }
+        platformResults.add(product("generic-1", "通用磁吸防摔手机壳", "淘宝", BigDecimal.valueOf(29), null));
+        platformResults.add(product("generic-2", "安卓通用磁吸手机壳", "淘宝", BigDecimal.valueOf(31), null));
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(platformResults);
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "unknown-brand-case-session",
+                Map.of(
+                        SearchTextUtils.ATTR_CATEGORY, "手机配件",
+                        SearchTextUtils.ATTR_STYLE, "磁吸",
+                        "类型", "磁吸式防摔壳"
+                ),
+                null,
+                1,
+                5,
+                "recognition"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.products()).hasSize(5);
+        assertThat(result.products()).extracting(ProductCard::title)
+                .anyMatch(title -> !title.contains("苹果") && !title.contains("iPhone"));
+    }
+
+    @Test
+    void productIntentSearchStaysEmptyWhenStrategyRejectsAllPlatformResults() {
         when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
                 product("1", "Travel mug", "娣樺疂", BigDecimal.valueOf(49)),
                 product("2", "Office mug", "娣樺疂", BigDecimal.valueOf(59))
@@ -561,9 +708,34 @@ class SearchOrchestratorTest {
 
         SearchResult result = orchestrator.search(request);
 
-        assertThat(result.relaxed()).isTrue();
-        assertThat(result.products()).extracting(ProductCard::title)
-                .containsExactly("Travel mug", "Office mug");
+        assertThat(result.relaxed()).isFalse();
+        assertThat(result.products()).isEmpty();
+    }
+
+    @Test
+    void productIntentDoesNotFallbackToOldRankerWhenStrategyRejectsAll() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("1", "Coffee mug", "taobao", BigDecimal.valueOf(49)),
+                product("2", "Office mug", "taobao", BigDecimal.valueOf(59))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest(
+                "phone-intent-session",
+                Map.of(
+                        SearchTextUtils.ATTR_CATEGORY, "phone",
+                        SearchTextUtils.ATTR_KEYWORD, "phone"
+                ),
+                null,
+                1,
+                30,
+                "app"
+        );
+
+        SearchResult result = orchestrator.search(request);
+
+        assertThat(result.relaxed()).isFalse();
+        assertThat(result.products()).isEmpty();
     }
 
     @Test
@@ -659,12 +831,23 @@ class SearchOrchestratorTest {
         when(redisTemplate.opsForValue()).thenReturn(valueOps2);
         when(valueOps2.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenReturn(true);
 
+        ProductTaxonomyRegistry taxonomyCap = new ProductTaxonomyRegistry();
+        ProductIntentBuilder pibCap = new ProductIntentBuilder(taxonomyCap);
+        QueryPlanner qpCap = new QueryPlanner(taxonomyCap);
+        IntentGate igCap = new IntentGate(taxonomyCap, ranker);
+        com.visioncart.service.search.strategy.DefaultProductIntentStrategy defCap =
+                new com.visioncart.service.search.strategy.DefaultProductIntentStrategy(qpCap, igCap);
+        com.visioncart.service.search.strategy.VerticalStrategyRegistry vsrCap =
+                new com.visioncart.service.search.strategy.VerticalStrategyRegistry(
+                        java.util.List.of(), defCap);
+
         SearchOrchestrator orchestratorWithCapture = new SearchOrchestrator(
                 List.of(taobao, pdd), deduplicator, ranker, suggestionService, deepSuggestionService,
                 platformExecutor, aiSuggestionExecutor, properties, redisTemplate, new ObjectMapper(),
                 circuitBreaker, regionResolver, recognitionHistoryRepository, sessionCache,
                 mock(SuggestionCardCache.class), messagingTemplate, metricsService,
-                new ProductSortService(new ProductReputationService()), new ProductReputationService());
+                new ProductSortService(new ProductReputationService()), new ProductReputationService(),
+                pibCap, qpCap, igCap, vsrCap);
 
         // Simulate 192 products
         List<ProductCard> products = new ArrayList<>();
@@ -712,12 +895,23 @@ class SearchOrchestratorTest {
         when(redisTemplate.opsForValue()).thenReturn(valueOps2);
         when(valueOps2.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenReturn(true);
 
+        ProductTaxonomyRegistry taxonomyCap = new ProductTaxonomyRegistry();
+        ProductIntentBuilder pibCap = new ProductIntentBuilder(taxonomyCap);
+        QueryPlanner qpCap = new QueryPlanner(taxonomyCap);
+        IntentGate igCap = new IntentGate(taxonomyCap, ranker);
+        com.visioncart.service.search.strategy.DefaultProductIntentStrategy defCap =
+                new com.visioncart.service.search.strategy.DefaultProductIntentStrategy(qpCap, igCap);
+        com.visioncart.service.search.strategy.VerticalStrategyRegistry vsrCap =
+                new com.visioncart.service.search.strategy.VerticalStrategyRegistry(
+                        java.util.List.of(), defCap);
+
         SearchOrchestrator orchestratorWithCapture = new SearchOrchestrator(
                 List.of(taobao, pdd), deduplicator, ranker, suggestionService, deepSuggestionService,
                 platformExecutor, aiSuggestionExecutor, properties, redisTemplate, new ObjectMapper(),
                 circuitBreaker, regionResolver, recognitionHistoryRepository, sessionCache,
                 mock(SuggestionCardCache.class), messagingTemplate, metricsService,
-                new ProductSortService(new ProductReputationService()), new ProductReputationService());
+                new ProductSortService(new ProductReputationService()), new ProductReputationService(),
+                pibCap, qpCap, igCap, vsrCap);
 
         // Platform 1 returns 100 products, platform 2 returns 92
         List<ProductCard> batch1 = new ArrayList<>();

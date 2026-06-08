@@ -90,7 +90,7 @@ public class SessionHistoryService {
         }
 
         // session cache 可能是 Top300/Top1000 候选池，历史只需保存展示量
-        List<ProductCard> products = sessionCache.getCandidates(sessionId).stream()
+        List<ProductCard> products = sessionCache.getBestCandidates(sessionId).stream()
                 .limit(50)
                 .toList();
         if (products.isEmpty()) {

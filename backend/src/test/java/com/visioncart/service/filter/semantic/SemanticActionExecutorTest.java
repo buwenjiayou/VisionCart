@@ -183,7 +183,7 @@ class SemanticActionExecutorTest {
     private SemanticActionPlan judgePlan(String userMeaning) {
         return new SemanticActionPlan(
                 "filter_current_results",
-                "PREFERENCE_RERANK",
+                "LLM_RERANK",
                 "背包",
                 null,
                 null,
@@ -194,7 +194,7 @@ class SemanticActionExecutorTest {
                 null,
                 null,
                 new SemanticActionPlan.JudgePlan(
-                        true, userMeaning, List.of("商务", "简约"), List.of("夸张"), 80, 50, 0.35),
+                        true, userMeaning, List.of("商务", "简约"), List.of("夸张"), 12, 12, 0.35),
                 "优先展示办公室使用不突兀的商品",
                 null);
     }

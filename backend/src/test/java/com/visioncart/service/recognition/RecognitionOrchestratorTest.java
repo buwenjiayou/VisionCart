@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.after;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -220,6 +221,37 @@ class RecognitionOrchestratorTest {
 
         // Should complete with fallback result
         verify(taskManager, timeout(10000)).markCompleted(eq(response.sessionId()), any(RecognitionResult.class));
+    }
+
+    @Test
+    void shouldNotPersistOrCompleteWhenTaskAlreadyTerminal() {
+        RecognitionResult expectedResult = new RecognitionResult(
+                "test-session",
+                new CategoryDto("服装", "外套", "夹克", 0.9),
+                Map.of("品牌", new AttributeValue("Nike", 0.95, true)),
+                List.of("Nike", "夹克"),
+                0.88
+        );
+
+        when(taskManager.isTerminal(anyString())).thenReturn(true);
+        when(imageProcessor.process(any())).thenReturn(new byte[]{0});
+        when(visionClient.analyze(any(byte[].class), anyString(), anyString())).thenReturn(expectedResult);
+
+        org.springframework.mock.web.MockMultipartFile image =
+                new org.springframework.mock.web.MockMultipartFile("image", "test.jpg", "image/jpeg", new byte[]{0});
+
+        var response = orchestrator.submitAsync(image, "整张图", 1L);
+
+        verify(taskManager, timeout(5000)).isTerminal(response.sessionId());
+        verify(historyRepository, after(500).never()).save(any(RecognitionHistory.class));
+        verify(taskManager, never()).markCompleted(eq(response.sessionId()), any(RecognitionResult.class));
+        org.mockito.ArgumentCaptor<Object> messageCaptor = org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(messagingTemplate, org.mockito.Mockito.atLeast(0))
+                .convertAndSend(eq("/topic/recognition/" + response.sessionId()), messageCaptor.capture());
+        assertThat(messageCaptor.getAllValues())
+                .filteredOn(RecognitionTaskResult.class::isInstance)
+                .map(RecognitionTaskResult.class::cast)
+                .noneMatch(result -> "COMPLETED".equals(result.status()));
     }
 
     @Test

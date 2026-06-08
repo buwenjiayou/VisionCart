@@ -2,19 +2,17 @@ package com.visioncart.service.search;
 
 import com.visioncart.api.dto.ProductCard;
 import com.visioncart.api.dto.ReputationScore;
+import com.visioncart.config.VisionCartProperties;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.data.Offset.offset;
 
-/**
- * Tests for ProductReputationService — the multi-signal reputation scoring system.
- * Verifies that cross-platform ratings are scored fairly with appropriate confidence weights.
- */
 class ProductReputationServiceTest {
 
     private ProductReputationService service;
@@ -26,179 +24,180 @@ class ProductReputationServiceTest {
         sortService = new ProductSortService(service);
     }
 
-    // ==================== Scoring correctness ====================
-
     @Test
-    @DisplayName("淘宝商品评分 4.8 应该获得高 itemRatingScore 和高 confidence")
-    void taobaoItemRating48ScoresHigh() {
-        ProductCard taobao = product("1", "淘宝商品", 4.8, "item_rating", "淘宝", 5000, 0.9);
-        ReputationScore score = service.score(taobao);
+    void itemRatingDoesNotContributeToShopTrustScore() {
+        ProductCard itemOnly = product("tb-item", "taobao item", 4.9, "item_rating", "taobao", 1000, 0.90)
+                .withReputationSignals(4.9, null, null, null, "item_rating");
 
-        assertThat(score.itemRatingScore()).isGreaterThan(0.85);
-        assertThat(score.confidence()).isEqualTo(0.90);  // item_rating confidence
-        assertThat(score.displayLabel()).contains("商品评分");
+        ReputationScore score = service.shopTrustScore(itemOnly, List.of(itemOnly));
+        ProductCard enriched = service.attachShopTrustReputation(List.of(itemOnly)).get(0);
+
+        assertThat(score.itemRatingScore()).isZero();
+        assertThat(score.shopOrSellerScore()).isZero();
+        assertThat(score.confidence()).isZero();
+        assertThat(score.displayLabel()).isNull();
+        assertThat(enriched.reputationIndex()).isZero();
+        assertThat(enriched.ratingDisplayLabel()).isNull();
     }
 
     @Test
-    @DisplayName("拼多多店铺口碑'高'(4.6) 应该获得低 shopOrSellerScore 和低 confidence")
-    void pddShopDsrHighScoresLow() {
-        ProductCard pdd = product("2", "拼多多商品", 4.6, "shop_dsr", "拼多多", 10000, 0.8);
-        ReputationScore score = service.score(pdd);
+    void calibratedTrustIndexUsesPlatformNormalizedScoreTimesConfidence() {
+        ProductCard taobao = product("tb-shop", "taobao shop", 4.8, "shop_dsr", "taobao", 1000, 0.80)
+                .withReputationSignals(null, 0.96, null, null, "shop_dsr");
+        ProductCard pddHigh = product("pdd-high", "pdd high", 4.6, "shop_dsr", "pdd", 1000, 0.80)
+                .withReputationSignals(null, 0.85, "high", null, "pdd_shop_level");
+        ProductCard ebay = product("ebay", "ebay seller", 4.9, "seller", "eBay", 1000, 0.80)
+                .withReputationSignals(null, null, null, 0.98, "seller");
 
-        assertThat(score.itemRatingScore()).isEqualTo(0);  // NOT an item rating
-        assertThat(score.shopOrSellerScore()).isGreaterThan(0.8);
-        assertThat(score.confidence()).isEqualTo(0.45);  // shop_dsr confidence
-        assertThat(score.displayLabel()).contains("店铺口碑");
+        ProductCard enrichedTaobao = service.attachShopTrustReputation(List.of(taobao)).get(0);
+        ProductCard enrichedPdd = service.attachShopTrustReputation(List.of(pddHigh)).get(0);
+        ProductCard enrichedEbay = service.attachShopTrustReputation(List.of(ebay)).get(0);
+
+        assertThat(service.shopTrustScore(taobao).shopOrSellerScore()).isCloseTo(0.96, offset(0.001));
+        assertThat(service.shopTrustScore(taobao).confidence()).isEqualTo(0.75);
+        assertThat(enrichedTaobao.reputationIndex()).isEqualTo(72);
+        assertThat(enrichedTaobao.ratingDisplayLabel()).isEqualTo("店铺评分 4.8");
+
+        assertThat(service.shopTrustScore(pddHigh).shopOrSellerScore()).isEqualTo(0.85);
+        assertThat(service.shopTrustScore(pddHigh).confidence()).isEqualTo(0.60);
+        assertThat(enrichedPdd.reputationIndex()).isEqualTo(51);
+        assertThat(enrichedPdd.ratingDisplayLabel()).isEqualTo("店铺口碑 高");
+
+        assertThat(service.shopTrustScore(ebay).shopOrSellerScore()).isEqualTo(0.98);
+        assertThat(service.shopTrustScore(ebay).confidence()).isEqualTo(0.70);
+        assertThat(enrichedEbay.reputationIndex()).isEqualTo(69);
+        assertThat(enrichedEbay.ratingDisplayLabel()).isEqualTo("卖家信誉 98%");
     }
 
     @Test
-    @DisplayName("eBay卖家信誉 98% 应该显示卖家信誉，不显示商品评分")
-    void ebaySellerFeedbackShowsSellerLabel() {
-        // eBay: feedbackPercentage 98% → rating = 98/20 = 4.9
-        ProductCard ebay = product("3", "eBay item", 4.9, "seller", "eBay", 200, 0.7);
-        ReputationScore score = service.score(ebay);
+    void shopTrustRankUsesConfiguredFormula() {
+        ProductCard taobao = product("tb-shop", "taobao shop", 4.8, "shop_dsr", "taobao", 1000, 0.80)
+                .withReputationSignals(null, 0.96, null, null, "shop_dsr");
+        ProductCard lowerSales = product("other", "other shop", 4.5, "shop_dsr", "taobao", 100, 0.50)
+                .withReputationSignals(null, 0.90, null, null, "shop_dsr");
 
-        assertThat(score.itemRatingScore()).isEqualTo(0);  // NOT an item rating
-        assertThat(score.shopOrSellerScore()).isGreaterThan(0.9);
-        assertThat(score.confidence()).isEqualTo(0.55);  // seller confidence
-        assertThat(score.displayLabel()).contains("卖家信誉");
+        ReputationScore score = service.shopTrustScore(taobao, List.of(taobao, lowerSales));
+
+        // (0.96 * 0.75) * 0.85 + 0.80 * 0.10 = 0.692
+        assertThat(score.score()).isCloseTo(0.692, offset(0.001));
+        assertThat(score.shopOrSellerScore()).isCloseTo(0.96, offset(0.001));
+        assertThat(score.confidence()).isEqualTo(0.75);
     }
 
     @Test
-    @DisplayName("无评分商品应该没有口碑信号，只有相似度贡献")
-    void noRatingHasNoReputationSignals() {
-        ProductCard noRating = product("4", "无评分商品", 0, "none", "淘宝", 100, 0.5);
-        ReputationScore score = service.score(noRating);
+    void highSalesLowTrustDoesNotBeatLowSalesHighTrust() {
+        ProductCard highSalesLowTrust = product("high-sales", "high sales low trust", 4.0, "shop_dsr", "taobao", 100_000, 0.80)
+                .withReputationSignals(null, 0.60, null, null, "shop_dsr");
+        ProductCard lowSalesHighTrust = product("low-sales", "low sales high trust", 4.8, "shop_dsr", "taobao", 10, 0.80)
+                .withReputationSignals(null, 0.96, null, null, "shop_dsr");
 
-        assertThat(score.itemRatingScore()).isEqualTo(0);
-        assertThat(score.shopOrSellerScore()).isEqualTo(0);
-        assertThat(score.confidence()).isEqualTo(0);
-        assertThat(score.displayLabel()).isEqualTo("暂无评分");
-        // Only similarity contributes (0.5 * 0.20 = 0.10)
-        assertThat(score.score()).isEqualTo(0.5 * 0.20);
-    }
+        List<ProductCard> sorted = sortService.sortByKey(List.of(highSalesLowTrust, lowSalesHighTrust), "review_quality");
 
-    // ==================== Cross-platform fairness ====================
-
-    @Test
-    @DisplayName("淘宝商品评分 4.8 应该排在拼多多店铺口碑 4.6 前面")
-    void taobaoItemRating48BeatsPddShopDsr46() {
-        ProductCard taobao = product("1", "淘宝商品", 4.8, "item_rating", "淘宝", 3000, 0.85);
-        ProductCard pdd = product("2", "拼多多商品", 4.6, "shop_dsr", "拼多多", 10000, 0.85);
-
-        ReputationScore taobaoScore = service.score(taobao);
-        ReputationScore pddScore = service.score(pdd);
-
-        // Taobao item rating should win due to higher confidence weight
-        assertThat(taobaoScore.score()).isGreaterThan(pddScore.score());
+        assertThat(sorted).extracting(ProductCard::id)
+                .containsExactly("low-sales", "high-sales");
     }
 
     @Test
-    @DisplayName("口碑排序：淘宝 item_rating 排第一，PDD shop_dsr 排最后")
-    void reviewQualitySortOrder() {
-        // Equal sales to isolate reputation signal differences
-        List<ProductCard> products = List.of(
-                product("1", "PDD商品", 4.6, "shop_dsr", "拼多多", 1000, 0.85),
-                product("2", "淘宝商品", 4.8, "item_rating", "淘宝", 1000, 0.85),
-                product("3", "eBay商品", 4.9, "seller", "eBay", 1000, 0.85)
-        );
+    void reviewQualityRanksShopAndSellerTrustBeforeItemOnlyRating() {
+        ProductCard pddHigh = product("pdd", "pdd trusted shop", 4.6, "shop_dsr", "pdd", 1000, 0.80)
+                .withReputationSignals(null, 0.85, "high", null, "pdd_shop_level");
+        ProductCard ebaySeller = product("ebay", "ebay trusted seller", 4.9, "seller", "eBay", 1000, 0.80)
+                .withReputationSignals(null, null, null, 0.98, "seller");
+        ProductCard taobaoItemOnly = product("tb-item", "taobao item only", 4.9, "item_rating", "taobao", 1000, 0.95)
+                .withReputationSignals(4.9, null, null, null, "item_rating");
 
-        List<ProductCard> sorted = sortService.sortByKey(products, "review_quality");
+        List<ProductCard> sorted = sortService.sortByKey(List.of(taobaoItemOnly, pddHigh, ebaySeller), "review_quality");
 
-        // Taobao item_rating (conf 0.90) > eBay seller (conf 0.55) > PDD shop_dsr (conf 0.45)
-        assertThat(sorted.get(0).id()).isEqualTo("2");  // Taobao
-        assertThat(sorted.get(2).id()).isEqualTo("1");  // PDD last
+        assertThat(sorted).extracting(ProductCard::id)
+                .containsExactly("ebay", "pdd", "tb-item");
+        assertThat(sorted.get(0).ratingDisplayLabel()).isEqualTo("卖家信誉 98%");
+        assertThat(sorted.get(1).ratingDisplayLabel()).isNotBlank();
+        assertThat(sorted.get(2).ratingDisplayLabel()).isNull();
     }
 
     @Test
-    @DisplayName("所有无评分商品按销量和相似度排序")
-    void allNoRatingProductsSortBySalesAndSimilarity() {
-        List<ProductCard> products = List.of(
-                product("1", "无评分A", 0, "none", "淘宝", 100, 0.9),
-                product("2", "无评分B", 0, "none", "拼多多", 5000, 0.7),
-                product("3", "无评分C", 0, "none", "eBay", 200, 0.95)
-        );
+    void reviewQualityKeepsStableOrderWhenTrustAndSimilarityTie() {
+        ProductCard first = product("first", "first", 4.8, "shop_dsr", "taobao", 1, 0.80)
+                .withReputationSignals(null, 0.96, null, null, "shop_dsr");
+        ProductCard second = product("second", "second", 4.8, "shop_dsr", "taobao", 999_999, 0.80)
+                .withReputationSignals(null, 0.96, null, null, "shop_dsr");
 
-        List<ProductCard> sorted = sortService.sortByKey(products, "review_quality");
+        List<ProductCard> sorted = sortService.sortByKey(List.of(first, second), "review_quality");
 
-        // All have 0 reputation, so order determined by sales + similarity
-        // B has highest sales, C has highest similarity, A is lowest
-        // Exact order depends on weighted formula
-        assertThat(sorted).hasSize(3);
-        // Verify no crash and all products present
-        assertThat(sorted.stream().map(ProductCard::id)).containsExactlyInAnyOrder("1", "2", "3");
+        assertThat(sorted).extracting(ProductCard::id)
+                .containsExactly("first", "second");
     }
 
     @Test
-    @DisplayName("高销量不能完全压过高质量评分")
-    void highSalesCannotOverwhelmQualityRating() {
-        ProductCard highQuality = product("1", "高质量低销量", 4.9, "item_rating", "淘宝", 50, 0.9);
-        ProductCard highSales = product("2", "高销量低评分", 3.5, "shop_dsr", "拼多多", 100000, 0.9);
+    void pddLegacyMappedRatingIsReinterpretedAsCoarseShopLevel() {
+        ProductCard pddHigh = product("pdd-high", "pdd high", 4.6, "shop_dsr", "pdd", 100, 0.80)
+                .withReputationSignals(null, null, null, null, "shop_dsr");
+        ProductCard pddMid = product("pdd-mid", "pdd mid", 4.0, "shop_dsr", "pdd", 100, 0.80)
+                .withReputationSignals(null, null, null, null, "shop_dsr");
+        ProductCard pddLow = product("pdd-low", "pdd low", 3.2, "shop_dsr", "pdd", 100, 0.80)
+                .withReputationSignals(null, null, null, null, "shop_dsr");
 
-        ReputationScore qualityScore = service.score(highQuality);
-        ReputationScore salesScore = service.score(highSales);
-
-        // Quality should still win despite lower sales
-        assertThat(qualityScore.score()).isGreaterThan(salesScore.score());
+        assertThat(service.shopTrustScore(pddHigh).shopOrSellerScore()).isEqualTo(0.85);
+        assertThat(service.shopTrustScore(pddMid).shopOrSellerScore()).isEqualTo(0.60);
+        assertThat(service.shopTrustScore(pddLow).shopOrSellerScore()).isEqualTo(0.30);
     }
 
     @Test
-    @DisplayName("口碑排序 Top 20 单平台最多 6 个")
+    void confidenceAndWeightsAreConfigurable() {
+        VisionCartProperties.Search.Reputation config = new VisionCartProperties.Search.Reputation();
+        config.setPddShopLevelConfidence(0.70);
+        config.setTrustWeight(1.0);
+        config.setRelevanceWeight(0.0);
+        config.setSalesWeight(0.0);
+        ProductReputationService configured = new ProductReputationService(config);
+        ProductCard pddHigh = product("pdd-high", "pdd high", 4.6, "shop_dsr", "pdd", 100, 0.20)
+                .withReputationSignals(null, 0.85, "high", null, "pdd_shop_level");
+
+        ReputationScore score = configured.shopTrustScore(pddHigh, List.of(pddHigh));
+        ProductCard enriched = configured.attachShopTrustReputation(List.of(pddHigh)).get(0);
+
+        assertThat(score.confidence()).isEqualTo(0.70);
+        assertThat(score.score()).isCloseTo(0.595, offset(0.001));
+        assertThat(enriched.reputationIndex()).isEqualTo(60);
+    }
+
+    @Test
     void reviewQualitySortDiversifiesTopWindow() {
-        List<ProductCard> products = new java.util.ArrayList<>();
+        List<ProductCard> products = new ArrayList<>();
         for (int i = 0; i < 18; i++) {
-            products.add(product("pdd-" + i, "PDD高分" + i, 4.9, "item_rating", "拼多多", 1000 - i, 0.95));
+            products.add(product("pdd-" + i, "PDD " + i, 4.6, "shop_dsr", "pdd", 1000 - i, 0.95)
+                    .withReputationSignals(null, 0.85, "high", null, "pdd_shop_level"));
         }
         for (int i = 0; i < 8; i++) {
-            products.add(product("tb-" + i, "淘宝商品" + i, 4.4, "item_rating", "淘宝", 200 - i, 0.80));
+            products.add(product("tb-" + i, "Taobao " + i, 4.8, "shop_dsr", "taobao", 200 - i, 0.80)
+                    .withReputationSignals(4.9, 0.96, null, null, "shop_dsr"));
         }
         for (int i = 0; i < 8; i++) {
-            products.add(product("ebay-" + i, "eBay商品" + i, 4.3, "seller", "eBay", 150 - i, 0.75));
-        }
-        for (int i = 0; i < 8; i++) {
-            products.add(product("jd-" + i, "京东商品" + i, 4.2, "item_rating", "京东", 120 - i, 0.70));
+            products.add(product("ebay-" + i, "eBay " + i, 4.9, "seller", "eBay", 150 - i, 0.75)
+                    .withReputationSignals(null, null, null, 0.98, "seller"));
         }
 
         List<ProductCard> sorted = sortService.sortByKey(products, "review_quality");
 
         long pddInTop20 = sorted.stream().limit(20)
-                .filter(product -> "拼多多".equals(product.platform()))
+                .filter(product -> "pdd".equals(product.platform()))
                 .count();
-        assertThat(pddInTop20)
-                .isLessThanOrEqualTo(6);
-    }
-
-    // ==================== Display labels ====================
-
-    @Test
-    @DisplayName("PDD DSR文本映射不再伪装成商品评分")
-    void pddDsrTextNotShownAsItemRating() {
-        ProductCard pddHigh = product("1", "PDD高口碑", 4.6, "shop_dsr", "拼多多", 1000, 0.8);
-        ProductCard pddMid = product("2", "PDD中口碑", 4.0, "shop_dsr", "拼多多", 1000, 0.8);
-        ProductCard pddLow = product("3", "PDD低口碑", 3.2, "shop_dsr", "拼多多", 1000, 0.8);
-
-        assertThat(service.score(pddHigh).displayLabel()).contains("店铺口碑 高");
-        assertThat(service.score(pddMid).displayLabel()).contains("店铺口碑 中");
-        assertThat(service.score(pddLow).displayLabel()).contains("店铺口碑 低");
-
-        // None should say "商品评分"
-        assertThat(service.score(pddHigh).displayLabel()).doesNotContain("商品评分");
-        assertThat(service.score(pddMid).displayLabel()).doesNotContain("商品评分");
-        assertThat(service.score(pddLow).displayLabel()).doesNotContain("商品评分");
+        assertThat(pddInTop20).isLessThanOrEqualTo(6);
     }
 
     @Test
-    @DisplayName("eBay显示卖家信誉百分比，不显示商品评分")
-    void ebayShowsSellerReputationPercentage() {
-        ProductCard ebay = product("1", "eBay商品", 4.9, "seller", "eBay", 500, 0.8);
-        String label = service.score(ebay).displayLabel();
+    void relevanceSortRestoresSimilarityDescendingOrder() {
+        List<ProductCard> products = List.of(
+                product("low", "low similarity", 0, "none", "taobao", 100, 0.20),
+                product("high", "high similarity", 0, "none", "pdd", 100, 0.90),
+                product("mid", "mid similarity", 0, "none", "eBay", 100, 0.55)
+        );
 
-        assertThat(label).contains("卖家信誉");
-        assertThat(label).contains("%");
-        assertThat(label).doesNotContain("商品评分");
+        List<ProductCard> sorted = sortService.sortByKey(products, "relevance");
+
+        assertThat(sorted).extracting(ProductCard::id)
+                .containsExactly("high", "mid", "low");
     }
-
-    // ==================== Helper ====================
 
     private ProductCard product(String id, String title, double rating, String ratingSource,
                                 String platform, long sales, double similarity) {

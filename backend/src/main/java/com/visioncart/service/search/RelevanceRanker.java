@@ -181,13 +181,23 @@ public class RelevanceRanker {
                 || (!accessoryIntent && SearchTextUtils.hasAccessoryConflict(title, intent.coreProduct()))) {
             return RelevanceTier.REJECTED;
         }
-        if (intent.hasReliableBrand() && BrandMatcher.hasConflictingBrand(product, intent.brand())) {
+        // 主商品：品牌冲突直接拒绝。
+        // 配件：品牌是"适用品牌"而非"制造商品牌"，不因 product.brand≠expected 就拒绝；
+        //       hasConflictingBrand() 已内置"文本含目标品牌则不冲突"逻辑，此处对配件额外放行。
+        if (intent.hasReliableBrand() && !accessoryIntent && BrandMatcher.hasConflictingBrand(product, intent.brand())) {
             return RelevanceTier.REJECTED;
         }
 
         double similarity = similarity(product, intent);
         boolean brandMatch = !intent.brand().isBlank()
                 && BrandMatcher.productMatchesExpectedBrand(product, intent.brand());
+
+        // 配件+可靠品牌：标题/文本必须出现目标品牌（适用品牌语义），否则拒绝。
+        // 例：搜 iQOO 手机壳 → 标题必须含 iQOO；壳的制造商品牌可以是倍思、闪魔等。
+        if (intent.hasReliableBrand() && accessoryIntent && !brandMatch) {
+            return RelevanceTier.REJECTED;
+        }
+
         boolean exactMatch = matchCount(searchable(product), intent.exactTerms()) > 0;
         boolean coreMatch = matchesCoreProductFamily(title, intent);
         boolean keywordMatch = matchesAny(title, intent.keywords());

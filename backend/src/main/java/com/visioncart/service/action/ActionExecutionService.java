@@ -13,7 +13,13 @@ import com.visioncart.service.recognition.AttributeCorrectionService;
 import com.visioncart.service.recognition.SessionHistoryService;
 import com.visioncart.service.search.CandidateFilterService;
 import com.visioncart.service.search.CandidateSessionCache;
+import com.visioncart.service.nlp.SemanticExecutionPolicy;
+import com.visioncart.service.search.ProductReputationService;
+import com.visioncart.service.search.ProductSortService;
+import com.visioncart.service.search.SearchRunService;
 import com.visioncart.service.suggestion.SuggestionService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
@@ -27,6 +33,7 @@ import java.util.Map;
  */
 @Service
 public class ActionExecutionService {
+    private static final Logger log = LoggerFactory.getLogger(ActionExecutionService.class);
 
     private static final int DEFAULT_PAGE_SIZE = 50;
 
@@ -42,6 +49,10 @@ public class ActionExecutionService {
     private final SessionHistoryService sessionHistoryService;
     private final LlmSemanticPlanner llmSemanticPlanner;
     private final SemanticActionExecutor semanticActionExecutor;
+    private final ProductSortService productSortService;
+    private final ProductReputationService reputationService;
+    private final SemanticExecutionPolicy semanticExecutionPolicy;
+    private final SearchRunService searchRunService;
 
     public ActionExecutionService(AttributeCorrectionService attributeCorrectionService,
                                   SafeActionExecutor safeActionExecutor,
@@ -54,7 +65,11 @@ public class ActionExecutionService {
                                   SessionContextService sessionContextService,
                                   SessionHistoryService sessionHistoryService,
                                   LlmSemanticPlanner llmSemanticPlanner,
-                                  SemanticActionExecutor semanticActionExecutor) {
+                                  SemanticActionExecutor semanticActionExecutor,
+                                  ProductSortService productSortService,
+                                  ProductReputationService reputationService,
+                                  SemanticExecutionPolicy semanticExecutionPolicy,
+                                  SearchRunService searchRunService) {
         this.attributeCorrectionService = attributeCorrectionService;
         this.safeActionExecutor = safeActionExecutor;
         this.actionCompiler = actionCompiler;
@@ -67,6 +82,10 @@ public class ActionExecutionService {
         this.sessionHistoryService = sessionHistoryService;
         this.llmSemanticPlanner = llmSemanticPlanner;
         this.semanticActionExecutor = semanticActionExecutor;
+        this.productSortService = productSortService;
+        this.reputationService = reputationService;
+        this.semanticExecutionPolicy = semanticExecutionPolicy;
+        this.searchRunService = searchRunService;
     }
 
     public ActionResult execute(UserAction action, Long userId) {
@@ -96,19 +115,25 @@ public class ActionExecutionService {
         // Use real userId so session history lookup can find recognition records
         SessionContextService.SessionContext ctx = sessionContextService.resolve(sessionId, userId, clientCategory);
 
-        // 2. Get current candidates and previous filter state
-        List<ProductCard> candidates = sessionCache.getCandidates(sessionId);
+        // 2. Get current candidates (优先 classifiedPool Top300) and previous filter state
+        List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
         SearchFilter previousFilter = conversationManager.getFilterState(sessionId);
         List<ProductCard> previousProducts = filterService.filter(
                 candidates, previousFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products();
 
         // 3. Generate semantic plan via LLM
         LlmSemanticPlanner.ProductPoolSummary poolSummary = LlmSemanticPlanner.ProductPoolSummary.from(candidates);
-        SemanticActionPlan plan = llmSemanticPlanner.plan(userInput, ctx, poolSummary);
+        SemanticActionPlan rawPlan = llmSemanticPlanner.plan(userInput, ctx, poolSummary);
 
-        // 4. Execute the plan
+        // 4. Apply execution policy: prevent LLM Judge on large pools for subjective preferences
+        SemanticActionPlan plan = semanticExecutionPolicy.normalizeForSyncExecution(
+                userInput, rawPlan, previousProducts.size());
+
+        // 5. Rerank-only plans operate on the current display page, not the full candidate pool
+        List<ProductCard> executionPool = isRerankOnly(plan) ? previousProducts : candidates;
+
         ActionResult result = semanticActionExecutor.execute(
-                sessionId, candidates, previousFilter, plan, previousProducts);
+                sessionId, executionPool, previousFilter, plan, previousProducts);
 
         // 5. Save undo point if filter, product order, or tags changed
         boolean filterChanged = result.appliedFilter() != null
@@ -118,7 +143,11 @@ public class ActionExecutionService {
         boolean tagsChanged = result.filterTags() != null && !result.filterTags().isEmpty();
 
         if (result.filterApplied() && (filterChanged || productsChanged || tagsChanged)) {
-            undoService.saveUndoPoint(sessionId, previousFilter, previousProducts, userInput, "nlp", null);
+            // 保存 undo point 时同时保存 classifiedPool 快照
+            com.visioncart.service.search.SearchCandidatePool currentPool =
+                    sessionCache.getClassifiedPool(sessionId).orElse(null);
+            undoService.saveUndoPoint(sessionId, previousFilter, previousProducts, userInput, "nlp", null,
+                    null, currentPool);
         }
 
         return withSuggestionCards(result);
@@ -147,8 +176,112 @@ public class ActionExecutionService {
                 currentFilter,
                 category
         );
+
+        // Reputation sort must use the SearchRun classified pool even when SafeActionExecutor
+        // already committed a rerank clause; otherwise it only reorders the current candidate list.
+        if (isSortAction(actionString) && isReputationSort(tentativeFilter) && action.sessionId() != null) {
+            conversationManager.setFilterState(action.sessionId(), tentativeFilter);
+            java.util.Optional<SearchResult> resortResult =
+                    searchRunService.recomputeDisplayPage(action.sessionId(), tentativeFilter, DEFAULT_PAGE_SIZE);
+            if (resortResult.isPresent()) {
+                logReputationSortPath("search_run", action.sessionId(), actionString, tentativeFilter,
+                        resortResult.get().products().size());
+                result = ActionResult.filtered(
+                        resortResult.get().products(), tentativeFilter, result.filterTags(),
+                        result.canUndo(), result.message(), result.warnings(), result.explanations());
+            }
+        }
+
+        // Sort/highlight actions compile to empty clauses → SafeActionExecutor returns passThrough
+        // with null appliedFilter, which skips conversationManager.setFilterState().
+        // 关键改动：如果 classifiedPool 存在，基于 Top300 重排序（而非只排当前 Top50）
+        if (result.appliedFilter() == null && isSortAction(actionString) && action.sessionId() != null) {
+            conversationManager.setFilterState(action.sessionId(), tentativeFilter);
+
+            // 优先使用 classifiedPool 重排序
+            java.util.Optional<SearchResult> resortResult =
+                    searchRunService.recomputeDisplayPage(action.sessionId(), tentativeFilter, DEFAULT_PAGE_SIZE);
+            if (resortResult.isPresent()) {
+                logReputationSortPath("search_run", action.sessionId(), actionString, tentativeFilter,
+                        resortResult.get().products().size());
+                result = ActionResult.filtered(
+                        resortResult.get().products(), tentativeFilter, result.filterTags(),
+                        result.canUndo(), result.message(), result.warnings(), result.explanations());
+            } else {
+                // fallback：旧逻辑，只在当前 Top50 内排序
+                String sortKey = sortKeyFromAction(actionString);
+                List<ProductCard> sorted = sortKey != null
+                        ? productSortService.sortByKey(new java.util.ArrayList<>(result.products()), sortKey)
+                        : result.products();
+                if ("review_quality".equals(sortKey) || "rating_desc".equals(sortKey)) {
+                    sorted = enrichRatingLabels(sorted);
+                }
+                logReputationSortPath("legacy_candidates", action.sessionId(), actionString, tentativeFilter, sorted.size());
+                result = ActionResult.filtered(
+                        sorted, tentativeFilter, result.filterTags(),
+                        result.canUndo(), result.message(), result.warnings(), result.explanations());
+            }
+        }
+
         archiveIfNeeded(action.sessionId(), result.products());
         return withSuggestionCards(result);
+    }
+
+    private static boolean isSortAction(String action) {
+        return action.startsWith("sort_") || "sort_relevance".equals(action)
+                || "highlight_best_value".equals(action);
+    }
+
+    /** Rerank-only plans (PREFERENCE_RERANK, LLM_RERANK) operate on current display page only. */
+    private static boolean isRerankOnly(SemanticActionPlan plan) {
+        return plan != null && (
+                "PREFERENCE_RERANK".equals(plan.executionMode())
+                        || "LLM_RERANK".equals(plan.executionMode()));
+    }
+
+    /**
+     * Map action string to ProductSortService sort key.
+     * sort_by_review_quality → review_quality, sort_by_rating_desc → rating_desc, etc.
+     */
+    private static String sortKeyFromAction(String action) {
+        if (action == null) return null;
+        return switch (action) {
+            case "sort_relevance" -> "relevance";
+            case "sort_by_price_asc" -> "price_asc";
+            case "sort_by_sales_desc" -> "sales_desc";
+            case "sort_by_rating_desc", "sort_by_review_quality" -> "review_quality";
+            case "highlight_best_value" -> "value_score";
+            default -> {
+                // strip "sort_by_" prefix if present
+                String key = action.startsWith("sort_by_") ? action.substring("sort_by_".length()) : action;
+                yield key;
+            }
+        };
+    }
+
+    private void logReputationSortPath(String path, String sessionId, String actionString,
+                                       SearchFilter filter, int products) {
+        if (!isReputationSort(filter)) {
+            return;
+        }
+        log.info("Action reputation sort path={}, sessionId={}, action={}, sortBy={}, products={}",
+                path, sessionId, actionString, filter.sortBy(), products);
+    }
+
+    private static boolean isReputationSort(SearchFilter filter) {
+        if (filter == null || filter.sortBy() == null) {
+            return false;
+        }
+        return switch (filter.sortBy()) {
+            case "rating", "reviews", "review_quality", "rating_desc", "shop_trust", "seller_trust" -> true;
+            default -> false;
+        };
+    }
+
+    /** Enrich products with shop/seller reputation labels from ProductReputationService. */
+    private List<ProductCard> enrichRatingLabels(List<ProductCard> products) {
+        if (products == null || products.isEmpty()) return products;
+        return reputationService.attachShopTrustReputation(products);
     }
 
     private ActionResult executeManualFilter(UserAction action, Long userId) {
@@ -193,7 +326,8 @@ public class ActionExecutionService {
 
         // Capture user's filter BEFORE correction (attribute correction must NOT modify filter state)
         SearchFilter userFilter = conversationManager.getFilterState(sessionId);
-        List<ProductCard> previousProducts = filterProducts(currentProducts(sessionId), userFilter);
+        List<ProductCard> previousCandidatePool = currentProducts(sessionId);
+        List<ProductCard> previousProducts = filterProducts(previousCandidatePool, userFilter);
 
         ApiResponse<AttributeCorrectionResult> body = attributeCorrectionService.correctAttribute(
                 sessionId,
@@ -214,34 +348,41 @@ public class ActionExecutionService {
         boolean productsUpdated = Boolean.TRUE.equals(correction.productsUpdated())
                 && !Boolean.TRUE.equals(correction.keptPreviousResults());
 
+        Map<String, Object> updatedAttributes = new HashMap<>();
+        if (correction.updatedAttributes() != null) {
+            correction.updatedAttributes().forEach(updatedAttributes::put);
+        }
+        boolean attributesUpdated = !updatedAttributes.isEmpty();
+        boolean filterCorrection = productsUpdated && !attributesUpdated && correction.previousAttributes() == null;
+
         // Products: use correction results only if productsUpdated; otherwise keep previous
         List<ProductCard> products = productsUpdated ? correctionProducts : previousProducts;
         boolean keptPrevious = !productsUpdated && correction.correctionApplied();
 
-        // Save undo point when attributes or products changed
-        if (correction.correctionApplied()) {
+        // Recall-refresh corrections need an attribute snapshot undo point here.
+        // Local filter corrections are committed through SafeActionExecutor, which
+        // already saved the filter undo point.
+        if (correction.correctionApplied() && attributesUpdated) {
             // Convert AttributeValue map to Object map for undo storage
             Map<String, Object> prevAttrs = new HashMap<>();
             if (correction.previousAttributes() != null) {
                 correction.previousAttributes().forEach(prevAttrs::put);
             }
-            undoService.saveUndoPoint(sessionId, userFilter, previousProducts,
+            undoService.saveUndoPoint(sessionId, userFilter, previousCandidatePool,
                     action.rawText(), "correction", action.actionId(), prevAttrs);
         }
 
-        // Tags: generate from USER's filter, NOT from correction state
-        // Attribute correction changes search intent, not filter conditions
-        List<FilterTag> tags = generateStructuredTags(userFilter);
-
-        Map<String, Object> updatedAttributes = new HashMap<>();
-        if (correction.updatedAttributes() != null) {
-            correction.updatedAttributes().forEach(updatedAttributes::put);
-        }
+        SearchFilter resultFilter = filterCorrection
+                ? conversationManager.getFilterState(sessionId)
+                : userFilter;
+        List<FilterTag> tags = generateStructuredTags(resultFilter);
 
         // Resolve messageCode
         String messageCode = correction.messageCode();
         if (messageCode == null) {
-            if (keptPrevious) {
+            if (filterCorrection) {
+                messageCode = "filter.applied";
+            } else if (keptPrevious) {
                 messageCode = correctionProducts.isEmpty()
                         ? "attribute.updated.search.empty"
                         : "attribute.updated.products.kept";
@@ -254,9 +395,9 @@ public class ActionExecutionService {
 
         ActionResult result = new ActionResult(
                 products,
-                userFilter,
+                resultFilter,
                 tags,
-                false,                            // filterApplied — correction is NOT a filter action
+                filterCorrection,
                 keptPrevious,
                 undoService.canUndo(sessionId),
                 correction.message(),
@@ -265,13 +406,13 @@ public class ActionExecutionService {
                 null,
                 currentProducts(sessionId).size(),
                 null,
-                updatedAttributes,
-                "correction",
+                attributesUpdated ? updatedAttributes : null,
+                filterCorrection ? "filter_correction" : "correction",
                 sessionId + ":correction:" + System.currentTimeMillis(),
                 null,
                 keptPrevious ? "KEPT_PREVIOUS" : "NORMAL",
                 messageCode,
-                correction.correctionApplied(),   // attributesUpdated
+                attributesUpdated,
                 productsUpdated                    // productsUpdated
         );
         archiveIfNeeded(sessionId, result.products());
@@ -288,19 +429,78 @@ public class ActionExecutionService {
             throw new IllegalArgumentException("删除标签需要指定 filterPath 或 tagId");
         }
 
+        // P0-2: Action-only tags (preferences/exclusions/semantic) cannot be removed
+        // by mutating filter state — they were applied as side effects of the NLP action.
+        // Route to undo instead.
+        if (isActionOnlyTag(filterPath)) {
+            NlpUndoService.UndoResult undoResult = undoService.undo(sessionId);
+            if (undoResult == null) {
+                List<ProductCard> currentProds = currentProducts(sessionId);
+                return ActionResult.passThrough(currentProds);
+            }
+            SearchFilter restoredFilter = undoResult.filter() != null
+                    ? undoResult.filter() : SearchFilter.empty();
+            conversationManager.setFilterState(sessionId, restoredFilter);
+            List<ProductCard> restoredSnapshot = safeProducts(undoResult.products());
+            List<ProductCard> candidates = restoredSnapshot.isEmpty()
+                    ? currentProducts(sessionId)
+                    : restoredSnapshot;
+            List<ProductCard> restoredProducts = restoredSnapshot;
+            if (restoredProducts.isEmpty()) {
+                CandidateFilterService.FilterResult filterResult = filterService.filter(
+                        candidates, restoredFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
+                restoredProducts = safeProducts(filterResult.products());
+            }
+            archiveIfNeeded(sessionId, restoredProducts);
+
+            return withSuggestionCards(new ActionResult(
+                    restoredProducts,
+                    restoredFilter,
+                    generateStructuredTags(restoredFilter),
+                    true,
+                    false,
+                    undoService.canUndo(sessionId),
+                    "已撤回筛选「" + undoResult.undoneQuery() + "」",
+                    List.of(),
+                    List.of(),
+                    null,
+                    candidates.size(),
+                    null,
+                    null,
+                    "tag_delete",
+                    sessionId + ":tag_delete:" + System.currentTimeMillis(),
+                    null,
+                    "NORMAL",
+                    "filter.removed",
+                    null,
+                    null
+            ));
+        }
+
         SearchFilter previousFilter = conversationManager.getFilterState(sessionId);
         List<ProductCard> candidates = currentProducts(sessionId);
         List<ProductCard> previousProducts = filterProducts(candidates, previousFilter);
+        // 保存 undo point 时同时保存 classifiedPool 快照
+        com.visioncart.service.search.SearchCandidatePool currentPool =
+                sessionCache.getClassifiedPool(sessionId).orElse(null);
         undoService.saveUndoPoint(sessionId, previousFilter, previousProducts,
-                action.rawText(), "tag_delete", action.actionId());
+                action.rawText(), "tag_delete", action.actionId(), null, currentPool);
 
         SearchFilter updatedFilter = conversationManager.removeFilterField(sessionId, filterPath);
-        CandidateFilterService.FilterResult filterResult = filterService.filter(
-                candidates, updatedFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
-        archiveIfNeeded(sessionId, filterResult.products());
+        java.util.Optional<SearchResult> runResult =
+                searchRunService.recomputeDisplayPage(sessionId, updatedFilter, DEFAULT_PAGE_SIZE);
+        List<ProductCard> products = runResult.map(SearchResult::products).orElseGet(() -> {
+            CandidateFilterService.FilterResult filterResult = filterService.filter(
+                    candidates, updatedFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
+            return filterResult.products();
+        });
+        int totalInPool = runResult.isPresent()
+                ? Math.toIntExact(runResult.get().total())
+                : candidates.size();
+        archiveIfNeeded(sessionId, products);
 
         return withSuggestionCards(new ActionResult(
-                filterResult.products(),
+                products,
                 updatedFilter,
                 generateStructuredTags(updatedFilter),
                 true,
@@ -310,7 +510,7 @@ public class ActionExecutionService {
                 List.of(),
                 List.of(),
                 null,
-                candidates.size(),
+                totalInPool,
                 null,
                 null,
                 "tag_delete",
@@ -323,23 +523,48 @@ public class ActionExecutionService {
         ));
     }
 
+    /**
+     * P0-2: Detect action-only tags that cannot be removed by filter field mutation.
+     * These were applied as side effects of NLP actions (preferences, exclusions, semantic judgments)
+     * and must be reverted via undo, not removeFilterField.
+     */
+    private boolean isActionOnlyTag(String filterPath) {
+        return filterPath != null && (
+                filterPath.startsWith("preferences.")
+                || filterPath.startsWith("exclusions.")
+                || filterPath.startsWith("semantic.")
+                || filterPath.startsWith("criteria.")
+        );
+    }
+
     private ActionResult executeClearFilter(UserAction action) {
         String sessionId = action.sessionId();
         SearchFilter previousFilter = conversationManager.getFilterState(sessionId);
         List<ProductCard> candidates = currentProducts(sessionId);
         List<ProductCard> previousProducts = filterProducts(candidates, previousFilter);
+        // 保存 undo point 时同时保存 classifiedPool 快照
+        com.visioncart.service.search.SearchCandidatePool currentPool =
+                sessionCache.getClassifiedPool(sessionId).orElse(null);
         undoService.saveUndoPoint(sessionId, previousFilter, previousProducts,
-                action.rawText(), "clear_filter", action.actionId());
+                action.rawText(), "clear_filter", action.actionId(), null, currentPool);
 
         SearchFilter emptyFilter = SearchFilter.empty();
         conversationManager.setFilterState(sessionId, emptyFilter);
         conversationManager.clear(sessionId);
-        CandidateFilterService.FilterResult filterResult = filterService.filter(
-                candidates, emptyFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
-        archiveIfNeeded(sessionId, filterResult.products());
+        java.util.Optional<SearchResult> runResult =
+                searchRunService.recomputeDisplayPage(sessionId, emptyFilter, DEFAULT_PAGE_SIZE);
+        List<ProductCard> products = runResult.map(SearchResult::products).orElseGet(() -> {
+            CandidateFilterService.FilterResult filterResult = filterService.filter(
+                    candidates, emptyFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
+            return filterResult.products();
+        });
+        int totalInPool = runResult.isPresent()
+                ? Math.toIntExact(runResult.get().total())
+                : candidates.size();
+        archiveIfNeeded(sessionId, products);
 
         return withSuggestionCards(new ActionResult(
-                filterResult.products(),
+                products,
                 emptyFilter,
                 List.of(),
                 true,
@@ -349,7 +574,7 @@ public class ActionExecutionService {
                 List.of(),
                 List.of(),
                 null,
-                candidates.size(),
+                totalInPool,
                 null,
                 null,
                 "clear_filter",
@@ -402,7 +627,7 @@ public class ActionExecutionService {
         if (isBlank(sessionId)) {
             return List.of();
         }
-        return sessionCache.getCandidates(sessionId);
+        return sessionCache.getBestCandidates(sessionId);
     }
 
     private List<ProductCard> filterProducts(List<ProductCard> candidates, SearchFilter filter) {
@@ -414,17 +639,18 @@ public class ActionExecutionService {
         if (payload == null) {
             return null;
         }
-        if (!isBlank(payload.action())) {
-            return payload.action();
-        }
         if ("sort".equals(action.source()) && !isBlank(payload.sortBy())) {
             return switch (payload.sortBy()) {
                 case "relevance" -> "sort_relevance";
                 case "price", "price_asc" -> "sort_by_price_asc";
                 case "sales", "sales_desc" -> "sort_by_sales_desc";
-                case "rating", "rating_desc", "review_quality" -> "sort_by_review_quality";
+                case "rating", "reviews", "rating_desc", "review_quality", "shop_trust", "seller_trust" ->
+                        "sort_by_review_quality";
                 default -> payload.sortBy().startsWith("sort_") ? payload.sortBy() : "sort_by_" + payload.sortBy();
             };
+        }
+        if (!isBlank(payload.action())) {
+            return payload.action();
         }
         return null;
     }

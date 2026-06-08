@@ -163,7 +163,9 @@ public class SafeActionExecutor {
         SearchFilter responseFilter;
         if (execResult.committed()) {
             if (sessionId != null) {
-                undoService.saveUndoPoint(sessionId, previousFilter, previousProducts, userQuery, actionSource, userQuery);
+                if (!"sort".equals(actionSource)) {
+                    undoService.saveUndoPoint(sessionId, previousFilter, previousProducts, userQuery, actionSource, userQuery);
+                }
                 conversationManager.setFilterState(sessionId, tentativeFilter);
             }
             responseFilter = tentativeFilter;
@@ -188,7 +190,7 @@ public class SafeActionExecutor {
                 message,
                 execResult.warnings(),
                 execResult.explanations(),
-                sessionId != null && undoService.canUndo(sessionId)
+                sessionId != null && !"sort".equals(actionSource) && undoService.canUndo(sessionId)
         );
     }
 

@@ -26,6 +26,22 @@ class ProductDeduplicatorTest {
                 .containsExactly("1");
     }
 
+    @Test
+    void keepsDifferentModelTokensSeparate() {
+        ProductDeduplicator deduplicator = new ProductDeduplicator();
+
+        List<ProductCard> products = List.of(
+                product("15", "Premium clear protective shell for Apple iPhone 15 Pro Max", "taobao"),
+                product("16", "Premium clear protective shell for Apple iPhone 16 Pro Max", "taobao"),
+                product("4060", "Gaming graphics card NVIDIA RTX 4060 OC", "taobao"),
+                product("4070", "Gaming graphics card NVIDIA RTX 4070 OC", "taobao")
+        );
+
+        assertThat(deduplicator.deduplicate(products))
+                .extracting(ProductCard::id)
+                .contains("15", "16", "4060", "4070");
+    }
+
     private ProductCard product(String id, String title, String platform) {
         return new ProductCard(
                 id,

@@ -12,6 +12,7 @@ import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import com.visioncart.app.R
 import com.visioncart.app.data.*
+import com.visioncart.app.data.toSearchAttributes
 import com.visioncart.app.data.db.FavoriteProductEntity
 import com.visioncart.app.data.db.RecognitionRecordEntity
 import com.visioncart.app.data.repository.VisionCartRepository
@@ -108,6 +109,8 @@ data class MainUiState(
     val filterStatusMessage: String? = null,
     // Structured filter tags for precise deletion
     val structuredFilterTags: List<com.visioncart.app.data.FilterTag> = emptyList(),
+    // Whether FilterSummary may derive visible tags from currentFilter when backend tags are absent.
+    val deriveFilterTagsFromFilter: Boolean = true,
     // NLP background filtering state
     val nlpFiltering: Boolean = false,
     val nlpMessage: String? = null,
@@ -125,6 +128,39 @@ data class MainUiState(
     fun toTransientUiState() = TransientUiState(
         toastMessage, showPriceAlertDialog, undoProducts, undoFilter, undoAction, undoMetric, undoTone
     )
+}
+
+internal fun nextRelaxFilterField(filter: SearchFilter): String? = when {
+    filter.priceRange.min != null || filter.priceRange.max != null -> "price_range"
+    filter.brands.isNotEmpty() -> "brands"
+    filter.colors.isNotEmpty() -> "colors"
+    filter.ratingMin != null -> "rating_min"
+    else -> null
+}
+
+internal fun snapshotVisibleFilterTags(state: MainUiState): Pair<List<String>, List<FilterTag>> {
+    if (state.structuredFilterTags.isNotEmpty()) {
+        return state.filterTags to state.structuredFilterTags
+    }
+
+    val tags = mutableListOf<FilterTag>()
+    val filter = state.currentFilter
+    filter.priceRange.min?.let { tags.add(FilterTag("field-price-range-min", "≥¥$it", "price_range.min", "structured")) }
+    filter.priceRange.max?.let { tags.add(FilterTag("field-price-range-max", "≤¥$it", "price_range.max", "structured")) }
+    filter.platforms.take(2).forEach { tags.add(FilterTag("field-platforms-$it", it, "platforms.$it", "structured")) }
+    if (filter.selfOperated == true) {
+        tags.add(FilterTag("field-self-operated", "自营", "self_operated", "structured"))
+    }
+    filter.colors.forEach { tags.add(FilterTag("field-colors-$it", it, "colors.$it", "structured")) }
+    filter.brands.forEach { tags.add(FilterTag("field-brands-$it", it, "brands.$it", "structured")) }
+    filter.ratingMin?.let { tags.add(FilterTag("field-rating-min", "≥${it}分", "rating_min", "structured")) }
+    filter.keyword?.let {
+        if (it.isNotBlank() && !it.startsWith("!")) {
+            tags.add(FilterTag("field-keyword", it, "keyword", "structured"))
+        }
+    }
+
+    return tags.map { it.label } to tags
 }
 
 // ==================== Main ViewModel ====================
@@ -160,6 +196,11 @@ class MainViewModel(
     private var searchJob: kotlinx.coroutines.Job? = null
     private var searchProgressJob: kotlinx.coroutines.Job? = null
     private var correctionRequestId: Long = 0
+    // Problem 11 fix: unified search request ID for stale response protection
+    // Prevents old HTTP results, WebSocket progress, and post-correction auto-search
+    // from overwriting newer search results
+    private var searchRequestId: Long = 0
+    private var currentSearchRunId: String? = null
 
     // Favorites & History flows
     val favorites: StateFlow<List<FavoriteProductEntity>> = repository.getFavoritesFlow()
@@ -202,6 +243,7 @@ class MainViewModel(
                 // Clear all filter-related state from previous session
                 filterTags = emptyList(),
                 structuredFilterTags = emptyList(),
+                deriveFilterTagsFromFilter = true,
                 filterStatusMessage = null,
                 filterApplied = true,
                 keptPreviousResults = false,
@@ -310,6 +352,8 @@ class MainViewModel(
             categoryText = categoryText,
             multiProductCandidates = emptyList(),
             filterTags = emptyList(),
+            structuredFilterTags = emptyList(),
+            deriveFilterTagsFromFilter = true,
             poolSize = 0,
             progressStep = null,
             confidenceHint = hint
@@ -332,24 +376,35 @@ class MainViewModel(
         searchJob?.cancel()
         searchProgressJob?.cancel()
 
+        // P0-2 fix: increment searchRequestId to guard against stale responses
+        val requestId = ++searchRequestId
+        currentSearchRunId = null
+
+        // P0-2 fix: 独立 progressPool，防止旧商品混入新搜索进度
+        val progressPool = LinkedHashMap<String, ProductCard>()
+
         searchJob = viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(productsLoading = true)
+            _uiState.value = _uiState.value.copy(
+                products = emptyList(),
+                productsLoading = true
+            )
 
             // Start WebSocket listener for staged partial results (runs in background)
             searchProgressJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                repository.subscribeSearchProgress(sessionId, timeoutMs = 15_000) { partialProducts ->
-                    // Guard: cap displayed products at 50 (progress may carry full candidate pool)
-                    val maxDisplay = 50
-                    val currentIds = _uiState.value.products.map { it.id }.toSet()
-                    val newProducts = partialProducts.filter { it.id !in currentIds }
-                    val merged = (_uiState.value.products + newProducts).take(maxDisplay)
-                    if (merged.size > _uiState.value.products.size) {
-                        _uiState.value = _uiState.value.copy(
-                            products = merged,
-                            productsLoading = true // still loading, more platforms pending
-                        )
-                        Log.d(TAG, "Search progress: +${merged.size - _uiState.value.products.size} products, total=${merged.size}")
+                repository.subscribeSearchProgress(sessionId, timeoutMs = 15_000) { progress ->
+                    // P0-2 fix: discard stale WebSocket progress
+                    if (requestId != searchRequestId) return@subscribeSearchProgress
+                    if (!acceptSearchRun(progress.searchRunId)) return@subscribeSearchProgress
+                    if (currentSearchRunId == null && progress.searchRunId != null) {
+                        currentSearchRunId = progress.searchRunId
                     }
+                    progress.products.forEach { product ->
+                        progressPool[product.id] = product
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        products = progressPool.values.take(50).toList(),
+                        productsLoading = progress.staging
+                    )
                 }
             }
 
@@ -362,7 +417,17 @@ class MainViewModel(
             )
             searchProgressJob?.cancel() // Stop listening once final result arrives
 
+            // Problem 11 fix: discard stale HTTP search results
+            if (requestId != searchRequestId) {
+                Log.d(TAG, "Ignoring stale search response for requestId=$requestId")
+                return@launch
+            }
+
             result.onSuccess { searchResult ->
+                // HTTP final belongs to this requestId, so it is authoritative. A late progress
+                // message from the previous backend run may have arrived before this response and
+                // temporarily populated currentSearchRunId; do not let that poison the final result.
+                currentSearchRunId = searchResult.searchRunId ?: currentSearchRunId
                 Log.i(TAG, "searchProducts: ${searchResult.products.size} products, ${searchResult.suggestionCards.size} suggestion cards")
                 val mergedCards = searchResult.suggestionCards.ifEmpty { _uiState.value.suggestionCards }
                 _uiState.value = _uiState.value.copy(
@@ -371,6 +436,8 @@ class MainViewModel(
                     searchRelaxed = searchResult.relaxed,
                     suggestionCards = mergedCards.distinctBy { it.id },
                     filterTags = emptyList(), // clear NLP tags on fresh search
+                    structuredFilterTags = emptyList(),
+                    deriveFilterTagsFromFilter = true,
                     poolSize = 0
                 )
                 // AI 导购卡异步生成：搜索返回后延迟拉一次，确保拿到 insight cards
@@ -389,6 +456,11 @@ class MainViewModel(
         }
     }
 
+    private fun acceptSearchRun(incomingRunId: String?): Boolean {
+        val current = currentSearchRunId
+        return incomingRunId == null || current == null || incomingRunId == current
+    }
+
     // ==================== Attribute Correction ====================
 
     fun correctAttribute(attribute: String, oldValue: String, newValue: String) {
@@ -397,6 +469,9 @@ class MainViewModel(
 
         searchJob?.cancel()
         searchProgressJob?.cancel()
+        // P0-2 fix: 使旧搜索的 progress 回调失效
+        searchRequestId++
+        currentSearchRunId = null
         _uiState.value = _uiState.value.copy(productsLoading = true)
 
         viewModelScope.launch {
@@ -564,6 +639,7 @@ class MainViewModel(
             // Save snapshot for undo
             val snapshotProducts = state.products
             val snapshotFilter = state.currentFilter
+            val (snapshotFilterTags, snapshotStructuredFilterTags) = snapshotVisibleFilterTags(state)
 
             // Use unified endpoint (returns ActionResult)
             val result = repository.executeSuggestionAction(
@@ -596,6 +672,9 @@ class MainViewModel(
                 val newState = ActionStateReducer.reduceActionResult(_uiState.value, actionResult)
                 _uiState.value = newState.copy(
                     // Preserve undo snapshot for backward compatibility
+                    filterTags = snapshotFilterTags,
+                    structuredFilterTags = snapshotStructuredFilterTags,
+                    deriveFilterTagsFromFilter = false,
                     undoProducts = if (actionResult.canUndo && actionResult.filterApplied) snapshotProducts else null,
                     undoFilter = if (actionResult.canUndo && actionResult.filterApplied) snapshotFilter else null,
                     undoAction = if (actionResult.canUndo && actionResult.filterApplied) card.title else null,
@@ -632,7 +711,7 @@ class MainViewModel(
             )
             result.onSuccess { actionResult ->
                 _uiState.value = ActionStateReducer.reduceActionResult(_uiState.value, actionResult)
-                    .copy(showPriceAlertDialog = null)
+                    .copy(showPriceAlertDialog = null, deriveFilterTagsFromFilter = true)
                 loadSuggestionCards(sessionId)
             }.onFailure { e ->
                 showToast(str(R.string.filter_clear_failed, e.message ?: ""))
@@ -653,14 +732,7 @@ class MainViewModel(
         val state = _uiState.value
         val filter = state.currentFilter
         val sessionId = state.sessionId ?: return
-        // Priority: price → brand → color → rating
-        val fieldToRemove = when {
-            filter.priceRange != null -> "price_range"
-            filter.brands != null && filter.brands.isNotEmpty() -> "brands"
-            filter.colors != null && filter.colors.isNotEmpty() -> "colors"
-            filter.ratingMin != null -> "rating_min"
-            else -> null
-        }
+        val fieldToRemove = nextRelaxFilterField(filter)
         if (fieldToRemove != null) {
             removeFilterField(fieldToRemove)
         } else {
@@ -676,11 +748,28 @@ class MainViewModel(
             val current = state.currentFilter
             val next = current.copy(sortBy = sortBy, sortOrder = if (sortBy == null) "desc" else sortOrder)
             if (next != current) {
-                _uiState.value = state.copy(currentFilter = next)
+                _uiState.value = state.copy(
+                    currentFilter = next,
+                    deriveFilterTagsFromFilter = true,
+                    undoProducts = null,
+                    undoFilter = null,
+                    undoAction = null,
+                    undoMetric = null,
+                    undoTone = null
+                )
             }
             return
         }
         viewModelScope.launch {
+            // Clear undo state only; keep suggestionCards visible until backend responds
+            _uiState.value = state.copy(
+                deriveFilterTagsFromFilter = true,
+                undoProducts = null,
+                undoFilter = null,
+                undoAction = null,
+                undoMetric = null,
+                undoTone = null
+            )
             val sortKey = if (sortBy == null) "relevance" else "${sortBy}_${sortOrder}"
             val result = repository.executeUserAction(
                 UserActionRequest(
@@ -692,8 +781,19 @@ class MainViewModel(
                 )
             )
             result.onSuccess { actionResult ->
-                _uiState.value = ActionStateReducer.reduceActionResult(_uiState.value, actionResult)
-                loadSuggestionCards(sessionId)
+                val reduced = ActionStateReducer.reduceActionResult(_uiState.value, actionResult)
+                _uiState.value = reduced.copy(
+                    filterTags = state.filterTags,
+                    structuredFilterTags = state.structuredFilterTags,
+                    deriveFilterTagsFromFilter = true,
+                    canUndo = false,
+                    suggestionCards = actionResult.suggestionCards?.distinctBy { it.id } ?: emptyList(),
+                    undoProducts = null,
+                    undoFilter = null,
+                    undoAction = null,
+                    undoMetric = null,
+                    undoTone = null
+                )
             }.onFailure { e ->
                 showToast(str(R.string.sort_failed, e.message ?: ""))
             }
@@ -813,6 +913,7 @@ class MainViewModel(
             )
             result.onSuccess { actionResult ->
                 _uiState.value = ActionStateReducer.reduceActionResult(_uiState.value, actionResult)
+                    .copy(deriveFilterTagsFromFilter = true)
                 loadSuggestionCards(sessionId)
             }.onFailure { e ->
                 showToast(str(R.string.filter_delete_failed, e.message ?: ""))
@@ -990,6 +1091,9 @@ class MainViewModel(
             products = emptyList(),
             productsLoading = true,
             suggestionCards = emptyList(),
+            filterTags = emptyList(),
+            structuredFilterTags = emptyList(),
+            deriveFilterTagsFromFilter = true,
             progressStep = str(R.string.history_loading)
         )
 

@@ -3,6 +3,7 @@ package com.visioncart.service.auth;
 import com.visioncart.api.dto.LoginResponse;
 import com.visioncart.api.dto.UserProfile;
 import com.visioncart.config.JwtUtil;
+import com.visioncart.config.VisionCartProperties;
 import com.visioncart.domain.User;
 import com.visioncart.repository.RefreshTokenRepository;
 import com.visioncart.repository.UserRepository;
@@ -42,7 +43,8 @@ class AuthServiceTest {
 
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
 
-        authService = new AuthService(userRepository, mock(RefreshTokenRepository.class), jwtUtil, redisTemplate, mailService);
+        authService = new AuthService(userRepository, mock(RefreshTokenRepository.class), jwtUtil, redisTemplate,
+                mailService, new VisionCartProperties());
     }
 
     @Test
@@ -59,6 +61,25 @@ class AuthServiceTest {
                 argThat(code -> code.matches("\\d{6}")),
                 eq(5L),
                 eq(TimeUnit.MINUTES));
+    }
+
+    @Test
+    void sendCodeDoesNotStoreCodeOrKeepRateLimitWhenMailFails() {
+        when(valueOps.setIfAbsent(eq("verify:code:rate:test@example.com"), eq("1"), eq(60L), eq(TimeUnit.SECONDS)))
+                .thenReturn(true);
+        doThrow(new IllegalStateException("mail failed"))
+                .when(mailService).sendVerificationCode(eq("test@example.com"), anyString());
+
+        assertThatThrownBy(() -> authService.sendCode("test@example.com"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("mail failed");
+
+        verify(valueOps, never()).set(
+                eq("verify:code:test@example.com"),
+                anyString(),
+                anyLong(),
+                any(TimeUnit.class));
+        verify(redisTemplate).delete("verify:code:rate:test@example.com");
     }
 
     @Test

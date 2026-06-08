@@ -200,6 +200,11 @@ sealed class Screen(val route: String) {
     }
 }
 
+private fun shouldShowReputation(sortBy: String?): Boolean {
+    return sortBy == "rating" || sortBy == "reviews" || sortBy == "review_quality" ||
+        sortBy == "rating_desc" || sortBy == "shop_trust" || sortBy == "seller_trust"
+}
+
 // ==================== Main App ====================
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -802,7 +807,8 @@ private fun HomeScreen(
                 onRemoveTag = { fieldName -> viewModel.removeFilterField(fieldName) },
                 filterTags = uiState.filterTags,
                 structuredFilterTags = uiState.structuredFilterTags,
-                canUndo = uiState.canUndo,
+                deriveFromFilter = uiState.deriveFilterTagsFromFilter,
+                canUndo = uiState.canUndo && uiState.undoAction == null,
                 onUndo = { viewModel.undoLastAction() },
                 keptPreviousResults = uiState.keptPreviousResults,
                 statusMessage = uiState.filterStatusMessage
@@ -859,7 +865,7 @@ private fun HomeScreen(
                 ProductCardView(
                     product = product,
                     isFavorite = favoriteIds.contains(product.id),
-                    showRating = uiState.currentFilter.sortBy == "rating",
+                    showRating = shouldShowReputation(uiState.currentFilter.sortBy),
                     onFavoriteClick = { viewModel.toggleFavorite(product) },
                     onClick = {
                         if (product.detailUrl.isNotBlank()) {

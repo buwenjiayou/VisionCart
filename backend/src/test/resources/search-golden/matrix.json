@@ -1,0 +1,79 @@
+[
+  {
+    "name": "phone_case_rejects_metal_ring_overflow",
+    "attributes": {"类目": "手机壳", "__keywords": "手机壳,MagSafe"},
+    "expectedFamily": "phone_case",
+    "mainTitle": "iPhone MagSafe 手机壳",
+    "relatedTitle": "MagSafe 引磁片 金属环",
+    "relatedTier": "RELATED_ACCESSORY",
+    "forbiddenQueries": ["金属环", "磁吸金属环"],
+    "maxRelatedTop20": 2,
+    "maxRelatedTotal": 5
+  },
+  {
+    "name": "phone_rejects_phone_case",
+    "attributes": {"类目": "手机", "__keywords": "智能手机"},
+    "expectedFamily": "phone",
+    "mainTitle": "Apple iPhone 15 智能手机",
+    "relatedTitle": "iPhone 15 手机壳",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["手机壳"],
+    "maxRelatedTop20": 2,
+    "maxRelatedTotal": 5
+  },
+  {
+    "name": "earbuds_rejects_earphone_case",
+    "attributes": {"类目": "耳机", "__keywords": "蓝牙耳机"},
+    "expectedFamily": "earbuds",
+    "mainTitle": "Sony 蓝牙耳机",
+    "relatedTitle": "AirPods 耳机壳",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["耳机壳"],
+    "maxRelatedTop20": 2,
+    "maxRelatedTotal": 5
+  },
+  {
+    "name": "printer_rejects_ink",
+    "attributes": {"类目": "打印机", "__keywords": "打印机"},
+    "expectedFamily": "printer",
+    "mainTitle": "HP 无线打印机",
+    "relatedTitle": "HP 803 墨盒",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["墨盒"],
+    "maxRelatedTop20": 2,
+    "maxRelatedTotal": 5
+  },
+  {
+    "name": "water_purifier_rejects_filter",
+    "attributes": {"类目": "净水器", "__keywords": "净水器"},
+    "expectedFamily": "water_purifier",
+    "mainTitle": "厨下 RO 净水器",
+    "relatedTitle": "RO 净水器滤芯",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["滤芯"],
+    "maxRelatedTop20": 2,
+    "maxRelatedTotal": 5
+  },
+  {
+    "name": "shoe_limits_insole",
+    "attributes": {"类目": "运动鞋", "__keywords": "运动鞋"},
+    "expectedFamily": "shoe",
+    "mainTitle": "Nike 运动鞋",
+    "relatedTitle": "运动鞋垫",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["鞋垫"],
+    "maxRelatedTop20": 2,
+    "maxRelatedTotal": 5
+  },
+  {
+    "name": "cup_rejects_sleeve",
+    "attributes": {"类目": "杯子", "__keywords": "水杯"},
+    "expectedFamily": "cup",
+    "mainTitle": "保温水杯",
+    "relatedTitle": "保温杯套",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["杯套"],
+    "maxRelatedTop20": 2,
+    "maxRelatedTotal": 5
+  }
+]

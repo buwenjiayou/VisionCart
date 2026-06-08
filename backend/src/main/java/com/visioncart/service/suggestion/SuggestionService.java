@@ -175,8 +175,8 @@ public class SuggestionService {
 
         long highRatingCount = safeProducts.stream().filter(product -> product.rating() >= 4.7).count();
         if (highRatingCount > 0 && !sortActive(filter, "rating", "desc")) {
-            add(candidates, "review_quality", "口碑优先", "综合评分、店铺信誉、销量排序", "star",
-                    "sort_by_review_quality", 84, "口碑", "综合商品评分、店铺/卖家信誉、销量和相关性排序",
+            add(candidates, "review_quality", "口碑优先", "综合评分、店铺信誉、相关性排序", "star",
+                    "sort_by_review_quality", 84, "口碑", "综合商品评分、店铺/卖家信誉和相关性排序",
                     highRatingCount + " 件高分", "口碑排序", "trust");
         }
 

@@ -16,9 +16,6 @@ object TokenManager {
     private const val EMAIL_KEY = "email"
     private const val TOKEN_SAVED_AT_KEY = "token_saved_at"
 
-    /** Token validity duration — matches backend JWT expiry (default 24h) */
-    private const val TOKEN_VALIDITY_MS = 24 * 60 * 60 * 1000L
-
     @Volatile
     private var cachedPrefs: SharedPreferences? = null
 
@@ -37,9 +34,9 @@ object TokenManager {
                         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
                     )
                 } catch (e: Exception) {
-                    // Keystore invalidated (backup/restore, key rotation failure)
-                    // Delete corrupted preferences and recreate
-                    context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                    // Keystore invalidated (backup/restore, key rotation failure).
+                    // Delete corrupted preferences and recreate.
+                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                         .edit().clear().apply()
                     context.deleteSharedPreferences(PREFS_NAME)
                     val masterKey = MasterKey.Builder(context)
@@ -94,18 +91,13 @@ object TokenManager {
     }
 
     suspend fun isLoggedIn(context: Context): Boolean {
-        val token = getToken(context) ?: return false
-        if (token.isBlank()) return false
-        // Check if token has expired based on local timestamp
-        val savedAt = withContext(Dispatchers.IO) {
-            getPrefs(context).getLong(TOKEN_SAVED_AT_KEY, 0L)
-        }
-        if (savedAt > 0 && System.currentTimeMillis() - savedAt > TOKEN_VALIDITY_MS) {
-            // Token expired — clear it
-            clearToken(context)
-            return false
-        }
-        return true
+        return hasSavedSession(context)
+    }
+
+    suspend fun hasSavedSession(context: Context): Boolean {
+        val token = getToken(context)
+        val refreshToken = getRefreshToken(context)
+        return !token.isNullOrBlank() || !refreshToken.isNullOrBlank()
     }
 
     suspend fun clearToken(context: Context) {

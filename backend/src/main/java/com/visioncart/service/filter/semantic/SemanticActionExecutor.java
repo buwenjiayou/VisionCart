@@ -33,6 +33,8 @@ public class SemanticActionExecutor {
     private static final Logger log = LoggerFactory.getLogger(SemanticActionExecutor.class);
     private static final int MAX_PRODUCTS = 50;
     private static final int LOW_RESULT_THRESHOLD = 3;
+    /** Max candidate pool size for synchronous LLM Judge. Beyond this, use local rerank. */
+    private static final int JUDGE_POOL_CAP = 12;
 
     private final CandidateFilterService filterService;
     private final EvidenceScorer evidenceScorer;
@@ -75,10 +77,15 @@ public class SemanticActionExecutor {
         return switch (plan.executionMode()) {
             case "STRICT_FILTER" -> executeStrictFilter(sessionId, candidates, previousFilter, plan, previousProducts);
             case "SEMANTIC_SCREENING" -> executeSemanticScreening(sessionId, candidates, previousFilter, plan, previousProducts);
-            case "PREFERENCE_RERANK" -> hasJudge(plan)
+
+            // PREFERENCE_RERANK always uses local PreferenceScorer — never LLM Judge
+            case "PREFERENCE_RERANK" -> executePreferenceRerank(sessionId, candidates, previousFilter, plan, previousProducts);
+
+            // LLM_RERANK only for small candidate pools; large pools fall back to local rerank
+            case "LLM_RERANK" -> candidates.size() <= JUDGE_POOL_CAP
                     ? executeJudgeRerank(sessionId, candidates, previousFilter, plan, previousProducts)
-                    : executePreferenceRerank(sessionId, candidates, previousFilter, plan, previousProducts);
-            case "LLM_RERANK" -> executeJudgeRerank(sessionId, candidates, previousFilter, plan, previousProducts);
+                    : executePreferenceRerank(sessionId, candidates, previousFilter, stripJudge(plan), previousProducts);
+
             case "COMBINED" -> executeCombined(sessionId, candidates, previousFilter, plan, previousProducts);
             case "EXCLUSION" -> executeExclusion(sessionId, candidates, previousFilter, plan, previousProducts);
             default -> ActionResult.passThrough(candidates.stream().limit(MAX_PRODUCTS).toList());
@@ -90,10 +97,12 @@ public class SemanticActionExecutor {
                                          SearchFilter previousFilter,
                                          SemanticActionPlan plan,
                                          List<ProductCard> previousProducts) {
+        // Priority: evidence > judge (small pool) > exclusions > hard filters > preferences
         if (hasEvidence(plan)) {
             return executeSemanticScreening(sessionId, candidates, previousFilter, plan, previousProducts);
         }
-        if (hasJudge(plan)) {
+        // Judge only allowed for small candidate pools (evidence screening already narrows the pool)
+        if (hasJudge(plan) && candidates.size() <= JUDGE_POOL_CAP) {
             return executeJudgeRerank(sessionId, candidates, previousFilter, plan, previousProducts);
         }
         if (hasExclusions(plan)) {
@@ -759,6 +768,17 @@ public class SemanticActionExecutor {
 
     private boolean hasJudge(SemanticActionPlan plan) {
         return plan.judge() != null && Boolean.TRUE.equals(plan.judge().required());
+    }
+
+    /** Strip judge from a plan, downgrading to PREFERENCE_RERANK if it was LLM_RERANK. */
+    private SemanticActionPlan stripJudge(SemanticActionPlan plan) {
+        String mode = "LLM_RERANK".equals(plan.executionMode()) ? "PREFERENCE_RERANK" : plan.executionMode();
+        return new SemanticActionPlan(
+                plan.intent(), mode, plan.targetProduct(),
+                plan.hardFilters(), plan.semanticFilters(), plan.preferences(),
+                plan.exclusions(), plan.sort(), plan.zeroResultPolicy(),
+                plan.criteria(), plan.negativeCriteria(),
+                null, plan.rankingGoal(), plan.resultStrategy());
     }
 
     private boolean hasExclusions(SemanticActionPlan plan) {

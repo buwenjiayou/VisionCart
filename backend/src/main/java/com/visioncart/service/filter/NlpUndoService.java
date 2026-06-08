@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.visioncart.api.dto.ProductCard;
 import com.visioncart.api.dto.SearchFilter;
+import com.visioncart.service.search.SearchCandidatePool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -68,13 +69,29 @@ public class NlpUndoService {
                                 List<ProductCard> previousProducts, String rawQuery,
                                 String source, String actionId,
                                 Map<String, Object> previousAttributes) {
+        return saveUndoPoint(sessionId, previousFilter, previousProducts, rawQuery,
+                source, actionId, previousAttributes, null);
+    }
+
+    /**
+     * Save the current state with classifiedPool snapshot.
+     * 用于需要恢复 classifiedPool + displayPage 的场景（排序、NLP、标签删除）。
+     */
+    public String saveUndoPoint(String sessionId, SearchFilter previousFilter,
+                                List<ProductCard> previousProducts, String rawQuery,
+                                String source, String actionId,
+                                Map<String, Object> previousAttributes,
+                                SearchCandidatePool previousClassifiedPool) {
         String undoToken = sessionId + ":" + System.currentTimeMillis();
         UndoEntry entry = new UndoEntry(
                 sessionId, previousFilter, previousProducts, rawQuery,
                 source != null ? source : "nlp",
                 actionId,
                 System.currentTimeMillis(),
-                previousAttributes
+                previousAttributes,
+                previousClassifiedPool,
+                previousProducts,  // previousDisplayPage = previousProducts
+                previousFilter != null ? previousFilter.sortBy() : null
         );
 
         try {
@@ -116,7 +133,10 @@ public class NlpUndoService {
                     entry.previousProducts(),
                     entry.rawQuery(),
                     entry.source(),
-                    entry.previousAttributes()
+                    entry.previousAttributes(),
+                    entry.previousClassifiedPool(),
+                    entry.previousDisplayPage(),
+                    entry.previousSortKey()
             );
         } catch (JsonProcessingException e) {
             log.error("Failed to deserialize undo entry for session {}", sessionId, e);
@@ -140,7 +160,10 @@ public class NlpUndoService {
                     entry.previousProducts(),
                     entry.rawQuery(),
                     entry.source(),
-                    entry.previousAttributes()
+                    entry.previousAttributes(),
+                    entry.previousClassifiedPool(),
+                    entry.previousDisplayPage(),
+                    entry.previousSortKey()
             );
         } catch (JsonProcessingException e) {
             return null;
@@ -166,7 +189,13 @@ public class NlpUndoService {
             String actionId,
             long createdAt,
             /** Snapshot of recognition attributes before the action (for correction undo) */
-            Map<String, Object> previousAttributes
+            Map<String, Object> previousAttributes,
+            /** classifiedPool 快照（Top300 带 tier），用于恢复完整候选池 */
+            SearchCandidatePool previousClassifiedPool,
+            /** 当时的 displayPage 快照（Top50），用于精确恢复用户看到的页面 */
+            List<ProductCard> previousDisplayPage,
+            /** 当时的排序方式 */
+            String previousSortKey
     ) {}
 
     public record UndoResult(
@@ -175,6 +204,12 @@ public class NlpUndoService {
             String undoneQuery,
             String undoneSource,
             /** Restored recognition attributes (null if not applicable) */
-            Map<String, Object> previousAttributes
+            Map<String, Object> previousAttributes,
+            /** 恢复的 classifiedPool（Top300 带 tier） */
+            SearchCandidatePool restoredClassifiedPool,
+            /** 恢复的 displayPage（Top50） */
+            List<ProductCard> restoredDisplayPage,
+            /** 恢复的排序方式 */
+            String restoredSortKey
     ) {}
 }

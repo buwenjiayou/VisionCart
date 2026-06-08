@@ -2,6 +2,7 @@ package com.visioncart.service.auth;
 
 import com.visioncart.api.dto.*;
 import com.visioncart.config.JwtUtil;
+import com.visioncart.config.VisionCartProperties;
 import com.visioncart.domain.RefreshToken;
 import com.visioncart.domain.User;
 import com.visioncart.repository.RefreshTokenRepository;
@@ -42,6 +43,7 @@ public class AuthService {
     private final JwtUtil jwtUtil;
     private final StringRedisTemplate redisTemplate;
     private final MailService mailService;
+    private final VisionCartProperties properties;
     private final SecureRandom secureRandom = new SecureRandom();
     private final Map<String, ExpiringValue> memoryVerificationStore = new ConcurrentHashMap<>();
 
@@ -49,12 +51,14 @@ public class AuthService {
                        RefreshTokenRepository refreshTokenRepository,
                        JwtUtil jwtUtil,
                        StringRedisTemplate redisTemplate,
-                       MailService mailService) {
+                       MailService mailService,
+                       VisionCartProperties properties) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtUtil = jwtUtil;
         this.redisTemplate = redisTemplate;
         this.mailService = mailService;
+        this.properties = properties;
     }
 
     /**
@@ -68,17 +72,23 @@ public class AuthService {
 
         // Rate limit: 1 code per minute (atomic to prevent TOCTOU race)
         String rateKey = CODE_PREFIX + "rate:" + email;
-        if (!setIfAbsent(rateKey, "1", 60, TimeUnit.SECONDS)) {
+        int cooldownSeconds = Math.max(1, properties.getRateLimit().getSendCodeCooldownSeconds());
+        if (!setIfAbsent(rateKey, "1", cooldownSeconds, TimeUnit.SECONDS)) {
             throw new IllegalArgumentException("验证码发送过于频繁，请稍后再试");
         }
 
         String code = generateCode();
 
-        // Store code in Redis with TTL
+        try {
+            mailService.sendVerificationCode(email, code);
+        } catch (RuntimeException e) {
+            deleteValue(rateKey);
+            throw e;
+        }
+
+        // Store code in Redis with TTL only after the email is accepted by SMTP.
         String codeKey = CODE_PREFIX + email;
         setValue(codeKey, code, CODE_EXPIRE_MINUTES, TimeUnit.MINUTES);
-
-        mailService.sendVerificationCode(email, code);
     }
 
     /**

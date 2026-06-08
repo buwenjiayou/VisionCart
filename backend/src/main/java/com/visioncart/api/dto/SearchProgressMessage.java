@@ -12,9 +12,14 @@ public record SearchProgressMessage(
         String sessionId,
         List<ProductCard> products,
         int totalCount,
-        boolean staging
+        boolean staging,
+        String searchRunId
 ) {
     public SearchProgressMessage(String sessionId, List<ProductCard> products, int totalCount) {
-        this(sessionId, products, totalCount, true);
+        this(sessionId, products, totalCount, true, null);
+    }
+
+    public SearchProgressMessage(String sessionId, List<ProductCard> products, int totalCount, boolean staging) {
+        this(sessionId, products, totalCount, staging, null);
     }
 }

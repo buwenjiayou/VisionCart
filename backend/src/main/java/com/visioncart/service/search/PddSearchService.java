@@ -27,6 +27,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -65,6 +66,35 @@ public class PddSearchService implements PlatformSearchService {
     @Override
     public String platform() {
         return "拼多多";
+    }
+
+    @Override
+    public Optional<ProductCard> fetchByProductId(String productId, String detailUrl) {
+        if (StringUtils.isAnyBlank(properties.getPdd().getClientId(), properties.getPdd().getClientSecret(), properties.getPdd().getPid())) {
+            return Optional.empty();
+        }
+
+        String goodsSign = parseGoodsSign(productId, detailUrl);
+        String goodsId = parseGoodsId(productId, detailUrl);
+        if (StringUtils.isAllBlank(goodsSign, goodsId)) {
+            return Optional.empty();
+        }
+
+        try {
+            PddDetail detail = StringUtils.isNotBlank(goodsSign)
+                    ? loadDetail(goodsSign, "")
+                    : loadDetailByGoodsId(goodsId);
+            if (detail == null) {
+                return Optional.empty();
+            }
+            ProductCard card = detailToProductCard(detail, goodsSign, goodsId, detailUrl);
+            log.info("fetchByProductId: PDD goodsId={} goodsSignHash={} -> title='{}', price={}",
+                    StringUtils.defaultIfBlank(goodsId, detail.goodsId()), stableHash(goodsSign), card.title(), card.price());
+            return Optional.of(card);
+        } catch (Exception e) {
+            log.warn("fetchByProductId failed for PDD productId={} detailUrl={}: {}", productId, detailUrl, e.getMessage());
+            return Optional.empty();
+        }
     }
 
     @Override
@@ -230,6 +260,12 @@ public class PddSearchService implements PlatformSearchService {
             });
             long sales = Math.max(base.sales(), detail.sales());
             double rating = detail.rating() > 0 ? detail.rating() : base.rating();
+            Double itemRating = detail.itemRating() != null ? detail.itemRating() : base.itemRating();
+            Double shopReputationScore = detail.shopReputationScore() != null
+                    ? detail.shopReputationScore() : base.shopReputationScore();
+            String shopReputationLevel = StringUtils.defaultIfBlank(detail.shopReputationLevel(), base.shopReputationLevel());
+            String reputationEvidence = detail.reputationEvidence() != null
+                    && !"none".equals(detail.reputationEvidence()) ? detail.reputationEvidence() : base.reputationEvidence();
             return new ProductCard(
                     base.id(),
                     StringUtils.defaultIfBlank(detail.title(), base.title()),
@@ -247,7 +283,8 @@ public class PddSearchService implements PlatformSearchService {
                     StringUtils.defaultIfBlank(detail.brand(), base.brand()),
                     detail.rating() > 0 ? detail.ratingSource() : base.ratingSource(),
                     StringUtils.defaultIfBlank(detail.salesLabel(), base.salesLabel())
-            );
+            ).withReputationSignals(itemRating, shopReputationScore, shopReputationLevel,
+                    base.sellerReputationScore(), reputationEvidence);
         } catch (Exception e) {
             log.debug("PDD detail enrichment skipped for {}: {}", base.id(), e.toString());
             return withDetailUrl(base, detailUrl);
@@ -275,7 +312,44 @@ public class PddSearchService implements PlatformSearchService {
                 base.brand(),
                 base.ratingSource(),
                 base.salesLabel()
-        );
+        ).withReputationSignals(base.itemRating(), base.shopReputationScore(), base.shopReputationLevel(),
+                base.sellerReputationScore(), base.reputationEvidence());
+    }
+
+    private String parseGoodsSign(String productId, String detailUrl) {
+        String fromProductId = extractQueryParam(productId, "goods_sign");
+        if (StringUtils.isNotBlank(fromProductId)) {
+            return fromProductId;
+        }
+        return extractQueryParam(detailUrl, "goods_sign");
+    }
+
+    private String parseGoodsId(String productId, String detailUrl) {
+        String fromProductId = extractQueryParam(productId, "goods_id");
+        if (StringUtils.isNotBlank(fromProductId)) {
+            return fromProductId;
+        }
+        String normalized = StringUtils.defaultString(productId).trim();
+        if (normalized.startsWith("pdd_")) {
+            normalized = normalized.substring("pdd_".length());
+        }
+        if (normalized.matches("\\d+")) {
+            return normalized;
+        }
+        return extractQueryParam(detailUrl, "goods_id");
+    }
+
+    private String extractQueryParam(String value, String name) {
+        if (StringUtils.isBlank(value)) {
+            return "";
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?:^|[?&])" + java.util.regex.Pattern.quote(name) + "=([^&#]+)")
+                .matcher(value);
+        if (!matcher.find()) {
+            return "";
+        }
+        return java.net.URLDecoder.decode(matcher.group(1), StandardCharsets.UTF_8);
     }
 
     private PddDetail loadDetail(String goodsSign, String searchId) throws Exception {
@@ -297,6 +371,54 @@ public class PddSearchService implements PlatformSearchService {
             detailCache.put(goodsSign, new CachedDetail(detail));
         }
         return detail;
+    }
+
+    private PddDetail loadDetailByGoodsId(String goodsId) throws Exception {
+        String cacheKey = "goods_id:" + goodsId;
+        CachedDetail cached = detailCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            return cached.detail();
+        }
+        Map<String, Object> params = baseParams("pdd.ddk.goods.detail");
+        params.put("goods_id_list", objectMapper.writeValueAsString(List.of(goodsId)));
+        params.put("pid", properties.getPdd().getPid());
+        params.put("goods_img_type", 1);
+        params.put("need_sku_info", false);
+        params.put("sign", sign(params));
+        PddDetail detail = mapDetailResponse(call(params));
+        if (detail != null) {
+            detailCache.put(cacheKey, new CachedDetail(detail));
+        }
+        return detail;
+    }
+
+    private ProductCard detailToProductCard(PddDetail detail, String goodsSign, String goodsId, String detailUrl) {
+        String resolvedGoodsId = StringUtils.defaultIfBlank(detail.goodsId(), goodsId);
+        String resolvedGoodsSign = StringUtils.defaultIfBlank(detail.goodsSign(), goodsSign);
+        String title = StringUtils.defaultIfBlank(detail.title(), "PDD Item");
+        String url = SearchTextUtils.normalizeUrl(detailUrl);
+        if (StringUtils.isBlank(url)) {
+            url = fallbackDetailUrl(resolvedGoodsId, title);
+        }
+        return new ProductCard(
+                stableProductId(resolvedGoodsSign, resolvedGoodsId),
+                title,
+                StringUtils.defaultIfBlank(detail.imageUrl(), ""),
+                detail.price(),
+                detail.originalPrice().compareTo(BigDecimal.ZERO) > 0 ? detail.originalPrice() : null,
+                "PDD",
+                false,
+                StringUtils.defaultIfBlank(detail.shopName(), "PDD Shop"),
+                detail.rating(),
+                detail.sales(),
+                0.0,
+                detail.tags(),
+                url,
+                detail.brand(),
+                detail.rating() > 0 ? detail.ratingSource() : "none",
+                detail.salesLabel()
+        ).withReputationSignals(detail.itemRating(), detail.shopReputationScore(), detail.shopReputationLevel(),
+                null, detail.reputationEvidence());
     }
 
     private String promotedDetailUrl(String goodsSign, String searchId, String fallback) {
@@ -407,7 +529,8 @@ public class PddSearchService implements PlatformSearchService {
                 brand,
                 rating.source(),
                 pddSalesLabel(firstText(item, "sales_tip"), sales)
-        );
+        ).withReputationSignals(rating.itemRating(), rating.shopReputationScore(),
+                rating.shopReputationLevel(), null, rating.evidence());
     }
 
     private PddDetail toDetail(JsonNode item) {
@@ -423,6 +546,8 @@ public class PddSearchService implements PlatformSearchService {
                 firstText(item, "sold_quantity"));
         String brand = StringUtils.defaultIfBlank(firstText(item, "brand_name"), SearchTextUtils.inferBrand(title, shopName));
         return new PddDetail(
+                firstText(item, "goods_id"),
+                firstText(item, "goods_sign"),
                 title,
                 SearchTextUtils.normalizeUrl(firstText(item, "goods_image_url", "goods_thumbnail_url")),
                 price,
@@ -431,6 +556,10 @@ public class PddSearchService implements PlatformSearchService {
                 brand,
                 rating.value(),
                 rating.source(),
+                rating.itemRating(),
+                rating.shopReputationScore(),
+                rating.shopReputationLevel(),
+                rating.evidence(),
                 sales,
                 pddSalesLabel(firstText(item, "sales_tip"), sales),
                 tags(item)
@@ -439,25 +568,29 @@ public class PddSearchService implements PlatformSearchService {
 
     private RatingInfo ratingInfo(JsonNode item) {
         double itemRating = parseRating(item.path("goods_eval_score"), item.path("goods_rate"));
-        if (itemRating > 0) {
-            return new RatingInfo(itemRating, "item_rating");
-        }
-        // 拼多多 DSR 字段是文本 "高"/"中"/"低"，先尝试文本转换
-        double textDsr = parseDsrText(
+        String shopLevel = parseDsrLevel(
                 item.path("desc_txt"),
                 item.path("serv_txt"),
                 item.path("lgst_txt"));
-        if (textDsr > 0) {
-            return new RatingInfo(textDsr, "shop_dsr");
-        }
+        double textDsr = pddLevelRating(shopLevel);
         double shopDsr = parseRating(
                 item.path("avg_desc"),
                 item.path("avg_serv"),
                 item.path("avg_lgst"));
-        if (shopDsr > 0) {
-            return new RatingInfo(shopDsr, "shop_dsr");
+        if (textDsr > 0) {
+            shopDsr = textDsr;
         }
-        return new RatingInfo(0.0, "none");
+        if (shopLevel == null && shopDsr > 0) {
+            shopLevel = inferPddLevel(shopDsr);
+        }
+        double legacyRating = itemRating > 0 ? itemRating : shopDsr;
+        String legacySource = itemRating > 0 ? "item_rating" : (shopDsr > 0 ? "shop_dsr" : "none");
+        String evidence = shopDsr > 0
+                ? (textDsr > 0 ? "pdd_shop_level" : "shop_dsr")
+                : (itemRating > 0 ? "item_rating" : "none");
+        Double itemSignal = itemRating > 0 ? itemRating : null;
+        Double shopSignal = shopDsr > 0 ? pddLevelScore(shopLevel, shopDsr) : null;
+        return new RatingInfo(legacyRating, legacySource, itemSignal, shopSignal, shopLevel, evidence);
     }
 
     /**
@@ -466,25 +599,64 @@ public class PddSearchService implements PlatformSearchService {
      * 排序时 ProductReputationService 会根据 ratingSource="shop_dsr" 使用低权重。
      * 取多个维度的平均值
      */
-    private double parseDsrText(JsonNode... nodes) {
-        double sum = 0;
-        int count = 0;
+    private String parseDsrLevel(JsonNode... nodes) {
+        int high = 0;
+        int mid = 0;
+        int low = 0;
         for (JsonNode node : nodes) {
             if (node != null && !node.isMissingNode() && !node.isNull() && node.isTextual()) {
                 String text = node.asText("").trim();
-                double score = switch (text) {
-                    case "高" -> 4.6;  // 店铺口碑高，不等于商品评分4.8
-                    case "中" -> 4.0;
-                    case "低" -> 3.2;
-                    default -> 0;
-                };
-                if (score > 0) {
-                    sum += score;
-                    count++;
+                if ("\u9ad8".equals(text)) {
+                    high++;
+                } else if ("\u4e2d".equals(text)) {
+                    mid++;
+                } else if ("\u4f4e".equals(text)) {
+                    low++;
                 }
             }
         }
-        return count > 0 ? Math.round(sum / count * 10.0) / 10.0 : 0.0;
+        if (high == 0 && mid == 0 && low == 0) {
+            return null;
+        }
+        if (high >= mid && high >= low) {
+            return "high";
+        }
+        if (mid >= low) {
+            return "mid";
+        }
+        return "low";
+    }
+
+    private double pddLevelRating(String level) {
+        return switch (StringUtils.defaultString(level)) {
+            case "high" -> 4.6;
+            case "mid" -> 4.0;
+            case "low" -> 3.2;
+            default -> 0.0;
+        };
+    }
+
+    private String inferPddLevel(double rating) {
+        if (rating >= 4.4) {
+            return "high";
+        }
+        if (rating >= 3.8) {
+            return "mid";
+        }
+        return "low";
+    }
+
+    private Double pddLevelScore(String level, double rating) {
+        return switch (StringUtils.defaultString(level)) {
+            case "high" -> 0.85;
+            case "mid" -> 0.60;
+            case "low" -> 0.30;
+            default -> {
+                if (rating >= 4.4) yield 0.85;
+                if (rating >= 3.8) yield 0.60;
+                yield rating > 0 ? 0.30 : null;
+            }
+        };
     }
 
     private List<String> tags(JsonNode item) {
@@ -604,9 +776,18 @@ public class PddSearchService implements PlatformSearchService {
 
     private record CachedUrl(String url) {}
 
-    private record RatingInfo(double value, String source) {}
+    private record RatingInfo(
+            double value,
+            String source,
+            Double itemRating,
+            Double shopReputationScore,
+            String shopReputationLevel,
+            String evidence
+    ) {}
 
     private record PddDetail(
+            String goodsId,
+            String goodsSign,
             String title,
             String imageUrl,
             BigDecimal price,
@@ -615,6 +796,10 @@ public class PddSearchService implements PlatformSearchService {
             String brand,
             double rating,
             String ratingSource,
+            Double itemRating,
+            Double shopReputationScore,
+            String shopReputationLevel,
+            String reputationEvidence,
             long sales,
             String salesLabel,
             List<String> tags

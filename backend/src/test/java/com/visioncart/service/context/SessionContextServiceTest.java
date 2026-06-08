@@ -32,7 +32,7 @@ class SessionContextServiceTest {
         history.setAttributesJson("{\"brand\":{\"value\":\"Apple\",\"confidence\":0.9,\"verified\":true}}");
 
         when(historyRepository.findBySessionIdAndUserId("s1", 7L)).thenReturn(Optional.of(history));
-        when(sessionCache.getCandidates("s1")).thenReturn(List.of(product("p1", "Xiaomi phone", "xiaomi")));
+        when(sessionCache.getBestCandidates("s1")).thenReturn(List.of(product("p1", "Xiaomi phone", "xiaomi")));
 
         SessionContextService.SessionContext context = service.resolve("s1", 7L, "client-category");
 
@@ -45,9 +45,9 @@ class SessionContextServiceTest {
     @Test
     void fallsBackToCandidatesThenClientCategory() {
         when(historyRepository.findBySessionIdAndUserId("s2", 7L)).thenReturn(Optional.empty());
-        when(sessionCache.getCandidates("s2")).thenReturn(List.of(product("p1", "Fast power bank", "Anker")));
+        when(sessionCache.getBestCandidates("s2")).thenReturn(List.of(product("p1", "Fast power bank", "Anker")));
         when(historyRepository.findBySessionIdAndUserId("s3", 7L)).thenReturn(Optional.empty());
-        when(sessionCache.getCandidates("s3")).thenReturn(List.of());
+        when(sessionCache.getBestCandidates("s3")).thenReturn(List.of());
 
         SessionContextService.SessionContext candidateContext = service.resolve("s2", 7L, null);
         SessionContextService.SessionContext clientContext = service.resolve("s3", 7L, "charger");

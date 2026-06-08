@@ -32,7 +32,7 @@ public class JwtUtil {
     private final java.util.concurrent.atomic.AtomicInteger redisFailCount = new java.util.concurrent.atomic.AtomicInteger(0);
     private final java.util.concurrent.atomic.AtomicLong redisFailStartedAt = new java.util.concurrent.atomic.AtomicLong(0);
 
-    // Local blacklist fallback when Redis is unavailable (Bug #12)
+    // Local fallback for tokens invalidated by this instance.
     private final ConcurrentHashMap<String, Long> localBlacklist = new ConcurrentHashMap<>();
 
     public JwtUtil(
@@ -49,9 +49,9 @@ public class JwtUtil {
         if (lower.contains("changeme") || lower.contains("example") || lower.contains("replace")) {
             boolean isProd = java.util.Arrays.stream(env.getActiveProfiles()).anyMatch("prod"::equals);
             if (isProd) {
-                throw new IllegalStateException("JWT secret is a placeholder value — aborting in production");
+                throw new IllegalStateException("JWT secret is a placeholder value - aborting in production");
             }
-            log.warn("JWT secret appears to be a placeholder value — this is INSECURE for production use");
+            log.warn("JWT secret appears to be a placeholder value - this is INSECURE for production use");
         }
         this.key = Keys.hmacShaKeyFor(secretBytes);
         this.expirationMs = expirationMs;
@@ -107,7 +107,6 @@ public class JwtUtil {
         String hash = hashToken(token);
         long ttlMs = claims.getExpiration().getTime() - System.currentTimeMillis();
         if (ttlMs > 0) {
-            // Always write to local blacklist as fallback (Bug #12)
             localBlacklist.put(hash, System.currentTimeMillis() + ttlMs);
             try {
                 redisTemplate.opsForValue().set(BLACKLIST_PREFIX + hash, "1", ttlMs, TimeUnit.MILLISECONDS);
@@ -115,14 +114,13 @@ public class JwtUtil {
                 log.warn("Failed to write token blacklist to Redis, local fallback active: {}", e.getMessage());
             }
         }
-        // Cleanup expired local entries periodically
         if (localBlacklist.size() > 1000) {
             long now = System.currentTimeMillis();
             localBlacklist.entrySet().removeIf(entry -> entry.getValue() < now);
         }
     }
 
-    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 300_000) // Every 5 minutes
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 300_000)
     public void cleanupLocalBlacklist() {
         long now = System.currentTimeMillis();
         int before = localBlacklist.size();
@@ -135,21 +133,19 @@ public class JwtUtil {
 
     private boolean isBlacklisted(String token) {
         String hash = hashToken(token);
-        // Always check local blacklist first (works even when Redis is down)
         Long localExpiry = localBlacklist.get(hash);
         if (localExpiry != null) {
             if (System.currentTimeMillis() < localExpiry) {
                 return true;
             }
-            localBlacklist.remove(hash); // Expired
+            localBlacklist.remove(hash);
         }
 
-        // Local blacklist already checked above — if Redis is down, fail open
-        // (local blacklist covers locally-invalidated tokens; shared invalidation is best-effort)
         long failStarted = redisFailStartedAt.get();
-        if (redisFailCount.get() >= REDIS_FAIL_THRESHOLD && (System.currentTimeMillis() - failStarted) < REDIS_COOLDOWN_MS) {
-            log.debug("Redis unavailable, local blacklist check completed (cooldown active)");
-            return false;
+        if (redisFailCount.get() >= REDIS_FAIL_THRESHOLD
+                && (System.currentTimeMillis() - failStarted) < REDIS_COOLDOWN_MS) {
+            log.debug("Redis unavailable for blacklist check (cooldown active), failing closed");
+            return true;
         }
         try {
             boolean result = Boolean.TRUE.equals(redisTemplate.hasKey(BLACKLIST_PREFIX + hash));
@@ -161,11 +157,13 @@ public class JwtUtil {
                 redisFailStartedAt.set(System.currentTimeMillis());
             }
             if (failures <= REDIS_FAIL_THRESHOLD) {
-                log.warn("Redis unavailable for blacklist check (failure {}/{}), failing open", failures, REDIS_FAIL_THRESHOLD, e);
+                log.warn("Redis unavailable for blacklist check (failure {}/{}), failing closed",
+                        failures, REDIS_FAIL_THRESHOLD, e);
             } else {
-                log.warn("Redis unavailable (failure {}), entering cooldown — skipping blacklist check for {}s", failures, REDIS_COOLDOWN_MS / 1000);
+                log.warn("Redis unavailable (failure {}), entering fail-closed cooldown for {}s",
+                        failures, REDIS_COOLDOWN_MS / 1000);
             }
-            return false;
+            return true;
         }
     }
 

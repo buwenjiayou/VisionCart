@@ -270,6 +270,16 @@ public class AsyncRecognitionTaskManager {
         }
     }
 
+    public boolean isFailed(String sessionId) {
+        String key = KEY_PREFIX + sessionId;
+        try {
+            Object status = redisTemplate.opsForHash().get(key, "status");
+            return "FAILED".equals(status);
+        } catch (Exception e) {
+            return "FAILED".equals(getFieldLocal(key, "status"));
+        }
+    }
+
     /**
      * Resolve crop path: if relative, resolve against historyImageDir; if absolute, use as-is.
      */

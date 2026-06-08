@@ -31,7 +31,7 @@ public class PriceMonitorService {
     private static final Logger log = LoggerFactory.getLogger(PriceMonitorService.class);
     private static final BigDecimal LARGE_DROP_THRESHOLD = new BigDecimal("0.15");
 
-    private final SearchOrchestrator searchOrchestrator;
+    private final ExactProductRefreshService exactProductRefreshService;
     private final PriceHistoryRepository historyRepository;
     private final PriceAlertRepository alertRepository;
     private final FavoriteProductRepository favoriteRepository;
@@ -41,14 +41,14 @@ public class PriceMonitorService {
     private final int dedupDays;
 
     @Autowired
-    public PriceMonitorService(SearchOrchestrator searchOrchestrator,
+    public PriceMonitorService(ExactProductRefreshService exactProductRefreshService,
                                PriceHistoryRepository historyRepository,
                                PriceAlertRepository alertRepository,
                                FavoriteProductRepository favoriteRepository,
                                SimpMessagingTemplate messagingTemplate,
                                StringRedisTemplate redisTemplate,
                                VisionCartProperties properties) {
-        this.searchOrchestrator = searchOrchestrator;
+        this.exactProductRefreshService = exactProductRefreshService;
         this.historyRepository = historyRepository;
         this.alertRepository = alertRepository;
         this.favoriteRepository = favoriteRepository;
@@ -59,12 +59,14 @@ public class PriceMonitorService {
     }
 
     PriceMonitorService(SearchOrchestrator searchOrchestrator,
+                        List<com.visioncart.service.search.PlatformSearchService> platformServices,
                         PriceHistoryRepository historyRepository,
                         PriceAlertRepository alertRepository,
                         FavoriteProductRepository favoriteRepository,
                         SimpMessagingTemplate messagingTemplate,
                         VisionCartProperties properties) {
-        this(searchOrchestrator, historyRepository, alertRepository, favoriteRepository, messagingTemplate, null, properties);
+        this(new ExactProductRefreshService(searchOrchestrator, platformServices), historyRepository, alertRepository,
+                favoriteRepository, messagingTemplate, null, properties);
     }
 
     /**
@@ -82,21 +84,7 @@ public class PriceMonitorService {
         }
 
         try {
-            SearchFilter filter = new SearchFilter(
-                    null, List.of(platform), null, List.of(), List.of(),
-                    null, null, null, null
-            );
-            Map<String, String> attributes = Map.of("关键词", title);
-            // sessionId=null: price monitoring doesn't need session cache/lock
-            SearchRequest request = new SearchRequest(
-                    null, attributes, filter, 1, 10, 50, "server"
-            );
-
-            SearchResult result = searchOrchestrator.search(request);
-            ProductCard matched = result.products().stream()
-                    .filter(p -> p.id().equals(productId))
-                    .findFirst()
-                    .orElse(null);
+            ProductCard matched = exactProductRefreshService.refresh(favorite).orElse(null);
 
             if (matched == null) {
                 log.debug("Product {} not found in search results for platform {}", productId, platform);
@@ -106,19 +94,20 @@ public class PriceMonitorService {
             BigDecimal currentPrice = matched.price();
             BigDecimal oldPrice = favorite.getPrice();
 
-            // Record price history only when price changes to avoid table bloat (Bug #21)
-            if (oldPrice == null || currentPrice.compareTo(oldPrice) != 0) {
-                recordHistory(productId, platform, currentPrice);
-            }
-
             // Update favorite price if changed
             if (oldPrice == null || currentPrice.compareTo(oldPrice) != 0) {
                 favorite.setPrice(currentPrice);
                 favoriteRepository.save(favorite);
             }
 
-            // Check alerts (pass oldPrice before it was overwritten)
+            // Check alerts before recording the current sample so history-low only compares
+            // against prices seen before this refresh.
             checkAlerts(userId, favorite, oldPrice, currentPrice);
+
+            // Record price history only when price changes to avoid table bloat (Bug #21)
+            if (oldPrice == null || currentPrice.compareTo(oldPrice) != 0) {
+                recordHistory(productId, platform, currentPrice);
+            }
 
             return currentPrice;
         } catch (Exception e) {

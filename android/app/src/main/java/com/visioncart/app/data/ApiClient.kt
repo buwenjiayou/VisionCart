@@ -175,6 +175,10 @@ data class RefreshTokenData(
     val refresh_token: String? = null
 )
 
+data class RefreshTokenRequest(
+    @Json(name = "refresh_token") val refreshToken: String
+)
+
 // ==================== API Interface ====================
 
 interface VisionCartApi {
@@ -404,7 +408,8 @@ object ApiClient {
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(10, TimeUnit.SECONDS)
                 .build()
-            val body = """{"refresh_token":"$currentRefreshToken"}"""
+            val body = moshi.adapter(RefreshTokenRequest::class.java)
+                .toJson(RefreshTokenRequest(currentRefreshToken))
                 .toRequestBody("application/json".toMediaType())
             val refreshRequest = Request.Builder()
                 .url("${API_BASE_URL}api/v1/auth/refresh")

@@ -50,8 +50,8 @@ public class VisionCartProperties {
         private Integer maxTokens;
         private Double topP;
         private boolean semanticJudgeEnabled = true;
-        private int semanticJudgeCandidateLimit = 80;
-        private int semanticJudgeReturnLimit = 50;
+        private int semanticJudgeCandidateLimit = 12;
+        private int semanticJudgeReturnLimit = 12;
         private double semanticJudgeMinScore = 0.35;
 
         public String getLlmModel() { return llmModel; }
@@ -171,6 +171,7 @@ public class VisionCartProperties {
         private int corePoolSize = 8;
         private int maxPoolSize = 32;
         private int queueCapacity = 200;
+        private final Reputation reputation = new Reputation();
 
         public long getPlatformTimeoutMs() { return platformTimeoutMs; }
         public void setPlatformTimeoutMs(long platformTimeoutMs) { this.platformTimeoutMs = platformTimeoutMs; }
@@ -183,6 +184,59 @@ public class VisionCartProperties {
 
         public int getQueueCapacity() { return queueCapacity; }
         public void setQueueCapacity(int queueCapacity) { this.queueCapacity = queueCapacity; }
+
+        public Reputation getReputation() { return reputation; }
+
+        public static class Reputation {
+            private double trustWeight = 0.85;
+            private double relevanceWeight = 0.10;
+            private double salesWeight = 0.0;
+            private double taobaoShopDsrConfidence = 0.75;
+            private double tmallShopDsrConfidence = 0.78;
+            private double pddShopLevelConfidence = 0.60;
+            private double ebaySellerConfidence = 0.70;
+            private double unknownShopDsrConfidence = 0.65;
+            private double unknownSellerConfidence = 0.65;
+
+            public double getTrustWeight() { return trustWeight; }
+            public void setTrustWeight(double trustWeight) { this.trustWeight = trustWeight; }
+
+            public double getRelevanceWeight() { return relevanceWeight; }
+            public void setRelevanceWeight(double relevanceWeight) { this.relevanceWeight = relevanceWeight; }
+
+            public double getSalesWeight() { return salesWeight; }
+            public void setSalesWeight(double salesWeight) { this.salesWeight = salesWeight; }
+
+            public double getTaobaoShopDsrConfidence() { return taobaoShopDsrConfidence; }
+            public void setTaobaoShopDsrConfidence(double taobaoShopDsrConfidence) {
+                this.taobaoShopDsrConfidence = taobaoShopDsrConfidence;
+            }
+
+            public double getTmallShopDsrConfidence() { return tmallShopDsrConfidence; }
+            public void setTmallShopDsrConfidence(double tmallShopDsrConfidence) {
+                this.tmallShopDsrConfidence = tmallShopDsrConfidence;
+            }
+
+            public double getPddShopLevelConfidence() { return pddShopLevelConfidence; }
+            public void setPddShopLevelConfidence(double pddShopLevelConfidence) {
+                this.pddShopLevelConfidence = pddShopLevelConfidence;
+            }
+
+            public double getEbaySellerConfidence() { return ebaySellerConfidence; }
+            public void setEbaySellerConfidence(double ebaySellerConfidence) {
+                this.ebaySellerConfidence = ebaySellerConfidence;
+            }
+
+            public double getUnknownShopDsrConfidence() { return unknownShopDsrConfidence; }
+            public void setUnknownShopDsrConfidence(double unknownShopDsrConfidence) {
+                this.unknownShopDsrConfidence = unknownShopDsrConfidence;
+            }
+
+            public double getUnknownSellerConfidence() { return unknownSellerConfidence; }
+            public void setUnknownSellerConfidence(double unknownSellerConfidence) {
+                this.unknownSellerConfidence = unknownSellerConfidence;
+            }
+        }
     }
 
     // ==================== Recognition ====================
@@ -329,6 +383,7 @@ public class VisionCartProperties {
     public static class Security {
         private String allowedOrigins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080";
         private String adminUserIds = "";
+        private String monitorToken = "";
         private boolean websocketQueryTokenEnabled = false;
 
         public String getAllowedOrigins() { return allowedOrigins; }
@@ -336,6 +391,9 @@ public class VisionCartProperties {
 
         public String getAdminUserIds() { return adminUserIds; }
         public void setAdminUserIds(String adminUserIds) { this.adminUserIds = adminUserIds; }
+
+        public String getMonitorToken() { return monitorToken; }
+        public void setMonitorToken(String monitorToken) { this.monitorToken = monitorToken; }
 
         public boolean isWebsocketQueryTokenEnabled() { return websocketQueryTokenEnabled; }
         public void setWebsocketQueryTokenEnabled(boolean websocketQueryTokenEnabled) {
@@ -373,6 +431,7 @@ public class VisionCartProperties {
         private int defaultWindowSeconds = 60;
         private int authLimit = 10;
         private int authWindowSeconds = 300;
+        private int sendCodeCooldownSeconds = 60;
         private int recognitionLimit = 20;
         private int recognitionWindowSeconds = 3600;
         private int maxLocalKeys = 10000;
@@ -391,6 +450,9 @@ public class VisionCartProperties {
 
         public int getAuthWindowSeconds() { return authWindowSeconds; }
         public void setAuthWindowSeconds(int authWindowSeconds) { this.authWindowSeconds = authWindowSeconds; }
+
+        public int getSendCodeCooldownSeconds() { return sendCodeCooldownSeconds; }
+        public void setSendCodeCooldownSeconds(int sendCodeCooldownSeconds) { this.sendCodeCooldownSeconds = sendCodeCooldownSeconds; }
 
         public int getRecognitionLimit() { return recognitionLimit; }
         public void setRecognitionLimit(int recognitionLimit) { this.recognitionLimit = recognitionLimit; }

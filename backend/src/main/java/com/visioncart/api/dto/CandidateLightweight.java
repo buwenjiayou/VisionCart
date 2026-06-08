@@ -8,7 +8,6 @@ import java.util.Map;
 /**
  * Lightweight candidate for Redis session cache.
  * Contains all fields needed for filtering, sorting, and attribute matching.
- * Full ProductCard (with imageUrl, detailUrl) is built on-demand for frontend.
  */
 public record CandidateLightweight(
         String id,
@@ -25,21 +24,23 @@ public record CandidateLightweight(
         String shopName,
         String ratingSource,
         String salesLabel,
-        String shopType,        // official / authorized / third_party / personal
+        String shopType,
         List<String> tags,
-        String category,        // e.g. "剃须刀"
-        List<String> categoryPath, // e.g. ["个人护理", "剃须刀", "电动剃须刀"]
-        Map<String, String> attributes, // e.g. {color:black, head_count:single}
-        boolean inStock,        // stock availability
-        String normalizedText,  // pre-computed searchable text for fast filtering
+        String category,
+        List<String> categoryPath,
+        Map<String, String> attributes,
+        boolean inStock,
+        String normalizedText,
         double relevanceScore,
-        String mainCategoryCode, // normalized category code: "cup", "phone", "shoe", etc.
-        String productRole,      // "main", "accessory", "consumable", "unknown"
-        double roleConfidence    // confidence of role classification (0.0–1.0)
+        String mainCategoryCode,
+        String productRole,
+        double roleConfidence,
+        Double itemRating,
+        Double shopReputationScore,
+        String shopReputationLevel,
+        Double sellerReputationScore,
+        String reputationEvidence
 ) {
-    /**
-     * Convert from full ProductCard to lightweight with structured role info.
-     */
     public static CandidateLightweight from(ProductCard card, double relevanceScore,
                                              String category, List<String> categoryPath,
                                              Map<String, String> attributes, String shopType,
@@ -66,29 +67,26 @@ public record CandidateLightweight(
                 category,
                 categoryPath != null ? categoryPath : List.of(),
                 attributes != null ? attributes : Map.of(),
-                true, // default inStock
+                true,
                 normText,
                 relevanceScore,
                 mainCategoryCode != null ? mainCategoryCode : "",
                 productRole != null ? productRole : "unknown",
-                roleConfidence
+                roleConfidence,
+                card.itemRating(),
+                card.shopReputationScore(),
+                card.shopReputationLevel(),
+                card.sellerReputationScore(),
+                card.reputationEvidence()
         );
     }
 
-    /**
-     * Convert from ProductCard (carries mainCategoryCode + productRole).
-     */
     public static CandidateLightweight from(ProductCard card, double relevanceScore) {
         return from(card, relevanceScore, null, null, Map.of(), null,
                 card.mainCategoryCode(), card.productRole(), 0.8);
     }
 
-    /**
-     * Convert back to ProductCard (without imageUrl/detailUrl — those come from DB/cache).
-     * Merges attribute values into tags so productText() can match them for filtering.
-     */
     public ProductCard toProductCard() {
-        // Merge category + attribute values into tags for text-based filtering
         List<String> mergedTags = new ArrayList<>(tags != null ? tags : List.of());
         if (category != null && !category.isBlank()) {
             mergedTags.add(category);
@@ -102,11 +100,13 @@ public record CandidateLightweight(
                 id, title, imageUrl != null ? imageUrl : "",
                 price, originalPrice,
                 platform, selfOperated, shopName,
-                rating, sales, relevanceScore, // similarity
+                rating, sales, relevanceScore,
                 mergedTags, detailUrl != null ? detailUrl : "",
                 brand, ratingSource != null ? ratingSource : "none", salesLabel,
                 mainCategoryCode != null ? mainCategoryCode : "",
-                productRole != null ? productRole : "unknown"
+                productRole != null ? productRole : "unknown",
+                null, null, null, null,
+                itemRating, shopReputationScore, shopReputationLevel, sellerReputationScore, reputationEvidence
         );
     }
 
@@ -122,7 +122,6 @@ public record CandidateLightweight(
         if (card.tags() != null) {
             card.tags().forEach(t -> sb.append(" ").append(t));
         }
-        // Include mainCategoryCode in normalized text for NLP filtering
         if (card.mainCategoryCode() != null && !card.mainCategoryCode().isBlank()) {
             sb.append(" ").append(card.mainCategoryCode());
         }

@@ -1,6 +1,8 @@
 package com.visioncart.app.ui.viewmodel
 
 import com.visioncart.app.data.*
+import com.visioncart.app.ui.components.buildFilterSummaryTags
+import com.visioncart.app.ui.components.filterTagDeleteTarget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -146,6 +148,26 @@ class MainViewModelTest {
         assertEquals(50, uiState.products.size)
     }
 
+    @Test
+    fun `relaxFilter ignores default empty price range`() {
+        val filter = SearchFilter(
+            brands = listOf("Apple"),
+            priceRange = PriceRange()
+        )
+
+        assertEquals("brands", nextRelaxFilterField(filter))
+    }
+
+    @Test
+    fun `relaxFilter removes price only when price bound exists`() {
+        val filter = SearchFilter(
+            brands = listOf("Apple"),
+            priceRange = PriceRange(max = 500.0)
+        )
+
+        assertEquals("price_range", nextRelaxFilterField(filter))
+    }
+
     // ==================== P1: suggestionCards dedup ====================
 
     @Test
@@ -181,6 +203,94 @@ class MainViewModelTest {
         assertEquals(2, merged.size)
         assertEquals("Existing AI", merged[0].title) // Existing wins
         assertEquals("New Quick", merged[1].title)
+    }
+
+    @Test
+    fun `sort request keeps suggestionCards while clearing undoAction`() {
+        val cards = listOf(SuggestionCard("sort_relevance", "综合推荐", "sub", "icon", "action", 5))
+        val state = MainUiState(
+            suggestionCards = cards,
+            undoAction = "低价优先",
+            undoProducts = listOf(productCard("undo-1")),
+            undoFilter = SearchFilter()
+        )
+
+        val duringSortRequest = state.copy(
+            deriveFilterTagsFromFilter = true,
+            undoProducts = null,
+            undoFilter = null,
+            undoAction = null,
+            undoMetric = null,
+            undoTone = null
+        )
+
+        assertEquals(cards, duringSortRequest.suggestionCards)
+        assertTrue(duringSortRequest.deriveFilterTagsFromFilter)
+        assertNull(duringSortRequest.undoAction)
+        assertNull(duringSortRequest.undoProducts)
+        assertNull(duringSortRequest.undoFilter)
+    }
+
+    @Test
+    fun `filter summary tags do not include sort mode`() {
+        val sortOnlyTags = buildFilterSummaryTags(
+            filter = SearchFilter(sortBy = "price", sortOrder = "asc")
+        )
+        assertTrue(sortOnlyTags.isEmpty())
+
+        val tagsWithRealFilter = buildFilterSummaryTags(
+            filter = SearchFilter(brands = listOf("Apple"), sortBy = "sales", sortOrder = "desc")
+        )
+        assertEquals(listOf("Apple"), tagsWithRealFilter.map { it.label })
+        assertEquals(listOf("brands.Apple"), tagsWithRealFilter.map { it.fieldName })
+    }
+
+    @Test
+    fun `suggestion tag snapshot preserves existing real filters without sort tag`() {
+        val state = MainUiState(
+            currentFilter = SearchFilter(
+                brands = listOf("Apple"),
+                sortBy = "price",
+                sortOrder = "asc"
+            )
+        )
+
+        val (flatTags, structuredTags) = snapshotVisibleFilterTags(state)
+
+        assertEquals(listOf("Apple"), flatTags)
+        assertEquals(listOf("brands.Apple"), structuredTags.map { it.filterPath })
+    }
+
+    @Test
+    fun `sort success replaces suggestionCards without merging old cards`() {
+        val oldCards = listOf(
+            SuggestionCard("old_sort", "回到综合推荐", "sub", "icon", "action", 5)
+        )
+        val newCards = listOf(
+            SuggestionCard("new_review", "口碑优先", "sub", "icon", "action", 5)
+        )
+        val state = MainUiState(suggestionCards = oldCards)
+
+        val afterSuccess = state.copy(suggestionCards = newCards.distinctBy { it.id })
+
+        assertEquals(listOf("new_review"), afterSuccess.suggestionCards.map { it.id })
+        assertFalse(afterSuccess.suggestionCards.any { it.id == "old_sort" })
+    }
+
+    @Test
+    fun `filter tag delete target prefers filterPath over tagId`() {
+        assertEquals(
+            "preferences.material",
+            filterTagDeleteTarget("preferences.material", "tag-123", "材质")
+        )
+        assertEquals(
+            "tag-123",
+            filterTagDeleteTarget(null, "tag-123", "材质")
+        )
+        assertEquals(
+            "材质",
+            filterTagDeleteTarget(null, null, "材质")
+        )
     }
 
     // ==================== P1: Multi-product state preservation ====================

@@ -12,13 +12,19 @@ public record SearchResult(
         int totalInPool,
         boolean needExpand,
         boolean needRelaxHint,
-        boolean cacheExpired
+        boolean cacheExpired,
+        String searchRunId
 ) {
     public SearchResult(long total, List<ProductCard> products, List<PlatformPriceStat> platformStats, List<SuggestionCard> suggestionCards) {
-        this(total, products, platformStats, suggestionCards, false, List.of(), 0, false, false, false);
+        this(total, products, platformStats, suggestionCards, false, List.of(), 0, false, false, false, null);
     }
 
     public SearchResult(long total, List<ProductCard> products, List<PlatformPriceStat> platformStats, List<SuggestionCard> suggestionCards, boolean relaxed) {
-        this(total, products, platformStats, suggestionCards, relaxed, List.of(), 0, false, false, false);
+        this(total, products, platformStats, suggestionCards, relaxed, List.of(), 0, false, false, false, null);
+    }
+
+    public SearchResult(long total, List<ProductCard> products, List<PlatformPriceStat> platformStats,
+                        List<SuggestionCard> suggestionCards, boolean relaxed, String searchRunId) {
+        this(total, products, platformStats, suggestionCards, relaxed, List.of(), 0, false, false, false, searchRunId);
     }
 }

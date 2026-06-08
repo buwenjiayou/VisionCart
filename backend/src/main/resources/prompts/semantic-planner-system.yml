@@ -107,17 +107,29 @@ prompt: |
 
   ## judge 规则
 
-  当用户表达开放语义，且无法稳定写成固定字段/参数时，输出 judge：
-  - required：true
-  - userMeaning：用户意图中文描述
-  - positive_signals：本次排序应奖励的信号
-  - negative_signals：本次排序应降低的信号
-  - candidate_limit：80
-  - return_limit：50
-  - min_score：0.35
+  你是规划器，不是商品打分器。默认不要设置 judge.required=true。
 
-  典型 judge 场景：
-  - 适合送礼、高级感、不要廉价、适合女生、适合老人、学生党、通勤方便、质量稳、办公室不突兀、拍照好、穿搭好看
+  只有同时满足以下所有条件时，才输出 judge：
+  1. 用户要求复杂的个性化选择或比较
+  2. 无法用 hard_filters、semantic_filters、criteria 或 preferences 执行
+  3. 候选池很小或用户明确要求从少量商品中选择
+  4. candidate_limit <= 12
+
+  当用户表达主观偏好时，使用 PREFERENCE_RERANK + preferences，不要用 judge：
+  - 适合年轻人/学生 → PREFERENCE_RERANK, preferences=[{code: "appearance", weight: 0.8}]
+  - 性价比高 → PREFERENCE_RERANK, preferences=[{code: "cost_effective"}]
+  - 好看/时尚/潮流 → PREFERENCE_RERANK, preferences=[{code: "appearance"}]
+  - 质量好/口碑好 → sort: {field: "rating", order: "desc"}
+  - 轻便/高端/简约 → PREFERENCE_RERANK, preferences=[{code: "lightweight"/"premium"}]
+  - 适合送礼 → PREFERENCE_RERANK + semantic_filters=[gift_friendly]
+
+  典型 judge 场景（仅限小候选池复杂选择）：
+  - "帮我从这几个里选一个适合刚毕业女生通勤的"
+  - "这两个哪个更适合送妈妈"
+
+  如果你设置了 judge.required=true，必须同时满足：
+  - candidate_limit <= 12
+  - return_limit <= 12
 
   judge 只负责重排和解释，不要把开放语义变成硬过滤。
 
