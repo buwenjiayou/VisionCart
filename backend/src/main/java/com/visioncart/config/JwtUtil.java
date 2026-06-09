@@ -26,6 +26,7 @@ public class JwtUtil {
     private final SecretKey key;
     private final long expirationMs;
     private final StringRedisTemplate redisTemplate;
+    private final boolean failClosedOnRedisUnavailable;
 
     private static final int REDIS_FAIL_THRESHOLD = 5;
     private static final long REDIS_COOLDOWN_MS = 30_000;
@@ -46,8 +47,8 @@ public class JwtUtil {
             throw new IllegalStateException("JWT secret must be at least 32 bytes, got " + secretBytes.length);
         }
         String lower = secret.toLowerCase();
+        boolean isProd = java.util.Arrays.stream(env.getActiveProfiles()).anyMatch("prod"::equals);
         if (lower.contains("changeme") || lower.contains("example") || lower.contains("replace")) {
-            boolean isProd = java.util.Arrays.stream(env.getActiveProfiles()).anyMatch("prod"::equals);
             if (isProd) {
                 throw new IllegalStateException("JWT secret is a placeholder value - aborting in production");
             }
@@ -56,6 +57,7 @@ public class JwtUtil {
         this.key = Keys.hmacShaKeyFor(secretBytes);
         this.expirationMs = expirationMs;
         this.redisTemplate = redisTemplate;
+        this.failClosedOnRedisUnavailable = isProd;
     }
 
     public String generateToken(Long userId, String email) {
@@ -144,8 +146,12 @@ public class JwtUtil {
         long failStarted = redisFailStartedAt.get();
         if (redisFailCount.get() >= REDIS_FAIL_THRESHOLD
                 && (System.currentTimeMillis() - failStarted) < REDIS_COOLDOWN_MS) {
-            log.debug("Redis unavailable for blacklist check (cooldown active), failing closed");
-            return true;
+            if (failClosedOnRedisUnavailable) {
+                log.debug("Redis unavailable for blacklist check (cooldown active), failing closed");
+                return true;
+            }
+            log.debug("Redis unavailable for blacklist check (cooldown active), using local blacklist fallback");
+            return false;
         }
         try {
             boolean result = Boolean.TRUE.equals(redisTemplate.hasKey(BLACKLIST_PREFIX + hash));
@@ -156,14 +162,17 @@ public class JwtUtil {
             if (failures == 1) {
                 redisFailStartedAt.set(System.currentTimeMillis());
             }
+            String mode = failClosedOnRedisUnavailable
+                    ? "failing closed"
+                    : "using local blacklist fallback";
             if (failures <= REDIS_FAIL_THRESHOLD) {
-                log.warn("Redis unavailable for blacklist check (failure {}/{}), failing closed",
-                        failures, REDIS_FAIL_THRESHOLD, e);
+                log.warn("Redis unavailable for blacklist check (failure {}/{}), {}",
+                        failures, REDIS_FAIL_THRESHOLD, mode, e);
             } else {
-                log.warn("Redis unavailable (failure {}), entering fail-closed cooldown for {}s",
-                        failures, REDIS_COOLDOWN_MS / 1000);
+                log.warn("Redis unavailable (failure {}), entering {} cooldown for {}s",
+                        failures, mode, REDIS_COOLDOWN_MS / 1000);
             }
-            return true;
+            return failClosedOnRedisUnavailable;
         }
     }
 

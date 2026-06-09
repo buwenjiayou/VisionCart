@@ -9,6 +9,7 @@ import com.visioncart.service.filter.SafeActionExecutor;
 import com.visioncart.service.filter.semantic.SemanticActionExecutor;
 import com.visioncart.service.nlp.LlmSemanticPlanner;
 import com.visioncart.service.nlp.NlpConversationManager;
+import com.visioncart.service.nlp.NlpStateStackService;
 import com.visioncart.service.recognition.AttributeCorrectionService;
 import com.visioncart.service.recognition.SessionHistoryService;
 import com.visioncart.service.search.CandidateFilterService;
@@ -53,6 +54,7 @@ public class ActionExecutionService {
     private final ProductReputationService reputationService;
     private final SemanticExecutionPolicy semanticExecutionPolicy;
     private final SearchRunService searchRunService;
+    private final NlpStateStackService nlpStateStackService;
 
     public ActionExecutionService(AttributeCorrectionService attributeCorrectionService,
                                   SafeActionExecutor safeActionExecutor,
@@ -69,7 +71,8 @@ public class ActionExecutionService {
                                   ProductSortService productSortService,
                                   ProductReputationService reputationService,
                                   SemanticExecutionPolicy semanticExecutionPolicy,
-                                  SearchRunService searchRunService) {
+                                  SearchRunService searchRunService,
+                                  NlpStateStackService nlpStateStackService) {
         this.attributeCorrectionService = attributeCorrectionService;
         this.safeActionExecutor = safeActionExecutor;
         this.actionCompiler = actionCompiler;
@@ -86,6 +89,7 @@ public class ActionExecutionService {
         this.reputationService = reputationService;
         this.semanticExecutionPolicy = semanticExecutionPolicy;
         this.searchRunService = searchRunService;
+        this.nlpStateStackService = nlpStateStackService;
     }
 
     public ActionResult execute(UserAction action, Long userId) {
@@ -107,6 +111,41 @@ public class ActionExecutionService {
         String sessionId = action.sessionId();
         String userInput = action.rawText();
 
+        if (nlpStateStackService.limitReached(sessionId)) {
+            SearchFilter currentFilter = conversationManager.getFilterState(sessionId);
+            List<ProductCard> currentCandidates = currentProducts(sessionId);
+            java.util.Optional<NlpStateStackService.NlpState> currentNlpState = peekNlpState(sessionId);
+            List<ProductCard> currentDisplay = currentNlpState
+                    .map(NlpStateStackService.NlpState::products)
+                    .filter(products -> products != null && !products.isEmpty())
+                    .orElseGet(() -> filterProducts(currentCandidates, currentFilter));
+            List<FilterTag> currentTags = currentNlpState
+                    .map(NlpStateStackService.NlpState::tags)
+                    .filter(tags -> tags != null && !tags.isEmpty())
+                    .orElseGet(() -> generateStructuredTags(currentFilter));
+            return withSuggestionCards(new ActionResult(
+                    currentDisplay,
+                    currentFilter,
+                    currentTags,
+                    false,
+                    true,
+                    undoService.canUndo(sessionId),
+                    "已达到本次识别的筛选次数上限，可回退上一步或清空筛选",
+                    List.of(),
+                    List.of(),
+                    null,
+                    currentCandidates.size(),
+                    null,
+                    null,
+                    "nlp",
+                    null,
+                    null,
+                    "KEPT_PREVIOUS",
+                    "nlp.limit_reached",
+                    null,
+                    null));
+        }
+
         // 1. Resolve session context
         UserAction.ActionPayload payload = action.payload();
         Map<String, String> contextMap = payload != null && payload.context() != null
@@ -118,36 +157,63 @@ public class ActionExecutionService {
         // 2. Get current candidates (优先 classifiedPool Top300) and previous filter state
         List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
         SearchFilter previousFilter = conversationManager.getFilterState(sessionId);
-        List<ProductCard> previousProducts = filterService.filter(
-                candidates, previousFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products();
+        java.util.Optional<NlpStateStackService.NlpState> previousNlpState = peekNlpState(sessionId);
+        List<ProductCard> previousProducts = previousNlpState
+                .map(NlpStateStackService.NlpState::products)
+                .filter(products -> products != null && !products.isEmpty())
+                .orElseGet(() -> filterService.filter(
+                        candidates, previousFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products());
 
         // 3. Generate semantic plan via LLM
         LlmSemanticPlanner.ProductPoolSummary poolSummary = LlmSemanticPlanner.ProductPoolSummary.from(candidates);
-        SemanticActionPlan rawPlan = llmSemanticPlanner.plan(userInput, ctx, poolSummary);
+        String historyText = nlpStateStackService.historyText(sessionId);
+        SemanticActionPlan rawPlan = llmSemanticPlanner.plan(userInput, ctx, poolSummary, historyText);
 
         // 4. Apply execution policy: prevent LLM Judge on large pools for subjective preferences
         SemanticActionPlan plan = semanticExecutionPolicy.normalizeForSyncExecution(
                 userInput, rawPlan, previousProducts.size());
+        log.info("NLP semantic plan: session={}, mode={}, hardFilters={}, preferences={}, semanticFilters={}, historyPresent={}",
+                sessionId,
+                plan.executionMode(),
+                plan.hardFilters() == null ? 0 : plan.hardFilters().size(),
+                plan.preferences() == null ? 0 : plan.preferences().size(),
+                plan.semanticFilters() == null ? 0 : plan.semanticFilters().size(),
+                historyText != null && !historyText.isBlank());
 
         // 5. Rerank-only plans operate on the current display page, not the full candidate pool
         List<ProductCard> executionPool = isRerankOnly(plan) ? previousProducts : candidates;
 
+        // Each successful NLP turn is a complete new state. History is sent to the LLM,
+        // and only conditions present in the returned plan should be committed.
+        SearchFilter executionFilterBase = SearchFilter.empty();
         ActionResult result = semanticActionExecutor.execute(
-                sessionId, executionPool, previousFilter, plan, previousProducts);
+                sessionId, executionPool, executionFilterBase, plan, previousProducts);
 
         // 5. Save undo point if filter, product order, or tags changed
+        List<ProductCard> resultDisplayProducts = displayProducts(result);
+        List<FilterTag> resultTags = safeFilterTags(result.filterTags());
+        List<FilterTag> previousTags = previousNlpState
+                .map(NlpStateStackService.NlpState::tags)
+                .filter(tags -> tags != null && !tags.isEmpty())
+                .orElseGet(() -> generateStructuredTags(previousFilter));
         boolean filterChanged = result.appliedFilter() != null
                 && !java.util.Objects.equals(previousFilter, result.appliedFilter());
-        boolean productsChanged = result.products() != null
-                && !sameProductIds(previousProducts, result.products());
-        boolean tagsChanged = result.filterTags() != null && !result.filterTags().isEmpty();
+        boolean productsChanged = !sameProductIds(previousProducts, resultDisplayProducts);
+        boolean tagsChanged = !sameFilterTags(previousTags, resultTags);
 
-        if (result.filterApplied() && (filterChanged || productsChanged || tagsChanged)) {
+        if (result.filterApplied() && result.canUndo() && (filterChanged || productsChanged || tagsChanged)) {
             // 保存 undo point 时同时保存 classifiedPool 快照
             com.visioncart.service.search.SearchCandidatePool currentPool =
                     sessionCache.getClassifiedPool(sessionId).orElse(null);
             undoService.saveUndoPoint(sessionId, previousFilter, previousProducts, userInput, "nlp", null,
                     null, currentPool);
+            nlpStateStackService.push(
+                    sessionId,
+                    action.actionId(),
+                    userInput,
+                    result.appliedFilter() != null ? result.appliedFilter() : previousFilter,
+                    !resultTags.isEmpty() ? resultTags : generateStructuredTags(result.appliedFilter()),
+                    resultDisplayProducts);
         }
 
         return withSuggestionCards(result);
@@ -438,25 +504,41 @@ public class ActionExecutionService {
                 List<ProductCard> currentProds = currentProducts(sessionId);
                 return ActionResult.passThrough(currentProds);
             }
+            java.util.Optional<NlpStateStackService.NlpState> restoredNlpState = java.util.Optional.empty();
+            if ("nlp".equals(undoResult.undoneSource())) {
+                nlpStateStackService.pop(sessionId);
+                restoredNlpState = peekNlpState(sessionId);
+            }
             SearchFilter restoredFilter = undoResult.filter() != null
                     ? undoResult.filter() : SearchFilter.empty();
+            restoredFilter = restoredNlpState
+                    .map(NlpStateStackService.NlpState::filter)
+                    .orElse(restoredFilter);
             conversationManager.setFilterState(sessionId, restoredFilter);
             List<ProductCard> restoredSnapshot = safeProducts(undoResult.products());
             List<ProductCard> candidates = restoredSnapshot.isEmpty()
                     ? currentProducts(sessionId)
                     : restoredSnapshot;
-            List<ProductCard> restoredProducts = restoredSnapshot;
+            List<ProductCard> restoredProducts = restoredNlpState
+                    .map(NlpStateStackService.NlpState::products)
+                    .filter(products -> products != null && !products.isEmpty())
+                    .orElse(restoredSnapshot);
             if (restoredProducts.isEmpty()) {
                 CandidateFilterService.FilterResult filterResult = filterService.filter(
                         candidates, restoredFilter, Map.of(), DEFAULT_PAGE_SIZE, 1);
                 restoredProducts = safeProducts(filterResult.products());
             }
+            SearchFilter finalRestoredFilter = restoredFilter;
+            List<FilterTag> restoredTags = restoredNlpState
+                    .map(NlpStateStackService.NlpState::tags)
+                    .filter(tags -> tags != null && !tags.isEmpty())
+                    .orElseGet(() -> generateStructuredTags(finalRestoredFilter));
             archiveIfNeeded(sessionId, restoredProducts);
 
             return withSuggestionCards(new ActionResult(
                     restoredProducts,
                     restoredFilter,
-                    generateStructuredTags(restoredFilter),
+                    restoredTags,
                     true,
                     false,
                     undoService.canUndo(sessionId),
@@ -551,6 +633,8 @@ public class ActionExecutionService {
         SearchFilter emptyFilter = SearchFilter.empty();
         conversationManager.setFilterState(sessionId, emptyFilter);
         conversationManager.clear(sessionId);
+        nlpStateStackService.clear(sessionId);
+        undoService.clearUndoStack(sessionId);
         java.util.Optional<SearchResult> runResult =
                 searchRunService.recomputeDisplayPage(sessionId, emptyFilter, DEFAULT_PAGE_SIZE);
         List<ProductCard> products = runResult.map(SearchResult::products).orElseGet(() -> {
@@ -747,6 +831,26 @@ public class ActionExecutionService {
         return products == null ? List.of() : products;
     }
 
+    private List<ProductCard> displayProducts(ActionResult result) {
+        if (result == null) {
+            return List.of();
+        }
+        java.util.ArrayList<ProductCard> display = new java.util.ArrayList<>(safeProducts(result.products()));
+        if ("MIXED_RESULTS".equals(result.displayMode()) && result.fallbackProducts() != null) {
+            display.addAll(result.fallbackProducts());
+        }
+        return display.stream().limit(DEFAULT_PAGE_SIZE).toList();
+    }
+
+    private List<FilterTag> safeFilterTags(List<FilterTag> tags) {
+        return tags == null ? List.of() : tags;
+    }
+
+    private java.util.Optional<NlpStateStackService.NlpState> peekNlpState(String sessionId) {
+        java.util.Optional<NlpStateStackService.NlpState> state = nlpStateStackService.peek(sessionId);
+        return state != null ? state : java.util.Optional.empty();
+    }
+
     /**
      * Compare product ID lists to detect reorder / content change.
      */
@@ -756,6 +860,24 @@ public class ActionExecutionService {
         if (a.size() != b.size()) return false;
         for (int i = 0; i < a.size(); i++) {
             if (!java.util.Objects.equals(a.get(i).id(), b.get(i).id())) return false;
+        }
+        return true;
+    }
+
+    private boolean sameFilterTags(List<FilterTag> a, List<FilterTag> b) {
+        List<FilterTag> safeA = safeFilterTags(a);
+        List<FilterTag> safeB = safeFilterTags(b);
+        if (safeA.size() != safeB.size()) {
+            return false;
+        }
+        for (int i = 0; i < safeA.size(); i++) {
+            FilterTag left = safeA.get(i);
+            FilterTag right = safeB.get(i);
+            if (!java.util.Objects.equals(left.id(), right.id())
+                    || !java.util.Objects.equals(left.filterPath(), right.filterPath())
+                    || !java.util.Objects.equals(left.label(), right.label())) {
+                return false;
+            }
         }
         return true;
     }

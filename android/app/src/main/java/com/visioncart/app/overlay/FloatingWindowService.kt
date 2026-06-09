@@ -1459,58 +1459,19 @@ private fun OverlayPanel(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             filterTags.forEach { tag ->
-                                val fieldName = tag.filterPath ?: tagToFilterField(tag.label)
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = Color(0xFF0A7C66).copy(alpha = 0.12f)
                                 ) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(start = 8.dp, end = 4.dp, top = 3.dp, bottom = 3.dp)
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                     ) {
                                         Text(
                                             tag.label,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = Color(0xFF0A7C66)
                                         )
-                                        if (fieldName != null) {
-                                            IconButton(
-                                                onClick = {
-                                                    val sid = sessionId ?: return@IconButton
-                                                    scope.launch {
-                                                        try {
-                                                            repository.executeUserAction(
-                                                                UserActionRequest(
-                                                                    actionId = "overlay-tag-${System.currentTimeMillis()}",
-                                                                    source = "tag_delete",
-                                                                    sessionId = sid,
-                                                                    rawText = "remove filter:$fieldName",
-                                                                    payload = UserActionPayload(
-                                                                        tagId = fieldName,
-                                                                        filterPath = fieldName
-                                                                    )
-                                                                )
-                                                            ).onSuccess { actionResult ->
-                                                                applyActionResult(actionResult)
-                                                            }.onFailure { error ->
-                                                                errorText = "删除筛选失败: ${error.message ?: "请稍后重试"}"
-                                                            }
-                                                        } catch (e: Exception) {
-                                                            Log.w("FloatingWindowService", "Failed to remove filter field", e)
-                                                            errorText = "删除筛选失败: ${e.message ?: "请稍后重试"}"
-                                                        }
-                                                    }
-                                                },
-                                                modifier = Modifier.size(16.dp)
-                                            ) {
-                                                Icon(
-                                                    Icons.Default.Close,
-                                                    contentDescription = "删除",
-                                                    tint = Color(0xFF0A7C66).copy(alpha = 0.7f),
-                                                    modifier = Modifier.size(12.dp)
-                                                )
-                                            }
-                                        }
                                     }
                                 }
                             }

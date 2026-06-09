@@ -97,7 +97,8 @@ public class SemanticActionExecutor {
                                          SearchFilter previousFilter,
                                          SemanticActionPlan plan,
                                          List<ProductCard> previousProducts) {
-        // Priority: evidence > judge (small pool) > exclusions > hard filters > preferences
+        // Priority: evidence/judge handle their own preparation. For hard filters +
+        // preferences, first narrow the pool, then rerank that narrowed pool.
         if (hasEvidence(plan)) {
             return executeSemanticScreening(sessionId, candidates, previousFilter, plan, previousProducts);
         }
@@ -105,13 +106,16 @@ public class SemanticActionExecutor {
         if (hasJudge(plan) && candidates.size() <= JUDGE_POOL_CAP) {
             return executeJudgeRerank(sessionId, candidates, previousFilter, plan, previousProducts);
         }
+        if (hasPreferences(plan) && (hasHardFilters(plan) || hasExclusions(plan) || plan.sort() != null)) {
+            return executePreparedPreferenceRerank(sessionId, candidates, previousFilter, plan, previousProducts);
+        }
         if (hasExclusions(plan)) {
             return executePreparedFilter(sessionId, candidates, previousFilter, plan, previousProducts);
         }
         if (hasHardFilters(plan) || plan.sort() != null) {
             return executeStrictFilter(sessionId, candidates, previousFilter, plan, previousProducts);
         }
-        if (plan.preferences() != null && !plan.preferences().isEmpty()) {
+        if (hasPreferences(plan)) {
             return executePreferenceRerank(sessionId, candidates, previousFilter, plan, previousProducts);
         }
         return ActionResult.passThrough(candidates.stream().limit(MAX_PRODUCTS).toList());
@@ -358,6 +362,30 @@ public class SemanticActionExecutor {
 
     // ==================== PREFERENCE_RERANK ====================
 
+    private ActionResult executePreparedPreferenceRerank(String sessionId,
+                                                         List<ProductCard> candidates,
+                                                         SearchFilter previousFilter,
+                                                         SemanticActionPlan plan,
+                                                         List<ProductCard> previousProducts) {
+        PoolPreparation prepared = preparePool(candidates, previousFilter, plan, 1000);
+        if (prepared.products().isEmpty()) {
+            return ActionResult.rolledBack(previousProducts, previousFilter, List.of(),
+                    "娌℃湁鎵惧埌绗﹀悎鏉′欢鐨勫晢鍝侊紝宸蹭繚鐣欏師缁撴灉", List.of());
+        }
+
+        List<ProductCard> reranked = preferenceScorer.rerank(prepared.products(), plan.preferences());
+        List<ProductCard> display = reranked.stream().limit(MAX_PRODUCTS).toList();
+        conversationManager.setFilterState(sessionId, prepared.filter());
+
+        List<FilterTag> tags = new ArrayList<>(prepared.filterTags());
+        tags.addAll(preferenceTags(plan));
+
+        return new ActionResult(
+                display, prepared.filter(), tags, true, false, true,
+                preferenceMessage(plan), List.of(), List.of(), null, candidates.size(),
+                null, null, "nlp", null, null, "NORMAL", "preference.applied", null, null);
+    }
+
     private ActionResult executePreferenceRerank(String sessionId,
                                                  List<ProductCard> candidates,
                                                  SearchFilter previousFilter,
@@ -377,16 +405,7 @@ public class SemanticActionExecutor {
                 : "偏好";
         String message = "已按「" + prefDesc + "」调整排序";
 
-        // Generate preference filter tags
-        List<FilterTag> tags = new ArrayList<>();
-        if (plan.preferences() != null) {
-            for (SemanticActionPlan.PreferenceRule pref : plan.preferences()) {
-                String label = pref.userMeaning() != null ? pref.userMeaning() : pref.code();
-                tags.add(FilterTag.ofPreference(
-                        pref.code() != null ? pref.code() : "preference",
-                        label, pref.userMeaning()));
-            }
-        }
+        List<FilterTag> tags = preferenceTags(plan);
 
         return new ActionResult(
                 display, previousFilter, tags, true, false, true,
@@ -757,8 +776,35 @@ public class SemanticActionExecutor {
         return tags;
     }
 
+    private List<FilterTag> preferenceTags(SemanticActionPlan plan) {
+        List<FilterTag> tags = new ArrayList<>();
+        if (plan.preferences() != null) {
+            for (SemanticActionPlan.PreferenceRule pref : plan.preferences()) {
+                String label = pref.userMeaning() != null ? pref.userMeaning() : pref.code();
+                tags.add(FilterTag.ofPreference(
+                        pref.code() != null ? pref.code() : "preference",
+                        label, pref.userMeaning()));
+            }
+        }
+        return tags;
+    }
+
+    private String preferenceMessage(SemanticActionPlan plan) {
+        String prefDesc = plan.preferences() != null && !plan.preferences().isEmpty()
+                ? plan.preferences().stream()
+                .map(SemanticActionPlan.PreferenceRule::userMeaning)
+                .filter(t -> t != null && !t.isBlank())
+                .collect(Collectors.joining(", "))
+                : "preference";
+        return "Preference rerank applied: " + prefDesc;
+    }
+
     private boolean hasHardFilters(SemanticActionPlan plan) {
         return plan.hardFilters() != null && !plan.hardFilters().isEmpty();
+    }
+
+    private boolean hasPreferences(SemanticActionPlan plan) {
+        return plan.preferences() != null && !plan.preferences().isEmpty();
     }
 
     private boolean hasEvidence(SemanticActionPlan plan) {

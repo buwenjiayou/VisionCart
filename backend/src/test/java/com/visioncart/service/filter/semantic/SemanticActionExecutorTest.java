@@ -287,6 +287,35 @@ class SemanticActionExecutorTest {
         assertThat(result.appliedFilter().priceRange().max()).isEqualTo(50.0);
     }
 
+    @Test
+    void combinedPlanAppliesHardFilterThenPreferenceRerankAndKeepsBothTags() {
+        ProductCard youthStyle = product("p1", "young style accessory", 8.0, "main");
+        ProductCard basic = product("p2", "basic accessory", 9.0, "main");
+        ProductCard expensive = product("p3", "young premium accessory", 19.0, "main");
+        SemanticActionPlan plan = new SemanticActionPlan(
+                "filter_current_results", "COMBINED", "accessory",
+                List.of(new SemanticActionPlan.HardFilter("price", "<=", 10)),
+                null,
+                List.of(new SemanticActionPlan.PreferenceRule("young_user", "young people", 0.8)),
+                null, null, "KEEP_PREVIOUS_RESULTS");
+
+        ActionResult result = executor.execute(
+                "session-1", List.of(basic, expensive, youthStyle),
+                SearchFilter.empty(), plan, List.of(basic, expensive, youthStyle));
+
+        assertThat(result.filterApplied()).isTrue();
+        assertThat(result.products()).extracting(ProductCard::id)
+                .containsExactlyInAnyOrder("p1", "p2")
+                .doesNotContain("p3");
+        assertThat(result.appliedFilter().priceRange().max()).isEqualTo(10.0);
+        assertThat(result.filterTags())
+                .extracting(FilterTag::filterPath)
+                .contains("price_range.max", "preferences.young_user");
+        assertThat(result.filterTags())
+                .extracting(FilterTag::label)
+                .contains("young people");
+    }
+
     // ==================== Preference rerank ====================
 
     @Test
@@ -315,6 +344,34 @@ class SemanticActionExecutorTest {
         assertThat(result.products()).hasSize(2);
         // PreferenceScorer should rank highRated first (better rating + more sales)
         assertThat(result.products().get(0).id()).isEqualTo("p2");
+    }
+
+    @Test
+    void preferenceRerankOnlyReturnsCurrentPlanPreferenceTags() {
+        ProductCard youthStyle = product("p1", "young style accessory", 8.0, "main");
+        ProductCard basic = product("p2", "basic accessory", 9.0, "main");
+        SearchFilter existingFilter = new SearchFilter(
+                new PriceRange(null, 10.0),
+                List.of(), null, List.of(), List.of(), null,
+                null, null, null);
+        SemanticActionPlan plan = new SemanticActionPlan(
+                "filter_current_results", "PREFERENCE_RERANK", "accessory",
+                null, null,
+                List.of(new SemanticActionPlan.PreferenceRule("young_user", "年轻人", 0.8)),
+                null, null, "KEEP_PREVIOUS_RESULTS");
+
+        ActionResult result = executor.execute(
+                "session-1", List.of(youthStyle, basic),
+                existingFilter, plan, List.of(youthStyle, basic));
+
+        assertThat(result.appliedFilter().priceRange().max()).isEqualTo(10.0);
+        assertThat(result.filterTags())
+                .extracting(FilterTag::filterPath)
+                .doesNotContain("price_range.max")
+                .contains("preferences.young_user");
+        assertThat(result.filterTags())
+                .extracting(FilterTag::label)
+                .contains("年轻人");
     }
 
     // ==================== Exclusion ====================

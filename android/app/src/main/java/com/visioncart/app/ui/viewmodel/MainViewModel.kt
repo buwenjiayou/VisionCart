@@ -16,6 +16,7 @@ import com.visioncart.app.data.toSearchAttributes
 import com.visioncart.app.data.db.FavoriteProductEntity
 import com.visioncart.app.data.db.RecognitionRecordEntity
 import com.visioncart.app.data.repository.VisionCartRepository
+import com.visioncart.app.ui.components.canonicalSortPayload
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -398,13 +399,12 @@ class MainViewModel(
                     if (currentSearchRunId == null && progress.searchRunId != null) {
                         currentSearchRunId = progress.searchRunId
                     }
-                    progress.products.forEach { product ->
-                        progressPool[product.id] = product
+                    if (progress.staging) {
+                        _uiState.value = applySearchProgress(_uiState.value, progress)
+                    } else {
+                        mergeProgressProducts(progressPool, progress.products)
+                        _uiState.value = applySearchProgress(_uiState.value, progress)
                     }
-                    _uiState.value = _uiState.value.copy(
-                        products = progressPool.values.take(50).toList(),
-                        productsLoading = progress.staging
-                    )
                 }
             }
 
@@ -422,6 +422,7 @@ class MainViewModel(
                 Log.d(TAG, "Ignoring stale search response for requestId=$requestId")
                 return@launch
             }
+            searchRequestId++
 
             result.onSuccess { searchResult ->
                 // HTTP final belongs to this requestId, so it is authoritative. A late progress
@@ -770,7 +771,7 @@ class MainViewModel(
                 undoMetric = null,
                 undoTone = null
             )
-            val sortKey = if (sortBy == null) "relevance" else "${sortBy}_${sortOrder}"
+            val sortKey = canonicalSortPayload(sortBy, sortOrder)
             val result = repository.executeUserAction(
                 UserActionRequest(
                     actionId = "sort-${System.currentTimeMillis()}",
@@ -1006,6 +1007,9 @@ class MainViewModel(
         viewModelScope.launch {
             repository.createPriceAlert(productId, targetPrice).onSuccess { alert ->
                 _priceAlerts.value = _priceAlerts.value.filter { it.productId != productId } + alert
+                if (alert.triggeredAt != null) {
+                    PriceAlertWorker.notifyTriggeredAlertNow(getApplication<Application>(), alert)
+                }
                 showToast(str(R.string.price_alert_set))
             }.onFailure { e ->
                 showToast(str(R.string.price_alert_set_failed, e.message ?: ""))

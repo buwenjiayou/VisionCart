@@ -23,12 +23,12 @@ public class FavoriteProduct {
     private String platform;
     private String title;
 
-    @Column(name = "image_url")
+    @Column(name = "image_url", length = 1000)
     private String imageUrl;
 
     private BigDecimal price;
 
-    @Column(name = "detail_url")
+    @Column(name = "detail_url", length = 1000)
     private String detailUrl;
 
     @Column(name = "created_at", updatable = false)

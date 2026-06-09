@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -320,36 +321,39 @@ public class SearchOrchestrator {
         String sessionId = request.sessionId();
 
         // Submit all platform searches in parallel via CompletionService (completion-order collection)
-        java.util.concurrent.CompletionService<List<ProductCard>> completionService =
+        java.util.concurrent.CompletionService<PlatformSearchOutcome> completionService =
                 new java.util.concurrent.ExecutorCompletionService<>(platformSearchExecutor);
-        int submittedCount = 0;
+        Map<Future<PlatformSearchOutcome>, String> submittedPlatforms = new LinkedHashMap<>();
+        List<PlatformSearchOutcome> platformOutcomes = new ArrayList<>();
         for (PlatformSearchService ps : eligible) {
             try {
-                completionService.submit(() -> fetchSinglePlatform(ps, attributes, filter, request));
-                submittedCount++;
+                Future<PlatformSearchOutcome> future =
+                        completionService.submit(() -> fetchSinglePlatform(ps, attributes, filter, request, domestic));
+                submittedPlatforms.put(future, ps.platform());
             } catch (java.util.concurrent.RejectedExecutionException e) {
                 log.warn("{} search skipped: executor queue full", ps.platform());
+                PlatformSearchOutcome outcome = PlatformSearchOutcome.failed(ps.platform(), "executor_queue_full");
+                platformOutcomes.add(outcome);
+                recordPlatformOutcome(outcome);
             }
         }
 
         // Collect results as each platform completes — push staged results via WebSocket
         List<ProductCard> all = new ArrayList<>();
-        for (int i = 0; i < submittedCount; i++) {
-            try {
-                List<ProductCard> platformResult = completionService.take().get(
-                        platformTimeout.toMillis() + 500, TimeUnit.MILLISECONDS);
-                if (platformResult != null && !platformResult.isEmpty()) {
-                    all.addAll(platformResult);
-                    // Push partial results to client via WebSocket (staged delivery)
-                    if (sessionId != null && !sessionId.isBlank()
-                            && isCurrentSearchRun(sessionId, searchRunToken)) {
-                        sendSearchProgress(sessionId, all, request, searchRunToken, productIntent, strategy);
-                    }
+        List<PlatformSearchOutcome> collectedOutcomes = collectPlatformOutcomes(completionService, submittedPlatforms, "main");
+        for (PlatformSearchOutcome outcome : collectedOutcomes) {
+            platformOutcomes.add(outcome);
+            recordPlatformOutcome(outcome);
+            if (outcome.products() != null && !outcome.products().isEmpty()) {
+                all.addAll(outcome.products());
+                // Push partial results to client via WebSocket (staged delivery)
+                if (sessionId != null && !sessionId.isBlank()
+                        && isCurrentSearchRun(sessionId, searchRunToken)) {
+                    sendSearchProgress(sessionId, all, request, searchRunToken, productIntent, strategy);
                 }
-            } catch (Exception e) {
-                log.warn("Platform search result collection failed: {}", e.getMessage());
             }
         }
+        boolean cacheablePlatformResult = cacheablePlatformResult(eligible, platformOutcomes);
 
         log.info("Search results: {} raw products from {} platforms, attributes={}", all.size(), eligible.size(), attributes);
 
@@ -370,26 +374,22 @@ public class SearchOrchestrator {
                 injectSupplementalPlanQueries(supplementalAttributes, suppPlan);
 
                 // Parallel supplemental recall
-                java.util.concurrent.CompletionService<List<ProductCard>> suppCompletion =
+                java.util.concurrent.CompletionService<PlatformSearchOutcome> suppCompletion =
                         new java.util.concurrent.ExecutorCompletionService<>(platformSearchExecutor);
-                int suppSubmitted = 0;
+                Map<Future<PlatformSearchOutcome>, String> suppSubmitted = new LinkedHashMap<>();
                 for (PlatformSearchService ps : eligible) {
                     try {
-                        suppCompletion.submit(() -> fetchSinglePlatform(ps, supplementalAttributes, filter, request));
-                        suppSubmitted++;
+                        Future<PlatformSearchOutcome> future =
+                                suppCompletion.submit(() -> fetchSinglePlatform(ps, supplementalAttributes, filter, request, domestic));
+                        suppSubmitted.put(future, ps.platform());
                     } catch (java.util.concurrent.RejectedExecutionException e) {
                         log.warn("{} supplemental search skipped: executor queue full", ps.platform());
                     }
                 }
                 List<ProductCard> supplemental = new ArrayList<>();
-                for (int i = 0; i < suppSubmitted; i++) {
-                    try {
-                        List<ProductCard> suppResult = suppCompletion.take().get(
-                                platformTimeout.toMillis() + 500, TimeUnit.MILLISECONDS);
-                        if (suppResult != null) supplemental.addAll(suppResult);
-                    } catch (Exception e) {
-                        log.warn("Supplemental platform search failed: {}", e.getMessage());
-                    }
+                for (PlatformSearchOutcome suppOutcome : collectPlatformOutcomes(suppCompletion, suppSubmitted, "supplemental")) {
+                    recordPlatformOutcome(suppOutcome);
+                    if (suppOutcome.products() != null) supplemental.addAll(suppOutcome.products());
                 }
                 if (!supplemental.isEmpty()) {
                     List<ProductCard> merged = new ArrayList<>(all);
@@ -413,26 +413,22 @@ public class SearchOrchestrator {
             Map<String, String> fallbackAttributes = new LinkedHashMap<>(attributes);
             injectFallbackPlanQueries(fallbackAttributes, queryPlan);
 
-            java.util.concurrent.CompletionService<List<ProductCard>> fallbackCompletion =
+            java.util.concurrent.CompletionService<PlatformSearchOutcome> fallbackCompletion =
                     new java.util.concurrent.ExecutorCompletionService<>(platformSearchExecutor);
-            int fallbackSubmitted = 0;
+            Map<Future<PlatformSearchOutcome>, String> fallbackSubmitted = new LinkedHashMap<>();
             for (PlatformSearchService ps : eligible) {
                 try {
-                    fallbackCompletion.submit(() -> fetchSinglePlatform(ps, fallbackAttributes, filter, request));
-                    fallbackSubmitted++;
+                    Future<PlatformSearchOutcome> future =
+                            fallbackCompletion.submit(() -> fetchSinglePlatform(ps, fallbackAttributes, filter, request, domestic));
+                    fallbackSubmitted.put(future, ps.platform());
                 } catch (java.util.concurrent.RejectedExecutionException e) {
                     log.warn("{} fallback search skipped: executor queue full", ps.platform());
                 }
             }
             List<ProductCard> fallback = new ArrayList<>();
-            for (int i = 0; i < fallbackSubmitted; i++) {
-                try {
-                    List<ProductCard> fallbackResult = fallbackCompletion.take().get(
-                            platformTimeout.toMillis() + 500, TimeUnit.MILLISECONDS);
-                    if (fallbackResult != null) fallback.addAll(fallbackResult);
-                } catch (Exception e) {
-                    log.warn("Fallback platform search failed: {}", e.getMessage());
-                }
+            for (PlatformSearchOutcome fallbackOutcome : collectPlatformOutcomes(fallbackCompletion, fallbackSubmitted, "fallback")) {
+                recordPlatformOutcome(fallbackOutcome);
+                if (fallbackOutcome.products() != null) fallback.addAll(fallbackOutcome.products());
             }
             if (!fallback.isEmpty()) {
                 List<ProductCard> merged = new ArrayList<>(all);
@@ -540,8 +536,13 @@ public class SearchOrchestrator {
         List<SuggestionCard> cards = mergeInsightCards(request.sessionId(), searchRunToken, request.clientType(), enrichedRanked, attributes, filter,
                 suggestionService.cards(request.clientType(), rawPage, attributes, filter));
 
-        // Write cache
-        putToCache(cacheKey, enrichedRanked);
+        // Write cache only when required enabled platforms completed successfully.
+        if (cacheablePlatformResult) {
+            putToCache(cacheKey, enrichedRanked);
+        } else {
+            log.info("Search cache skipped because one or more required platforms failed: {}",
+                    platformOutcomes.stream().map(PlatformSearchOutcome::summary).toList());
+        }
 
         telemetry.put("relaxed", relaxed)
                 .put("tierCounts", tierCounts(ranked, productIntent, strategy))
@@ -738,34 +739,122 @@ public class SearchOrchestrator {
         return true;
     }
 
+    private List<PlatformSearchOutcome> collectPlatformOutcomes(
+            java.util.concurrent.CompletionService<PlatformSearchOutcome> completionService,
+            Map<Future<PlatformSearchOutcome>, String> submittedPlatforms,
+            String phase) {
+        if (submittedPlatforms == null || submittedPlatforms.isEmpty()) {
+            return List.of();
+        }
+
+        List<PlatformSearchOutcome> outcomes = new ArrayList<>();
+        long deadlineNanos = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(platformTimeout.toMillis() + 500);
+        int remaining = submittedPlatforms.size();
+
+        while (remaining > 0) {
+            long waitNanos = deadlineNanos - System.nanoTime();
+            if (waitNanos <= 0) {
+                break;
+            }
+            try {
+                Future<PlatformSearchOutcome> completed = completionService.poll(waitNanos, TimeUnit.NANOSECONDS);
+                if (completed == null) {
+                    break;
+                }
+                remaining--;
+                String platform = submittedPlatforms.remove(completed);
+                try {
+                    outcomes.add(completed.get());
+                } catch (Exception e) {
+                    log.warn("{} platform {} search result collection failed: {}",
+                            phase, platform, e.getMessage());
+                    outcomes.add(PlatformSearchOutcome.failed(
+                            StringUtils.defaultIfBlank(platform, "unknown"),
+                            phase + "_collection_failed:" + e.getMessage()));
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("{} platform search result collection interrupted", phase);
+                break;
+            }
+        }
+
+        for (Map.Entry<Future<PlatformSearchOutcome>, String> entry : submittedPlatforms.entrySet()) {
+            if (!entry.getKey().isDone()) {
+                entry.getKey().cancel(true);
+                outcomes.add(PlatformSearchOutcome.failed(entry.getValue(), phase + "_timeout"));
+            }
+        }
+        return outcomes;
+    }
+
+    private void recordPlatformOutcome(PlatformSearchOutcome outcome) {
+        if (outcome == null) {
+            return;
+        }
+        if (outcome.success()) {
+            log.info("Platform outcome: platform={}, status=success, products={}, durationMs={}",
+                    outcome.platform(), outcome.products().size(), outcome.durationMs());
+            return;
+        }
+        if (outcome.skipped()) {
+            log.info("Platform outcome: platform={}, status=skipped, reason={}",
+                    outcome.platform(), outcome.reason());
+            return;
+        }
+        log.warn("Platform outcome: platform={}, status=failed, reason={}",
+                outcome.platform(), outcome.reason());
+    }
+
+    private boolean cacheablePlatformResult(List<PlatformSearchService> eligible,
+                                            List<PlatformSearchOutcome> outcomes) {
+        if (eligible == null || eligible.isEmpty()) {
+            return true;
+        }
+        Map<String, PlatformSearchOutcome> byPlatform = outcomes == null ? Map.of() : outcomes.stream()
+                .collect(Collectors.toMap(
+                        PlatformSearchOutcome::platform,
+                        outcome -> outcome,
+                        (left, right) -> right,
+                        LinkedHashMap::new));
+        for (PlatformSearchService ps : eligible) {
+            PlatformSearchOutcome outcome = byPlatform.get(ps.platform());
+            if (outcome == null || (!outcome.success() && !outcome.skipped())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * 同步执行单个平台搜索（含重试、熔断、指标）。
      * 调用方应确保在异步线程中调用（如 CompletionService.submit），
      * 本方法内部不再开子线程，避免同一线程池嵌套导致饥饿。
      */
-    private List<ProductCard> fetchSinglePlatform(PlatformSearchService ps,
-                                                   Map<String, String> attributes,
-                                                   SearchFilter filter,
-                                                   SearchRequest request) {
+    private PlatformSearchOutcome fetchSinglePlatform(PlatformSearchService ps,
+                                                       Map<String, String> attributes,
+                                                       SearchFilter filter,
+                                                       SearchRequest request,
+                                                       boolean domestic) {
         // Check if platform is enabled via config
         VisionCartProperties.Platform platformConfig = properties.getPlatforms().getPlatform(ps.platform());
         if (!platformConfig.isEnabled()) {
             log.info("Platform {} disabled via config, skipping", ps.platform());
-            return List.of();
+            return PlatformSearchOutcome.skipped(ps.platform(), "disabled");
         }
 
         // Region strategy filtering (replaces simple domesticOnly() check)
-        boolean domestic = regionResolver.isDomestic();
         if (!matchesRegionStrategy(platformConfig, domestic)) {
             log.info("Platform {} regionStrategy={} not suitable for {} request, skipping",
                     ps.platform(), platformConfig.getRegionStrategy(), domestic ? "domestic" : "international");
-            return List.of();
+            return PlatformSearchOutcome.skipped(ps.platform(), "region_mismatch");
         }
 
         boolean circuitBreakerEnabled = platformConfig.isCircuitBreakerEnabled();
         if (circuitBreakerEnabled && !circuitBreaker.allowRequest(ps.platform())) {
             log.info("Circuit open, skipping {}", ps.platform());
-            return List.of();
+            return PlatformSearchOutcome.failed(ps.platform(), "circuit_open");
         }
 
         int maxRetries = platformConfig.getMaxRetries();
@@ -805,7 +894,7 @@ public class SearchOrchestrator {
 
                 log.info("Platform {} returned {} products in {}ms (attempt {}, weight={})",
                         ps.platform(), result.size(), durationMs, attempt + 1, weight);
-                return result;
+                return PlatformSearchOutcome.success(ps.platform(), result, durationMs);
             } catch (Exception e) {
                 long durationMs = (System.nanoTime() - start) / 1_000_000;
                 if (circuitBreakerEnabled) {
@@ -814,14 +903,14 @@ public class SearchOrchestrator {
                 if (attempt >= maxRetries) {
                     metricsService.stopPlatformSearchTimer(platformTimer, ps.platform(), false);
                     log.warn("Platform {} search error after {} attempts: {}", ps.platform(), attempt + 1, e.getMessage());
-                    return List.of();
+                    return PlatformSearchOutcome.failed(ps.platform(), "error:" + e.getMessage());
                 }
                 log.warn("Platform {} search error on attempt {}: {}", ps.platform(), attempt + 1, e.getMessage());
             }
         }
 
         metricsService.stopPlatformSearchTimer(platformTimer, ps.platform(), false);
-        return List.of();
+        return PlatformSearchOutcome.failed(ps.platform(), "interrupted");
     }
 
     private void sendSearchProgress(String sessionId, List<ProductCard> products, SearchRequest request,
@@ -1457,5 +1546,33 @@ public class SearchOrchestrator {
                 })
                 .sorted(Comparator.comparing(PlatformPriceStat::minPrice))
                 .toList();
+    }
+
+    private record PlatformSearchOutcome(
+            String platform,
+            List<ProductCard> products,
+            boolean success,
+            boolean skipped,
+            String reason,
+            long durationMs
+    ) {
+        private static PlatformSearchOutcome success(String platform, List<ProductCard> products, long durationMs) {
+            return new PlatformSearchOutcome(platform, products == null ? List.of() : products, true, false, null, durationMs);
+        }
+
+        private static PlatformSearchOutcome skipped(String platform, String reason) {
+            return new PlatformSearchOutcome(platform, List.of(), false, true, reason, 0);
+        }
+
+        private static PlatformSearchOutcome failed(String platform, String reason) {
+            return new PlatformSearchOutcome(platform, List.of(), false, false, reason, 0);
+        }
+
+        private String summary() {
+            if (success) {
+                return platform + ":success(" + products.size() + ")";
+            }
+            return platform + ":" + (skipped ? "skipped" : "failed") + "(" + reason + ")";
+        }
     }
 }

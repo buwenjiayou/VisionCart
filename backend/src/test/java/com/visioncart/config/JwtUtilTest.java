@@ -15,10 +15,10 @@ class JwtUtilTest {
     private static final String SECRET = "0123456789abcdef0123456789abcdef";
 
     @Test
-    void validateTokenFailsClosedWhenRedisBlacklistCheckFails() {
+    void validateTokenFailsClosedWhenRedisBlacklistCheckFailsInProd() {
         StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
         when(redisTemplate.hasKey(anyString())).thenThrow(new RuntimeException("redis down"));
-        JwtUtil jwtUtil = new JwtUtil(SECRET, 86_400_000L, redisTemplate, mock(Environment.class));
+        JwtUtil jwtUtil = new JwtUtil(SECRET, 86_400_000L, redisTemplate, env("prod"));
 
         String token = jwtUtil.generateToken(1L, "user@example.com");
 
@@ -26,10 +26,21 @@ class JwtUtilTest {
     }
 
     @Test
+    void validateTokenUsesLocalBlacklistFallbackWhenRedisFailsOutsideProd() {
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        when(redisTemplate.hasKey(anyString())).thenThrow(new RuntimeException("redis down"));
+        JwtUtil jwtUtil = new JwtUtil(SECRET, 86_400_000L, redisTemplate, env("dev"));
+
+        String token = jwtUtil.generateToken(1L, "user@example.com");
+
+        assertThat(jwtUtil.validateToken(token)).isTrue();
+    }
+
+    @Test
     void validateTokenAcceptsTokenWhenRedisBlacklistCheckSucceeds() {
         StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
         when(redisTemplate.hasKey(anyString())).thenReturn(false);
-        JwtUtil jwtUtil = new JwtUtil(SECRET, 86_400_000L, redisTemplate, mock(Environment.class));
+        JwtUtil jwtUtil = new JwtUtil(SECRET, 86_400_000L, redisTemplate, env());
 
         String token = jwtUtil.generateToken(1L, "user@example.com");
 
@@ -45,11 +56,17 @@ class JwtUtilTest {
         org.mockito.Mockito.doThrow(new RuntimeException("redis down"))
                 .when(valueOps).set(anyString(), anyString(), org.mockito.ArgumentMatchers.anyLong(),
                         org.mockito.ArgumentMatchers.any(java.util.concurrent.TimeUnit.class));
-        JwtUtil jwtUtil = new JwtUtil(SECRET, 86_400_000L, redisTemplate, mock(Environment.class));
+        JwtUtil jwtUtil = new JwtUtil(SECRET, 86_400_000L, redisTemplate, env());
         String token = jwtUtil.generateToken(1L, "user@example.com");
 
         jwtUtil.invalidateToken(token);
 
         assertThat(jwtUtil.validateToken(token)).isFalse();
+    }
+
+    private static Environment env(String... profiles) {
+        Environment env = mock(Environment.class);
+        when(env.getActiveProfiles()).thenReturn(profiles);
+        return env;
     }
 }

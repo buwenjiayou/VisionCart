@@ -34,7 +34,8 @@ tmp-*
 *.out
 *.err
 test-output.txt
-data/
+/data/
+backend/data/
 .claude/
 
 # CodeGraph local index

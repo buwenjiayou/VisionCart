@@ -59,12 +59,17 @@ public class LlmSemanticPlanner {
      */
     public SemanticActionPlan plan(String userInput, SessionContextService.SessionContext context,
                                    ProductPoolSummary poolSummary) {
+        return plan(userInput, context, poolSummary, "");
+    }
+
+    public SemanticActionPlan plan(String userInput, SessionContextService.SessionContext context,
+                                   ProductPoolSummary poolSummary, String historyText) {
         log.info("LlmSemanticPlanner: planning for input='{}', category='{}'", userInput,
                 context.normalizedCategory());
 
         // 1. Try LLM first
         try {
-            SemanticActionPlan llmPlan = planWithLlm(userInput, context, poolSummary);
+            SemanticActionPlan llmPlan = planWithLlm(userInput, context, poolSummary, historyText);
             if (llmPlan != null) {
                 log.info("LLM plan: mode={}, semanticFilters={}, hardFilters={}",
                         llmPlan.executionMode(),
@@ -86,7 +91,7 @@ public class LlmSemanticPlanner {
      * falls back to legacy NlpParseResult → SemanticActionPlan conversion.
      */
     private SemanticActionPlan planWithLlm(String userInput, SessionContextService.SessionContext context,
-                                           ProductPoolSummary poolSummary) {
+                                           ProductPoolSummary poolSummary, String historyText) {
         // 1. Try direct SemanticActionPlan from LLM (new path)
         try {
             String sanitizedInput = PromptSanitizer.sanitize(userInput);
@@ -95,7 +100,7 @@ public class LlmSemanticPlanner {
                         sanitizedInput,
                         context.normalizedCategory(),
                         context.displayCategory(),
-                        "" // history handled by conversation manager upstream
+                        historyText
                 );
                 if (directPlan != null) {
                     log.info("Direct semantic plan: mode={}, hard={}, semantic={}, pref={}, excl={}",

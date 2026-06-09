@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -55,24 +56,31 @@ public class PriceAlertController {
     }
 
     private PriceAlert insertOrUpdateActiveAlert(Long userId, PriceAlertRequest request, FavoriteProduct favorite) {
-        String platform = favorite != null ? favorite.getPlatform() : "未知";
         BigDecimal currentPrice = favorite != null ? favorite.getPrice() : null;
+        if (currentPrice != null && currentPrice.compareTo(request.targetPrice()) <= 0) {
+            PriceAlert alert = new PriceAlert();
+            applyAlertFields(alert, userId, request, favorite);
+            return alertRepository.saveAndFlush(alert);
+        }
+        String platform = favorite != null ? favorite.getPlatform() : "未知";
         alertRepository.upsertActiveAlert(userId, request.productId(), platform, request.targetPrice(), currentPrice);
         return alertRepository.findByUserIdAndProductIdAndActiveTrue(userId, request.productId())
                 .orElseThrow(() -> new IllegalStateException("价格提醒保存失败"));
     }
 
     private void applyAlertFields(PriceAlert alert, Long userId, PriceAlertRequest request, FavoriteProduct favorite) {
+        BigDecimal currentPrice = favorite != null ? favorite.getPrice() : null;
         alert.setUserId(userId);
         alert.setProductId(request.productId());
         alert.setPlatform(favorite != null ? favorite.getPlatform() : "未知");
         alert.setTargetPrice(request.targetPrice());
-        alert.setCurrentPrice(favorite != null ? favorite.getPrice() : null);
-        alert.setActive(true);
-        alert.setTriggeredAt(null);
+        alert.setCurrentPrice(currentPrice);
+        boolean alreadyReached = currentPrice != null && currentPrice.compareTo(request.targetPrice()) <= 0;
+        alert.setActive(!alreadyReached);
+        alert.setTriggeredAt(alreadyReached ? Instant.now() : null);
         alert.setNotifiedAt(null);
         if (alert.getCreatedAt() == null) {
-            alert.setCreatedAt(java.time.Instant.now());
+            alert.setCreatedAt(Instant.now());
         }
     }
 

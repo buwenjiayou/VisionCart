@@ -23,7 +23,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -902,7 +901,7 @@ fun SortOptionsRow(
         SortOption("综合推荐", null, "desc"),
         SortOption("价格低到高", "price", "asc"),
         SortOption("销量优先", "sales", "desc"),
-        SortOption("口碑优先", "rating", "desc")
+        SortOption("口碑优先", "review_quality", "desc")
     )
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -916,7 +915,7 @@ fun SortOptionsRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             options.forEach { option ->
-                val selected = option.sortBy == filter.sortBy &&
+                val selected = canonicalSortBy(option.sortBy) == canonicalSortBy(filter.sortBy) &&
                         (option.sortBy == null || option.sortOrder.equals(filter.sortOrder, ignoreCase = true))
                 Surface(
                     modifier = Modifier
@@ -1194,30 +1193,14 @@ fun FilterSummary(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         tags.forEach { tag ->
-                            val deleteTarget = filterTagDeleteTarget(tag.fieldName, tag.tagId, tag.label)
                             AssistChip(
-                                onClick = { onRemoveTag?.invoke(deleteTarget) },
+                                onClick = {},
                                 label = { Text(tag.label, style = MaterialTheme.typography.labelSmall, maxLines = 1) },
                                 shape = RoundedCornerShape(999.dp),
                                 colors = AssistChipDefaults.assistChipColors(
                                     containerColor = if (tag.fieldName == null) Color(0xFFFFF3E0) else Color(0xFFEAF3F0),
                                     labelColor = if (tag.fieldName == null) Color(0xFFE65100) else Color(0xFF0A7C66)
-                                ),
-                                trailingIcon = if (onRemoveTag != null && tag.fieldName != null) {
-                                    {
-                                        IconButton(
-                                            onClick = { onRemoveTag.invoke(deleteTarget) },
-                                            modifier = Modifier.size(16.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "删除",
-                                                modifier = Modifier.size(10.dp),
-                                                tint = Color(0xFF0A7C66)
-                                            )
-                                        }
-                                    }
-                                } else null
+                                )
                             )
                         }
                     }

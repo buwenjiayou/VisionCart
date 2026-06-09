@@ -1,6 +1,18 @@
 version: "1.0"
 description: "Semantic planner user prompt template"
 prompt: |
+  State stack rule:
+  - The history below contains only previous successful user utterances.
+  - Output the complete target state for this turn, not an incremental delta.
+  - If the current utterance replaces an earlier constraint, output only the current intended constraint.
+  - 最终状态可以同时包含多个筛选条件，不是只能识别一个条件。
+  - 历史中的成功筛选默认属于当前状态；当前输入如果是新增条件，必须保留历史中不冲突的条件。
+  - 只有用户明确说“现在要、改成、换成、不要、不限、取消、去掉”等，才替换或删除对应条件。
+  - 同类硬条件冲突时，用当前输入替换历史条件；不同类型条件默认共存。
+  - 示例：历史“预算100以内”，当前“再找适合学生党的” → 输出 price <= 100，并同时输出学生党/年轻用户相关偏好或判断。
+  - 示例：历史“预算100以内”，当前“现在改成200以上的” → 输出 price >= 200，不保留 price <= 100。
+  - 示例：历史“预算100以内”，当前“不限价格，只要适合学生党” → 不输出价格 hard filter，只输出学生党相关条件。
+
   当前商品：%s
   类目：%s
   对话历史（最近几轮）：

@@ -6,6 +6,7 @@ import com.visioncart.config.SecurityUtils;
 import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.action.ActionExecutionService;
 import com.visioncart.service.nlp.NlpConversationManager;
+import com.visioncart.service.nlp.NlpStateStackService;
 import com.visioncart.service.filter.NlpUndoService;
 import com.visioncart.service.search.CandidateFilterService;
 import com.visioncart.service.search.CandidateSessionCache;
@@ -43,6 +44,7 @@ public class ActionUndoController {
     private final ActionExecutionService actionExecutionService;
     private final ObjectMapper objectMapper;
     private final SearchRunService searchRunService;
+    private final NlpStateStackService nlpStateStackService;
 
     public ActionUndoController(NlpUndoService undoService,
                                 NlpConversationManager conversationManager,
@@ -53,7 +55,8 @@ public class ActionUndoController {
                                  SessionHistoryService sessionHistoryService,
                                  ActionExecutionService actionExecutionService,
                                  ObjectMapper objectMapper,
-                                 SearchRunService searchRunService) {
+                                 SearchRunService searchRunService,
+                                 NlpStateStackService nlpStateStackService) {
         this.undoService = undoService;
         this.conversationManager = conversationManager;
         this.sessionCache = sessionCache;
@@ -64,6 +67,7 @@ public class ActionUndoController {
         this.actionExecutionService = actionExecutionService;
         this.objectMapper = objectMapper;
         this.searchRunService = searchRunService;
+        this.nlpStateStackService = nlpStateStackService;
     }
 
     /**
@@ -116,14 +120,23 @@ public class ActionUndoController {
             return ResponseEntity.ok(ApiResponse.fail(404, "撤销失败"));
         }
 
+        String undoneSource = undoResult.undoneSource();
+        boolean nlpUndo = "nlp".equals(undoneSource);
+        java.util.Optional<NlpStateStackService.NlpState> restoredNlpState = java.util.Optional.empty();
+        if (nlpUndo) {
+            nlpStateStackService.pop(sessionId);
+            restoredNlpState = nlpStateStackService.peek(sessionId);
+        }
+
         // Restore filter state
-        SearchFilter restoredFilter = undoResult.filter();
+        SearchFilter restoredFilter = restoredNlpState
+                .map(NlpStateStackService.NlpState::filter)
+                .orElse(undoResult.filter());
         if (restoredFilter == null) {
             restoredFilter = SearchFilter.empty();
         }
         conversationManager.setFilterState(sessionId, restoredFilter);
 
-        String undoneSource = undoResult.undoneSource();
         boolean correctionUndo = "correction".equals(undoneSource);
         List<ProductCard> restoredCandidateSnapshot = safeProducts(undoResult.products());
         boolean shouldRestoreSnapshot = !restoredCandidateSnapshot.isEmpty()
@@ -146,7 +159,10 @@ public class ActionUndoController {
 
         // 优先使用 undo 携带的 displayPage（精确恢复用户看到的页面顺序）
         List<ProductCard> restoredProducts;
-        if (undoResult.restoredDisplayPage() != null && !undoResult.restoredDisplayPage().isEmpty()) {
+        if (restoredNlpState.isPresent() && restoredNlpState.get().products() != null
+                && !restoredNlpState.get().products().isEmpty()) {
+            restoredProducts = restoredNlpState.get().products();
+        } else if (undoResult.restoredDisplayPage() != null && !undoResult.restoredDisplayPage().isEmpty()) {
             restoredProducts = undoResult.restoredDisplayPage();
         } else if (shouldRestoreSnapshot) {
             restoredProducts = restoredCandidateSnapshot;
@@ -171,7 +187,11 @@ public class ActionUndoController {
                 sessionId, undoResult.undoneQuery(), restoredProducts.size(), canUndo);
 
         // Generate structured filter tags from restored filter
-        List<FilterTag> restoredTags = actionExecutionService.generateStructuredTags(restoredFilter);
+        SearchFilter finalRestoredFilter = restoredFilter;
+        List<FilterTag> restoredTags = restoredNlpState
+                .map(NlpStateStackService.NlpState::tags)
+                .filter(tags -> tags != null && !tags.isEmpty())
+                .orElseGet(() -> actionExecutionService.generateStructuredTags(finalRestoredFilter));
 
         // Restore attributes if this was a correction undo
         Map<String, AttributeValue> restoredAttributeValues = toAttributeValues(undoResult.previousAttributes());

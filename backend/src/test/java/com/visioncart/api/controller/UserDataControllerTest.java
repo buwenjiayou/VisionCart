@@ -1,7 +1,9 @@
 package com.visioncart.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.visioncart.api.dto.FavoriteRequest;
 import com.visioncart.config.JwtAuthenticationFilter;
+import com.visioncart.domain.FavoriteProduct;
 import com.visioncart.domain.RecognitionHistory;
 import com.visioncart.repository.FavoriteProductRepository;
 import com.visioncart.repository.PriceAlertRepository;
@@ -19,15 +21,19 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
 import java.util.Optional;
 import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class UserDataControllerTest {
+    private FavoriteProductRepository favoriteRepository;
     private RecognitionHistoryRepository historyRepository;
     private RecognitionImageStorage imageStorage;
     private AsyncRecognitionTaskManager taskManager;
@@ -35,11 +41,12 @@ class UserDataControllerTest {
 
     @BeforeEach
     void setUp() {
+        favoriteRepository = mock(FavoriteProductRepository.class);
         historyRepository = mock(RecognitionHistoryRepository.class);
         imageStorage = mock(RecognitionImageStorage.class);
         taskManager = mock(AsyncRecognitionTaskManager.class);
         controller = new UserDataController(
-                mock(FavoriteProductRepository.class),
+                favoriteRepository,
                 historyRepository,
                 mock(PriceHistoryRepository.class),
                 mock(PriceAlertRepository.class),
@@ -50,12 +57,36 @@ class UserDataControllerTest {
                 imageStorage,
                 taskManager
         );
+        when(favoriteRepository.save(any(FavoriteProduct.class))).thenAnswer(invocation -> invocation.getArgument(0));
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(
                         new JwtAuthenticationFilter.AuthPrincipal(7L, "a@example.com"),
                         null
                 )
         );
+    }
+
+    @Test
+    void addFavoriteAcceptsLongUrls() {
+        String longDetailUrl = "https://mobile.example.com/item?id=1&trace="
+                + "x".repeat(320);
+        String longImageUrl = "https://img.example.com/image.jpg?token="
+                + "y".repeat(320);
+        FavoriteRequest request = new FavoriteRequest(
+                "product-1",
+                "pdd",
+                "Long URL product",
+                longImageUrl,
+                BigDecimal.valueOf(9.90),
+                longDetailUrl,
+                null);
+
+        var response = controller.addFavorite(request);
+
+        assertThat(response.code()).isEqualTo(200);
+        assertThat(response.data().detailUrl()).isEqualTo(longDetailUrl);
+        assertThat(response.data().imageUrl()).isEqualTo(longImageUrl);
+        verify(favoriteRepository).save(any(FavoriteProduct.class));
     }
 
     @AfterEach

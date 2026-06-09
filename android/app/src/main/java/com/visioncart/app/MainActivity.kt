@@ -1,7 +1,9 @@
 package com.visioncart.app
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
@@ -226,6 +228,13 @@ fun VisionCartApp(
     val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
     val snackbarHostState = remember { SnackbarHostState() }
     val isOverlayActive by FloatingWindowService.isRunning.collectAsState()
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            Log.i("VisionCart", "Post notifications permission denied")
+        }
+    }
 
     // Check saved token on startup — auto login (skip network validation for fast startup)
     LaunchedEffect(Unit) {
@@ -280,6 +289,12 @@ fun VisionCartApp(
     }
 
     // ========== Logged in UI ==========
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     val app = LocalContext.current.applicationContext as android.app.Application
     val viewModel: MainViewModel = viewModel(
@@ -804,7 +819,6 @@ private fun HomeScreen(
             FilterSummary(
                 filter = uiState.currentFilter,
                 onClear = { viewModel.clearFilter() },
-                onRemoveTag = { fieldName -> viewModel.removeFilterField(fieldName) },
                 filterTags = uiState.filterTags,
                 structuredFilterTags = uiState.structuredFilterTags,
                 deriveFromFilter = uiState.deriveFilterTagsFromFilter,

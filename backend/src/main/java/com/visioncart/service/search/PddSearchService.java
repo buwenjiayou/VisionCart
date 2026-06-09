@@ -110,15 +110,15 @@ public class PddSearchService implements PlatformSearchService {
             log.info("PDD search: {} queries, attributes={}", queries.size(), attributes);
 
             // Run all queries in parallel
-            List<CompletableFuture<List<ProductCard>>> futures = queries.stream()
+            List<CompletableFuture<QueryResult>> futures = queries.stream()
                     .map(query -> CompletableFuture.supplyAsync(() -> {
                         try {
                             List<ProductCard> results = mapResponse(executeSearch(query, page, fetchSize));
                             log.info("PDD query '{}' returned {} products", query, results.size());
-                            return results;
+                            return new QueryResult(query, results, true);
                         } catch (Exception e) {
                             log.warn("PDD query '{}' failed: {}", query, e.toString());
-                            return List.<ProductCard>of();
+                            return new QueryResult(query, List.of(), false);
                         }
                     }, searchExecutor))
                     .toList();
@@ -126,13 +126,27 @@ public class PddSearchService implements PlatformSearchService {
             // Collect results as they complete, merge into deduplicated map
             waitForQueries(futures);
             Map<String, ProductCard> byId = new LinkedHashMap<>();
-            for (CompletableFuture<List<ProductCard>> future : futures) {
+            int completedQueries = 0;
+            int successfulQueries = 0;
+            for (CompletableFuture<QueryResult> future : futures) {
                 if (!future.isDone()) {
                     future.cancel(true);
                     continue;
                 }
-                future.getNow(List.<ProductCard>of())
-                        .forEach(product -> byId.putIfAbsent(product.id(), product));
+                completedQueries++;
+                QueryResult queryResult = future.getNow(QueryResult.failed("unknown"));
+                if (queryResult.success()) {
+                    successfulQueries++;
+                }
+                queryResult.products().forEach(product -> byId.putIfAbsent(product.id(), product));
+            }
+            if (!queries.isEmpty() && successfulQueries == 0) {
+                throw new IllegalStateException("PDD query batch successful 0 of " + queries.size()
+                        + " queries (completed=" + completedQueries + ")");
+            }
+            if (successfulQueries < queries.size()) {
+                log.warn("PDD query batch partial: successful {} of {} queries (completed={})",
+                        successfulQueries, queries.size(), completedQueries);
             }
 
             List<ProductCard> relevant = relevantProducts(byId, fetchSize);
@@ -140,11 +154,11 @@ public class PddSearchService implements PlatformSearchService {
             return relevant;
         } catch (Exception error) {
             log.warn("PDD search failed: {}", error.toString());
-            return List.of();
+            throw new IllegalStateException("PDD search failed", error);
         }
     }
 
-    private void waitForQueries(List<CompletableFuture<List<ProductCard>>> futures) {
+    private void waitForQueries(List<CompletableFuture<QueryResult>> futures) {
         try {
             CompletableFuture
                     .allOf(futures.toArray(new CompletableFuture[0]))
@@ -775,6 +789,12 @@ public class PddSearchService implements PlatformSearchService {
     private record CachedDetail(PddDetail detail) {}
 
     private record CachedUrl(String url) {}
+
+    private record QueryResult(String query, List<ProductCard> products, boolean success) {
+        static QueryResult failed(String query) {
+            return new QueryResult(query, List.of(), false);
+        }
+    }
 
     private record RatingInfo(
             double value,

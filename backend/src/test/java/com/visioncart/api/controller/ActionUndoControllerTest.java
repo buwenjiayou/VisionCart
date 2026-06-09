@@ -7,6 +7,7 @@ import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.action.ActionExecutionService;
 import com.visioncart.service.filter.NlpUndoService;
 import com.visioncart.service.nlp.NlpConversationManager;
+import com.visioncart.service.nlp.NlpStateStackService;
 import com.visioncart.service.recognition.AsyncRecognitionTaskManager;
 import com.visioncart.service.recognition.SessionHistoryService;
 import com.visioncart.service.search.CandidateFilterService;
@@ -45,6 +46,7 @@ class ActionUndoControllerTest {
         SessionHistoryService sessionHistoryService = mock(SessionHistoryService.class);
         ActionExecutionService actionExecutionService = mock(ActionExecutionService.class);
         SearchRunService searchRunService = mock(SearchRunService.class);
+        NlpStateStackService nlpStateStackService = mock(NlpStateStackService.class);
 
         ActionUndoController controller = new ActionUndoController(
                 undoService,
@@ -56,7 +58,8 @@ class ActionUndoControllerTest {
                 sessionHistoryService,
                 actionExecutionService,
                 new ObjectMapper(),
-                searchRunService);
+                searchRunService,
+                nlpStateStackService);
 
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new JwtAuthenticationFilter.AuthPrincipal(7L, "u@example.com"), null, List.of()));
@@ -88,6 +91,75 @@ class ActionUndoControllerTest {
         verify(sessionCache).saveDefaultClassifiedPool("sess-undo", previousCandidatePool, restoredFilter, null);
         verify(filterService, never()).filter(anyList(), any(), anyMap(), anyInt(), anyInt());
         verify(sessionHistoryService).archiveDisplayedProducts("sess-undo", previousCandidatePool);
+    }
+
+    @Test
+    void nlpUndoPopsStateStackAndRestoresPreviousNlpState() {
+        NlpUndoService undoService = mock(NlpUndoService.class);
+        NlpConversationManager conversationManager = mock(NlpConversationManager.class);
+        CandidateSessionCache sessionCache = mock(CandidateSessionCache.class);
+        CandidateFilterService filterService = mock(CandidateFilterService.class);
+        AsyncRecognitionTaskManager taskManager = mock(AsyncRecognitionTaskManager.class);
+        RecognitionHistoryRepository historyRepository = mock(RecognitionHistoryRepository.class);
+        SessionHistoryService sessionHistoryService = mock(SessionHistoryService.class);
+        ActionExecutionService actionExecutionService = mock(ActionExecutionService.class);
+        SearchRunService searchRunService = mock(SearchRunService.class);
+        NlpStateStackService nlpStateStackService = mock(NlpStateStackService.class);
+
+        ActionUndoController controller = new ActionUndoController(
+                undoService,
+                conversationManager,
+                sessionCache,
+                filterService,
+                taskManager,
+                historyRepository,
+                sessionHistoryService,
+                actionExecutionService,
+                new ObjectMapper(),
+                searchRunService,
+                nlpStateStackService);
+
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new JwtAuthenticationFilter.AuthPrincipal(7L, "u@example.com"), null, List.of()));
+
+        SearchFilter firstFilter = new SearchFilter(
+                new PriceRange(null, 20.0),
+                List.of(), null, List.of(), List.of(), null,
+                null, "desc", null, Map.of(), List.of(), Map.of());
+        List<ProductCard> firstProducts = List.of(product("first-1"));
+        List<FilterTag> firstTags = List.of(FilterTag.ofField("20元以内", "price_range.max"));
+
+        when(taskManager.belongsToUser("sess-nlp-undo", 7L)).thenReturn(true);
+        when(undoService.canUndo("sess-nlp-undo")).thenReturn(true, false);
+        when(undoService.undo("sess-nlp-undo")).thenReturn(new NlpUndoService.UndoResult(
+                SearchFilter.empty(),
+                List.of(product("initial-1")),
+                "我现在要大于50的",
+                "nlp",
+                null,
+                null, null, null));
+        when(nlpStateStackService.peek("sess-nlp-undo")).thenReturn(Optional.of(
+                new NlpStateStackService.NlpState(
+                        "nlp-1",
+                        "我要低于20的",
+                        firstFilter,
+                        firstTags,
+                        firstProducts,
+                        "2026-06-09T00:00:00Z")));
+        when(sessionCache.getBestCandidates("sess-nlp-undo")).thenReturn(List.of(product("candidate")));
+
+        ResponseEntity<ApiResponse<ActionResult>> response = controller.undo("sess-nlp-undo");
+
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().code()).isEqualTo(200);
+        ActionResult result = response.getBody().data();
+        assertThat(result.appliedFilter()).isEqualTo(firstFilter);
+        assertThat(result.products()).extracting(ProductCard::id).containsExactly("first-1");
+        assertThat(result.filterTags()).extracting(FilterTag::label).containsExactly("20元以内");
+
+        verify(nlpStateStackService).pop("sess-nlp-undo");
+        verify(conversationManager).setFilterState("sess-nlp-undo", firstFilter);
+        verify(sessionHistoryService).archiveDisplayedProducts("sess-nlp-undo", firstProducts);
     }
 
     private ProductCard product(String id) {

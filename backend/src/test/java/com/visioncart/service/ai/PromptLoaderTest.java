@@ -38,6 +38,23 @@ class PromptLoaderTest {
     }
 
     @Test
+    void semanticPlannerUserPromptPreservesMultiTurnStateRules() {
+        String prompt = promptLoader.getPrompt("semantic-planner-user");
+
+        assertThat(prompt)
+                .contains("Output the complete target state for this turn")
+                .contains("最终状态可以同时包含多个筛选条件")
+                .contains("历史中的成功筛选默认属于当前状态")
+                .contains("必须保留历史中不冲突的条件")
+                .contains("不同类型条件默认共存")
+                .contains("预算100以内")
+                .contains("再找适合学生党的")
+                .contains("price <= 100")
+                .contains("\"hard_filters\": []")
+                .contains("\"judge\": null");
+    }
+
+    @Test
     void returnsVersionMetadata() {
         String version = promptLoader.getVersion("vision-recognition");
         assertThat(version).isEqualTo("1.1");

@@ -156,10 +156,11 @@ public class TaobaoSearchService implements PlatformSearchService {
                     return doSearch(attributes, filter, page, pageSize, tb);
                 } catch (Exception retryError) {
                     log.warn("Taobao search retry failed: {}", retryError.toString());
+                    throw new IllegalStateException("Taobao search retry failed", retryError);
                 }
             }
             log.warn("Taobao search failed: {}", e.toString());
-            return List.of();
+            throw new IllegalStateException("Taobao search failed", e);
         }
     }
 
@@ -170,16 +171,16 @@ public class TaobaoSearchService implements PlatformSearchService {
         log.info("Taobao search: {} queries", queries.size());
 
         // Run all queries in parallel
-        List<java.util.concurrent.CompletableFuture<List<ProductCard>>> futures = queries.stream()
+        List<java.util.concurrent.CompletableFuture<QueryResult>> futures = queries.stream()
                 .map(query -> java.util.concurrent.CompletableFuture.supplyAsync(() -> {
                     try {
                         Map<String, String> params = buildParams(query, filter, page, fetchSize, tb);
                         List<ProductCard> results = mapResponse(executeSearch(tb, params));
                         log.info("Taobao query '{}' returned {} products", query, results.size());
-                        return results;
+                        return new QueryResult(query, results, true);
                     } catch (Exception e) {
                         log.warn("Taobao query '{}' failed: {}", query, e.toString());
-                        return List.<ProductCard>of();
+                        return new QueryResult(query, List.of(), false);
                     }
                 }, searchExecutor))
                 .toList();
@@ -187,20 +188,34 @@ public class TaobaoSearchService implements PlatformSearchService {
         // Collect results as they complete
         waitForQueries(futures, "Taobao");
         Map<String, ProductCard> byId = new LinkedHashMap<>();
-        for (java.util.concurrent.CompletableFuture<List<ProductCard>> future : futures) {
+        int completedQueries = 0;
+        int successfulQueries = 0;
+        for (java.util.concurrent.CompletableFuture<QueryResult> future : futures) {
             if (!future.isDone()) {
                 future.cancel(true);
                 continue;
             }
-            future.getNow(List.<ProductCard>of())
-                    .forEach(product -> byId.putIfAbsent(product.id(), product));
+            completedQueries++;
+            QueryResult queryResult = future.getNow(QueryResult.failed("unknown"));
+            if (queryResult.success()) {
+                successfulQueries++;
+            }
+            queryResult.products().forEach(product -> byId.putIfAbsent(product.id(), product));
+        }
+        if (!queries.isEmpty() && successfulQueries == 0) {
+            throw new IllegalStateException("Taobao query batch successful 0 of " + queries.size()
+                    + " queries (completed=" + completedQueries + ")");
+        }
+        if (successfulQueries < queries.size()) {
+            log.warn("Taobao query batch partial: successful {} of {} queries (completed={})",
+                    successfulQueries, queries.size(), completedQueries);
         }
 
         return enrichWithDetails(new ArrayList<>(byId.values()).stream()
                 .limit(fetchSize).toList(), tb);
     }
 
-    private void waitForQueries(List<java.util.concurrent.CompletableFuture<List<ProductCard>>> futures, String platform) {
+    private void waitForQueries(List<java.util.concurrent.CompletableFuture<QueryResult>> futures, String platform) {
         try {
             java.util.concurrent.CompletableFuture
                     .allOf(futures.toArray(new java.util.concurrent.CompletableFuture[0]))
@@ -765,6 +780,12 @@ public class TaobaoSearchService implements PlatformSearchService {
     }
 
     private record SalesInfo(long sales, String source) {}
+
+    private record QueryResult(String query, List<ProductCard> products, boolean success) {
+        static QueryResult failed(String query) {
+            return new QueryResult(query, List.of(), false);
+        }
+    }
 
     private record RatingInfo(
             double rating,

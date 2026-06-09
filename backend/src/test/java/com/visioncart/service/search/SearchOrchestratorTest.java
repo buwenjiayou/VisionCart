@@ -33,6 +33,7 @@ class SearchOrchestratorTest {
 
     private PlatformSearchService taobao;
     private PlatformSearchService pdd;
+    private PlatformSearchService ebay;
     private ProductDeduplicator deduplicator;
     private RelevanceRanker ranker;
     private SuggestionService suggestionService;
@@ -49,10 +50,13 @@ class SearchOrchestratorTest {
     void setUp() {
         taobao = mock(PlatformSearchService.class);
         pdd = mock(PlatformSearchService.class);
+        ebay = mock(PlatformSearchService.class);
         when(taobao.platform()).thenReturn("淘宝");
         when(taobao.domesticOnly()).thenReturn(true);
         when(pdd.platform()).thenReturn("拼多多");
         when(pdd.domesticOnly()).thenReturn(true);
+        when(ebay.platform()).thenReturn("eBay");
+        when(ebay.domesticOnly()).thenReturn(false);
 
         deduplicator = new ProductDeduplicator();
         ranker = new RelevanceRanker();
@@ -66,6 +70,9 @@ class SearchOrchestratorTest {
 
         properties = new VisionCartProperties();
         properties.getSearch().setPlatformTimeoutMs(500);
+        properties.getPlatforms().getTaobao().setRegionStrategy("domestic");
+        properties.getPlatforms().getPdd().setRegionStrategy("domestic");
+        properties.getPlatforms().getEbay().setRegionStrategy("international");
 
         StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
         valueOps = mock(ValueOperations.class);
@@ -99,7 +106,7 @@ class SearchOrchestratorTest {
                         java.util.List.of(phoneCaseStrategy), defaultStrategy);
 
         orchestrator = new SearchOrchestrator(
-                List.of(taobao, pdd), deduplicator, ranker, suggestionService, deepSuggestionService,
+                List.of(taobao, pdd, ebay), deduplicator, ranker, suggestionService, deepSuggestionService,
                 platformExecutor, aiSuggestionExecutor, properties, redisTemplate, objectMapper, circuitBreaker, regionResolver,
                 recognitionHistoryRepository, sessionCache, suggestionCardCache, messagingTemplate, metricsService,
                 new ProductSortService(new ProductReputationService()), new ProductReputationService(),
@@ -132,6 +139,39 @@ class SearchOrchestratorTest {
 
         assertThat(result.products()).hasSize(2);
         assertThat(result.total()).isEqualTo(2);
+    }
+
+    @Test
+    void domesticSearchRoutesOnlyToDomesticPlatforms() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("tb-1", "淘宝国内商品", "淘宝", BigDecimal.valueOf(199))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("pdd-1", "拼多多国内商品", "拼多多", BigDecimal.valueOf(99))
+        ));
+
+        SearchResult result = orchestrator.search(defaultRequest(), true);
+
+        assertThat(result.products()).extracting(ProductCard::platform)
+                .containsExactlyInAnyOrder("淘宝", "拼多多");
+        verify(taobao, atLeastOnce()).search(any(), any(), anyInt(), anyInt());
+        verify(pdd, atLeastOnce()).search(any(), any(), anyInt(), anyInt());
+        verify(ebay, never()).search(any(), any(), anyInt(), anyInt());
+    }
+
+    @Test
+    void internationalSearchRoutesOnlyToInternationalPlatforms() {
+        when(ebay.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("ebay-1", "eBay international item", "eBay", BigDecimal.valueOf(49))
+        ));
+
+        SearchResult result = orchestrator.search(defaultRequest(), false);
+
+        assertThat(result.products()).extracting(ProductCard::platform)
+                .containsExactly("eBay");
+        verify(ebay, atLeastOnce()).search(any(), any(), anyInt(), anyInt());
+        verify(taobao, never()).search(any(), any(), anyInt(), anyInt());
+        verify(pdd, never()).search(any(), any(), anyInt(), anyInt());
     }
 
     @Test
@@ -736,6 +776,40 @@ class SearchOrchestratorTest {
 
         assertThat(result.relaxed()).isFalse();
         assertThat(result.products()).isEmpty();
+    }
+
+    @Test
+    void platformRuntimeFailureReturnsAvailableProductsButSkipsSearchCache() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("tb-ok", "\u7535\u52a8\u5243\u987b\u5200", "\u6dd8\u5b9d", BigDecimal.valueOf(199))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt()))
+                .thenThrow(new IllegalStateException("PDD query batch successful 0 of 2 queries"));
+
+        SearchResult result = orchestrator.search(new SearchRequest("sess-pdd-fail",
+                Map.of(SearchTextUtils.ATTR_CATEGORY, "\u7535\u52a8\u5243\u987b\u5200"),
+                null, 1, 20, "app"));
+
+        assertThat(result.products()).extracting(ProductCard::id).contains("tb-ok");
+        verify(valueOps, never()).set(startsWith("visioncart:search:cache:v2:"), anyString(), any(java.time.Duration.class));
+    }
+
+    @Test
+    void allEnabledPlatformsSuccessfulAllowsSearchCacheWrite() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("tb-ok", "\u7535\u52a8\u5243\u987b\u5200", "\u6dd8\u5b9d", BigDecimal.valueOf(199))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("pdd-ok", "\u7535\u52a8\u5243\u987b\u5200", "\u62fc\u591a\u591a", BigDecimal.valueOf(99))
+        ));
+
+        SearchResult result = orchestrator.search(new SearchRequest("sess-cache-ok",
+                Map.of(SearchTextUtils.ATTR_CATEGORY, "\u7535\u52a8\u5243\u987b\u5200"),
+                null, 1, 20, "app"));
+
+        assertThat(result.products()).extracting(ProductCard::platform)
+                .contains("\u6dd8\u5b9d", "\u62fc\u591a\u591a");
+        verify(valueOps, atLeastOnce()).set(startsWith("visioncart:search:cache:v2:"), anyString(), any(java.time.Duration.class));
     }
 
     @Test
