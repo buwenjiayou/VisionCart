@@ -63,7 +63,9 @@ public class SemanticPlannerModelService {
                                     .content(),
                     2, 1000L);
 
-            return sanitize(parseSemanticPlanJson(json));
+            SemanticActionPlan parsed = parseSemanticPlanJson(json);
+            SemanticActionPlan validated = SemanticActionPlanValidator.validate(parsed);
+            return sanitize(validated);
         } catch (Exception e) {
             log.warn("Direct semantic planning failed, will fall back to legacy path: {}", e.getMessage());
             return null;

@@ -1,0 +1,177 @@
+{
+  "cases": [
+    {
+      "id": "semantic_preserve_price_and_student_preference",
+      "type": "semantic_planner",
+      "promptName": "semantic-planner-user",
+      "promptVersion": "1.0",
+      "required": true,
+      "input": {
+        "productName": "backpack",
+        "category": "bags",
+        "historyText": "budget under 100",
+        "userInput": "find one for students"
+      },
+      "llmOutput": {
+        "intent": "filter_current_results",
+        "execution_mode": "PREFERENCE_RERANK",
+        "hard_filters": [
+          {"field": "price", "operator": "<=", "value": 100}
+        ],
+        "preferences": [
+          {"code": "student_friendly", "user_meaning": "good for students", "weight": 0.8}
+        ],
+        "zero_result_policy": "KEEP_PREVIOUS_RESULTS"
+      },
+      "expected": {
+        "executionMode": "PREFERENCE_RERANK",
+        "hardFilter": {"field": "price", "operator": "<=", "value": 100},
+        "preferenceCode": "student_friendly"
+      }
+    },
+    {
+      "id": "semantic_replace_price_constraint",
+      "type": "semantic_planner",
+      "promptName": "semantic-planner-user",
+      "promptVersion": "1.0",
+      "required": true,
+      "input": {
+        "productName": "earbuds",
+        "category": "electronics",
+        "historyText": "budget under 100",
+        "userInput": "now change to above 200"
+      },
+      "llmOutput": {
+        "intent": "filter_current_results",
+        "execution_mode": "STRICT_FILTER",
+        "hard_filters": [
+          {"field": "price", "operator": ">=", "value": 200}
+        ],
+        "zero_result_policy": "KEEP_PREVIOUS_RESULTS"
+      },
+      "expected": {
+        "executionMode": "STRICT_FILTER",
+        "hardFilter": {"field": "price", "operator": ">=", "value": 200},
+        "absentHardFilter": {"field": "price", "operator": "<="}
+      }
+    },
+    {
+      "id": "semantic_cancel_price_keep_student_preference",
+      "type": "semantic_planner",
+      "promptName": "semantic-planner-user",
+      "promptVersion": "1.0",
+      "required": true,
+      "input": {
+        "productName": "desk lamp",
+        "category": "home",
+        "historyText": "budget under 100",
+        "userInput": "no price limit, only student friendly"
+      },
+      "llmOutput": {
+        "intent": "filter_current_results",
+        "execution_mode": "PREFERENCE_RERANK",
+        "hard_filters": [],
+        "preferences": [
+          {"code": "student_friendly", "user_meaning": "good for students", "weight": 0.9}
+        ],
+        "zero_result_policy": "KEEP_PREVIOUS_RESULTS"
+      },
+      "expected": {
+        "executionMode": "PREFERENCE_RERANK",
+        "hardFilterCount": 0,
+        "preferenceCode": "student_friendly"
+      }
+    },
+    {
+      "id": "legacy_nlp_fenced_json_rating",
+      "type": "legacy_nlp",
+      "promptName": "nlp-user",
+      "promptVersion": "1.1",
+      "required": true,
+      "input": {
+        "sessionId": "golden-legacy-1",
+        "userInput": "sort by rating"
+      },
+      "llmOutputText": "```json\n{\"filter\":{\"price_range\":null,\"platforms\":[],\"self_operated\":null,\"colors\":[],\"brands\":[],\"rating_min\":null,\"sort_by\":\"rating\",\"sort_order\":\"desc\",\"keyword\":null,\"attributes\":{},\"exclude_attributes\":{}},\"clauses\":[{\"type\":\"preference\",\"field\":\"rating\",\"confidence\":0.9,\"rawText\":\"rating\"}]}\n```",
+      "expected": {
+        "decision": "spring_ai_llm",
+        "sortBy": "rating",
+        "clauseField": "rating"
+      }
+    },
+    {
+      "id": "legacy_nlp_malformed_json_uses_rule_fallback",
+      "type": "legacy_nlp",
+      "promptName": "nlp-user",
+      "promptVersion": "1.1",
+      "required": true,
+      "input": {
+        "sessionId": "golden-legacy-2",
+        "userInput": "under 200"
+      },
+      "llmOutputText": "not json",
+      "expected": {
+        "decision": "rule_fallback",
+        "fallbackPriceMax": 200
+      }
+    },
+    {
+      "id": "qwen_flash_multi_product_detection",
+      "type": "qwen_flash_detection",
+      "promptName": "qwen-flash-detection",
+      "promptVersion": "1.1",
+      "required": true,
+      "llmOutput": {
+        "products": [
+          {"bbox": [0.10, 0.10, 0.45, 0.85], "category": "mug", "brand": null, "confidence": 0.88},
+          {"bbox": [0.52, 0.12, 0.90, 0.84], "category": "thermos", "brand": null, "confidence": 0.42}
+        ],
+        "total": 2
+      },
+      "expected": {
+        "minCandidates": 2,
+        "minLowConfidenceCandidates": 1
+      }
+    },
+    {
+      "id": "product_judge_positive_and_reject",
+      "type": "product_judge",
+      "promptName": "product-judge-user",
+      "promptVersion": "1.0",
+      "required": true,
+      "llmOutput": {
+        "results": [
+          {"product_id": "p1", "score": 0.91, "bucket": "GOOD_MATCH", "reasons": ["portable"], "risk_flags": []},
+          {"product_id": "p2", "score": 0.12, "bucket": "REJECT", "reasons": ["too heavy"], "risk_flags": ["risk"]}
+        ]
+      },
+      "expected": {
+        "count": 2,
+        "goodProductId": "p1",
+        "rejectProductId": "p2"
+      }
+    },
+    {
+      "id": "guide_insight_uses_fact_action",
+      "type": "guide_insight",
+      "promptName": "guide-insight-user",
+      "promptVersion": "1.0",
+      "required": true,
+      "llmOutput": {
+        "cards": [
+          {
+            "id": "insight_price_band",
+            "title": "Mainstream price band",
+            "reason": "36 items cluster here",
+            "actionLabel": "Filter price band",
+            "action": "evil_action"
+          }
+        ]
+      },
+      "expected": {
+        "cardId": "insight_price_band",
+        "action": "filter_price_band:80:130"
+      }
+    }
+  ]
+}

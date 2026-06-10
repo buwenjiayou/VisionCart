@@ -223,13 +223,13 @@ public class AliyunQwenVisionClient implements VisionModelService {
             }
         }
 
-        return new RecognitionResult(
+        return RecognitionResultValidator.validate(new RecognitionResult(
                 "",
                 category,
                 attributes,
                 keywords.stream().filter(StringUtils::isNotBlank).distinct().limit(3).toList(),
                 confidence(parsed.path("overall_confidence"), category.confidence())
-        );
+        ));
     }
 
     private String call(String model, byte[] imageBytes, String contentType, String prompt) {

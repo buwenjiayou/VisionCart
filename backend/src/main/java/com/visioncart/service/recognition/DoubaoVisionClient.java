@@ -200,13 +200,13 @@ public class DoubaoVisionClient implements VisionModelService {
                     .forEach(keywords::add);
         }
 
-        return new RecognitionResult(
+        return RecognitionResultValidator.validate(new RecognitionResult(
                 "",
                 categoryDto,
                 attributes,
                 keywords,
                 confidence(parsed.path("overall_confidence"), 0.6)
-        );
+        ));
     }
 
     private void ensureAttribute(Map<String, AttributeValue> attributes, String key) {
