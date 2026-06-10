@@ -55,6 +55,17 @@ class PromptLoaderTest {
     }
 
     @Test
+    void qwenFlashDetectionPromptPreservesMultiProductRules() {
+        String prompt = promptLoader.getPrompt("qwen-flash-detection");
+
+        assertThat(prompt)
+                .contains("Output every independent purchasable item")
+                .contains("not only the most prominent subject")
+                .contains("separate product")
+                .contains("confidence >= 0.35");
+    }
+
+    @Test
     void returnsVersionMetadata() {
         String version = promptLoader.getVersion("vision-recognition");
         assertThat(version).isEqualTo("1.1");

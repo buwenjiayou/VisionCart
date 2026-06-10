@@ -213,10 +213,8 @@ public class RecognitionController {
                 return ApiResponse.fail(403, "无权访问该识别任务");
             }
         }
-        List<String> options = properties.getRecognition().getAttributeOptions()
-                .getOrDefault(attribute, List.of());
         return ApiResponse.ok(Map.of("options", recognitionService.attributeOptions(
-                category, attribute, sessionId, SecurityUtils.currentUserId(), options)));
+                category, attribute, sessionId, SecurityUtils.currentUserId())));
     }
 
     @GetMapping("/feedback/stats")

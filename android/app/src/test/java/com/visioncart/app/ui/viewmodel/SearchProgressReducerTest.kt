@@ -40,6 +40,18 @@ class SearchProgressReducerTest {
     }
 
     @Test
+    fun `empty final progress clears products and stops loading`() {
+        val reduced = applySearchProgress(
+            MainUiState(products = listOf(product("old")), productsLoading = true, poolSize = 10),
+            SearchProgressMessage(products = emptyList(), totalCount = 0, staging = false)
+        )
+
+        assertEquals(emptyList<ProductCard>(), reduced.products)
+        assertEquals(false, reduced.productsLoading)
+        assertEquals(0, reduced.poolSize)
+    }
+
+    @Test
     fun `final progress merge helper deduplicates by id`() {
         val pool = LinkedHashMap<String, ProductCard>()
         mergeProgressProducts(pool, (1..30).map { product("p-$it") })

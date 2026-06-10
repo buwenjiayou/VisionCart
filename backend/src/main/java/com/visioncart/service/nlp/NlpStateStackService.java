@@ -8,6 +8,7 @@ import com.visioncart.api.dto.ProductCard;
 import com.visioncart.api.dto.SearchFilter;
 import com.visioncart.domain.RecognitionHistory;
 import com.visioncart.repository.RecognitionHistoryRepository;
+import com.visioncart.service.metrics.PerformanceMetricsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -31,13 +32,16 @@ public class NlpStateStackService {
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
     private final RecognitionHistoryRepository historyRepository;
+    private final PerformanceMetricsService metricsService;
 
     public NlpStateStackService(StringRedisTemplate redis,
                                 ObjectMapper objectMapper,
-                                RecognitionHistoryRepository historyRepository) {
+                                RecognitionHistoryRepository historyRepository,
+                                PerformanceMetricsService metricsService) {
         this.redis = redis;
         this.objectMapper = objectMapper;
         this.historyRepository = historyRepository;
+        this.metricsService = metricsService;
     }
 
     public int size(String sessionId) {
@@ -97,6 +101,7 @@ public class NlpStateStackService {
         ));
         save(sessionId, new NlpStateStack(states));
         persistTopFilter(sessionId, filter != null ? filter : SearchFilter.empty());
+        metricsService.recordNlpStatePush();
     }
 
     public Optional<NlpState> pop(String sessionId) {
@@ -114,6 +119,7 @@ public class NlpStateStackService {
                 ? SearchFilter.empty()
                 : states.get(states.size() - 1).filter();
         persistTopFilter(sessionId, topFilter);
+        metricsService.recordNlpStateUndo();
         return Optional.of(removed);
     }
 
@@ -135,6 +141,7 @@ public class NlpStateStackService {
             log.warn("Failed to clear NLP state stack for {}: {}", sessionId, e.getMessage());
         }
         persistTopFilter(sessionId, SearchFilter.empty());
+        metricsService.recordNlpStateClear();
     }
 
     private NlpStateStack load(String sessionId) {

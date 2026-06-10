@@ -257,11 +257,7 @@ public class VisionCartProperties {
         private double minDetectionConfidence = 0.40;
         private int maxProducts = 8;
         private String historyImageDir = "data/recognition-history";
-        private Map<String, List<String>> attributeOptions = Map.of(
-                "颜色", List.of("黑色", "白色", "红色", "蓝色", "深蓝色", "藏青", "灰色", "绿色", "黄色", "粉色", "棕色", "米白色"),
-                "品牌", List.of("罗技", "雷蛇", "卓威", "富勒", "雷神", "英菲克", "Apple", "华为", "小米", "未知"),
-                "款式", List.of("跑鞋", "篮球鞋", "板鞋", "训练鞋", "休闲鞋")
-        );
+        private Map<String, List<String>> attributeOptions = Map.of();
 
         public int getImageMaxDimension() { return imageMaxDimension; }
         public void setImageMaxDimension(int imageMaxDimension) { this.imageMaxDimension = imageMaxDimension; }

@@ -6,9 +6,11 @@ import com.visioncart.service.filter.SafeActionExecutor;
 import com.visioncart.service.filter.capability.ProductFeatureExtractor;
 import com.visioncart.service.nlp.LlmSemanticPlanner;
 import com.visioncart.service.nlp.NlpConversationManager;
+import com.visioncart.service.metrics.PerformanceMetricsService;
 import com.visioncart.service.search.CandidateFilterService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -41,17 +43,29 @@ public class SemanticActionExecutor {
     private final NlpConversationManager conversationManager;
     private final PreferenceScorer preferenceScorer;
     private final LlmProductJudge productJudge;
+    private final PerformanceMetricsService metricsService;
 
     public SemanticActionExecutor(CandidateFilterService filterService,
                                   EvidenceScorer evidenceScorer,
                                   NlpConversationManager conversationManager,
                                   PreferenceScorer preferenceScorer,
                                   LlmProductJudge productJudge) {
+        this(filterService, evidenceScorer, conversationManager, preferenceScorer, productJudge, null);
+    }
+
+    @Autowired
+    public SemanticActionExecutor(CandidateFilterService filterService,
+                                  EvidenceScorer evidenceScorer,
+                                  NlpConversationManager conversationManager,
+                                  PreferenceScorer preferenceScorer,
+                                  LlmProductJudge productJudge,
+                                  PerformanceMetricsService metricsService) {
         this.filterService = filterService;
         this.evidenceScorer = evidenceScorer;
         this.conversationManager = conversationManager;
         this.preferenceScorer = preferenceScorer;
         this.productJudge = productJudge;
+        this.metricsService = metricsService;
     }
 
     /**
@@ -74,7 +88,7 @@ public class SemanticActionExecutor {
                 plan.semanticFilters() != null ? plan.semanticFilters().size() : 0,
                 plan.hardFilters() != null ? plan.hardFilters().size() : 0);
 
-        return switch (plan.executionMode()) {
+        ActionResult result = switch (plan.executionMode()) {
             case "STRICT_FILTER" -> executeStrictFilter(sessionId, candidates, previousFilter, plan, previousProducts);
             case "SEMANTIC_SCREENING" -> executeSemanticScreening(sessionId, candidates, previousFilter, plan, previousProducts);
 
@@ -90,6 +104,10 @@ public class SemanticActionExecutor {
             case "EXCLUSION" -> executeExclusion(sessionId, candidates, previousFilter, plan, previousProducts);
             default -> ActionResult.passThrough(candidates.stream().limit(MAX_PRODUCTS).toList());
         };
+        if (metricsService != null && result != null && !result.filterApplied() && result.keptPreviousResults()) {
+            metricsService.recordNlpZeroResultRollback();
+        }
+        return result;
     }
 
     private ActionResult executeCombined(String sessionId,

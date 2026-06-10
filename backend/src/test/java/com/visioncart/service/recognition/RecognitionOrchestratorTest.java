@@ -152,6 +152,34 @@ class RecognitionOrchestratorTest {
     }
 
     @Test
+    void shouldKeepFallbackCandidateWhenRawDetectionHasMultipleProducts() throws Exception {
+        properties.getRecognition().setMinDetectionConfidence(0.55);
+        when(imageProcessor.process(any())).thenReturn(new byte[]{0});
+        when(imageProcessor.cropToJpeg(any(), any())).thenReturn(
+                new ImageProcessor.CroppedImage(new byte[]{1, 2, 3}, 80, 80, 6400)
+        );
+        when(visionClient.supportsTwoStageRecognition()).thenReturn(true);
+        when(visionClient.detectProducts(any(byte[].class), anyString(), anyString())).thenReturn(List.of(
+                new RecognitionCandidate("raw-1", List.of(0, 0, 80, 80), "shaver", "FEP", 0.92, null),
+                new RecognitionCandidate("raw-2", List.of(10, 10, 70, 70), "charger", null, 0.40, null)
+        ));
+
+        org.springframework.mock.web.MockMultipartFile image =
+                new org.springframework.mock.web.MockMultipartFile("image", "test.jpg", "image/jpeg", new byte[]{0});
+
+        var response = orchestrator.submitAsync(image, "multi.jpg", 1L);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<RecognitionCandidate>> candidatesCaptor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(taskManager, timeout(5000)).markMultiProductPending(eq(response.sessionId()), candidatesCaptor.capture(), any());
+        assertThat(candidatesCaptor.getValue())
+                .extracting(RecognitionCandidate::category)
+                .containsExactlyInAnyOrder("shaver", "charger");
+        verify(imageStorage, timeout(5000).times(2)).saveCandidateCrop(eq(response.sessionId()), anyString(), any());
+    }
+
+    @Test
     void shouldUseStoredCropWhenSelectedProductIsRecognized() {
         byte[] cropBytes = new byte[]{9, 8, 7};
         RecognitionCandidate candidate = new RecognitionCandidate(

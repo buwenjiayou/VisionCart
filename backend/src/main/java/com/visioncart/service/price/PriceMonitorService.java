@@ -8,6 +8,7 @@ import com.visioncart.domain.PriceHistory;
 import com.visioncart.repository.FavoriteProductRepository;
 import com.visioncart.repository.PriceAlertRepository;
 import com.visioncart.repository.PriceHistoryRepository;
+import com.visioncart.service.metrics.PerformanceMetricsService;
 import com.visioncart.service.search.SearchOrchestrator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +40,7 @@ public class PriceMonitorService {
     private final StringRedisTemplate redisTemplate;
     private final int historyDays;
     private final int dedupDays;
+    private final PerformanceMetricsService metricsService;
 
     @Autowired
     public PriceMonitorService(ExactProductRefreshService exactProductRefreshService,
@@ -47,7 +49,8 @@ public class PriceMonitorService {
                                FavoriteProductRepository favoriteRepository,
                                SimpMessagingTemplate messagingTemplate,
                                StringRedisTemplate redisTemplate,
-                               VisionCartProperties properties) {
+                               VisionCartProperties properties,
+                               PerformanceMetricsService metricsService) {
         this.exactProductRefreshService = exactProductRefreshService;
         this.historyRepository = historyRepository;
         this.alertRepository = alertRepository;
@@ -56,6 +59,7 @@ public class PriceMonitorService {
         this.redisTemplate = redisTemplate;
         this.historyDays = properties.getPriceMonitor().getHistoryRetentionDays();
         this.dedupDays = properties.getPriceMonitor().getNotificationDedupDays();
+        this.metricsService = metricsService;
     }
 
     PriceMonitorService(SearchOrchestrator searchOrchestrator,
@@ -66,7 +70,7 @@ public class PriceMonitorService {
                         SimpMessagingTemplate messagingTemplate,
                         VisionCartProperties properties) {
         this(new ExactProductRefreshService(searchOrchestrator, platformServices), historyRepository, alertRepository,
-                favoriteRepository, messagingTemplate, null, properties);
+                favoriteRepository, messagingTemplate, null, properties, null);
     }
 
     /**
@@ -80,6 +84,7 @@ public class PriceMonitorService {
         String title = favorite.getTitle();
 
         if (title == null || title.isBlank()) {
+            recordPriceRefresh(platform, "skipped");
             return favorite.getPrice();
         }
 
@@ -88,6 +93,7 @@ public class PriceMonitorService {
 
             if (matched == null) {
                 log.debug("Product {} not found in search results for platform {}", productId, platform);
+                recordPriceRefresh(platform, "not_found");
                 return favorite.getPrice();
             }
 
@@ -109,9 +115,11 @@ public class PriceMonitorService {
                 recordHistory(productId, platform, currentPrice);
             }
 
+            recordPriceRefresh(platform, "success");
             return currentPrice;
         } catch (Exception e) {
             log.warn("Price refresh failed for {}: {}", productId, e.getMessage());
+            recordPriceRefresh(platform, "failed");
             return favorite.getPrice();
         }
     }
@@ -206,6 +214,7 @@ public class PriceMonitorService {
 
     private void sendNotification(Long userId, String alertType, FavoriteProduct favorite,
                                   BigDecimal currentPrice, BigDecimal oldPrice, BigDecimal targetPrice) {
+        recordPriceAlertTriggered(alertType);
         try {
             String message = buildMessage(alertType, favorite.getTitle(), currentPrice, targetPrice, oldPrice);
             Map<String, Object> payload = new LinkedHashMap<>();
@@ -245,5 +254,17 @@ public class PriceMonitorService {
             }
             default -> String.format("%s 价格变动: ¥%s", shortTitle, currentPrice.toPlainString());
         };
+    }
+
+    private void recordPriceRefresh(String platform, String result) {
+        if (metricsService != null) {
+            metricsService.recordPriceRefresh(platform, result);
+        }
+    }
+
+    private void recordPriceAlertTriggered(String type) {
+        if (metricsService != null) {
+            metricsService.recordPriceAlertTriggered(type);
+        }
     }
 }

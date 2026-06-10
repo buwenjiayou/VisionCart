@@ -88,9 +88,14 @@ public class RecognitionService {
         return historyRepository.findTop20ByUserIdOrderByCreatedAtDesc(userId);
     }
 
-    public List<String> attributeOptions(String category, String attribute, String sessionId, Long userId, List<String> defaults) {
+    public List<String> attributeOptions(String category, String attribute, String sessionId, Long userId) {
         LinkedHashSet<String> options = new LinkedHashSet<>();
-        if (SearchTextUtils.ATTR_BRAND.equals(attribute) && sessionId != null && !sessionId.isBlank()) {
+        String usefulAttribute = SearchTextUtils.useful(attribute);
+        List<String> catalogOptions = AttributeOptionCatalog.optionsFor(category, attribute);
+        if (SearchTextUtils.ATTR_BRAND.equals(usefulAttribute)
+                && !catalogOptions.isEmpty()
+                && sessionId != null
+                && !sessionId.isBlank()) {
             (userId == null
                     ? historyRepository.findById(sessionId)
                     : historyRepository.findBySessionIdAndUserId(sessionId, userId)).ifPresent(history -> {
@@ -104,18 +109,17 @@ public class RecognitionService {
                             .map(this::brandCandidate)
                             .map(SearchTextUtils::useful)
                             .filter(value -> !value.isBlank())
+                            .filter(value -> AttributeOptionCatalog.allows(category, attribute, value))
                             .forEach(options::add);
                 } catch (Exception ignored) {
-                    // Fallback to static options below.
+                    // Fallback to catalog options below.
                 }
             });
         }
-        if (defaults != null) {
-            defaults.stream()
-                    .map(SearchTextUtils::useful)
-                    .filter(value -> !value.isBlank())
-                    .forEach(options::add);
-        }
+        catalogOptions.stream()
+                .map(SearchTextUtils::useful)
+                .filter(value -> !value.isBlank())
+                .forEach(options::add);
         return List.copyOf(options);
     }
 

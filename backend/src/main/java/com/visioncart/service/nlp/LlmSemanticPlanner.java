@@ -6,6 +6,7 @@ import com.visioncart.api.dto.NlpParseResult;
 import com.visioncart.api.dto.SemanticActionPlan;
 import com.visioncart.service.ai.PromptLoader;
 import com.visioncart.service.context.SessionContextService;
+import com.visioncart.service.metrics.PerformanceMetricsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -36,17 +37,20 @@ public class LlmSemanticPlanner {
     private final RuleBasedNlpParser ruleBasedParser;
     private final PromptLoader promptLoader;
     private final ObjectMapper objectMapper;
+    private final PerformanceMetricsService metricsService;
 
     public LlmSemanticPlanner(NlpModelService nlpModelService,
                               SemanticPlannerModelService semanticPlannerModelService,
                               RuleBasedNlpParser ruleBasedParser,
                               PromptLoader promptLoader,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              PerformanceMetricsService metricsService) {
         this.nlpModelService = nlpModelService;
         this.semanticPlannerModelService = semanticPlannerModelService;
         this.ruleBasedParser = ruleBasedParser;
         this.promptLoader = promptLoader;
         this.objectMapper = objectMapper;
+        this.metricsService = metricsService;
     }
 
     /**
@@ -75,6 +79,7 @@ public class LlmSemanticPlanner {
                         llmPlan.executionMode(),
                         llmPlan.semanticFilters() != null ? llmPlan.semanticFilters().size() : 0,
                         llmPlan.hardFilters() != null ? llmPlan.hardFilters().size() : 0);
+                recordPlanConditionMetrics(llmPlan);
                 return llmPlan;
             }
         } catch (Exception e) {
@@ -82,7 +87,23 @@ public class LlmSemanticPlanner {
         }
 
         // 2. Fallback: rule-based planning
-        return planWithRules(userInput, context);
+        SemanticActionPlan rulePlan = planWithRules(userInput, context);
+        recordPlanConditionMetrics(rulePlan);
+        return rulePlan;
+    }
+
+    private void recordPlanConditionMetrics(SemanticActionPlan plan) {
+        if (plan == null) {
+            return;
+        }
+        metricsService.recordNlpPlanConditions("hard_filter", size(plan.hardFilters()));
+        metricsService.recordNlpPlanConditions("preference", size(plan.preferences()));
+        metricsService.recordNlpPlanConditions("semantic",
+                size(plan.semanticFilters()) + size(plan.criteria()) + size(plan.negativeCriteria()));
+    }
+
+    private int size(Collection<?> items) {
+        return items == null ? 0 : items.size();
     }
 
     /**

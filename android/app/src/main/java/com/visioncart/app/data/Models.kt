@@ -64,7 +64,8 @@ data class SearchResult(
     @Json(name = "platform_stats") val platformStats: List<PlatformPriceStat> = emptyList(),
     @Json(name = "suggestion_cards") val suggestionCards: List<SuggestionCard> = emptyList(),
     val relaxed: Boolean = false,
-    @Json(name = "search_run_id") val searchRunId: String? = null
+    @Json(name = "search_run_id") val searchRunId: String? = null,
+    @Json(name = "in_progress") val inProgress: Boolean = false
 )
 
 data class SearchProgressMessage(

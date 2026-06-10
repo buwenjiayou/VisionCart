@@ -1051,22 +1051,23 @@ fun AttributeCorrectionDialog(
                         enabled = customValue.isNotBlank()
                     ) { Text("确定") }
                 }
-                // 选项列表
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    options.forEach { option ->
-                        val isSelected = option == currentValue
-                        TextButton(
-                            onClick = { onSelect(option) },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                option,
-                                color = if (isSelected) Color(0xFF0A7C66) else Color.Unspecified,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                            )
+                if (options.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        options.forEach { option ->
+                            val isSelected = option == currentValue
+                            TextButton(
+                                onClick = { onSelect(option) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    option,
+                                    color = if (isSelected) Color(0xFF0A7C66) else Color.Unspecified,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
                         }
                     }
                 }

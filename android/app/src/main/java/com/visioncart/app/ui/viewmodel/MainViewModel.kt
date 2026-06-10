@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -173,6 +174,8 @@ class MainViewModel(
 
     private companion object {
         const val TAG = "MainViewModel"
+        const val SEARCH_PROGRESS_TIMEOUT_MS = 30_000L
+        const val SEARCH_IN_PROGRESS_RETRY_DELAY_MS = 1_500L
     }
 
     /** Shorthand for getString() */
@@ -392,7 +395,7 @@ class MainViewModel(
 
             // Start WebSocket listener for staged partial results (runs in background)
             searchProgressJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                repository.subscribeSearchProgress(sessionId, timeoutMs = 15_000) { progress ->
+                repository.subscribeSearchProgress(sessionId, timeoutMs = SEARCH_PROGRESS_TIMEOUT_MS) { progress ->
                     // P0-2 fix: discard stale WebSocket progress
                     if (requestId != searchRequestId) return@subscribeSearchProgress
                     if (!acceptSearchRun(progress.searchRunId)) return@subscribeSearchProgress
@@ -408,23 +411,71 @@ class MainViewModel(
                 }
             }
 
-            val result = repository.searchProducts(
-                SearchRequest(
-                    sessionId = sessionId,
-                    attributes = state.currentAttributes,
-                    filter = state.currentFilter
-                )
+            val request = SearchRequest(
+                sessionId = sessionId,
+                attributes = state.currentAttributes,
+                filter = state.currentFilter
             )
-            searchProgressJob?.cancel() // Stop listening once final result arrives
+            val result = repository.searchProducts(request)
 
             // Problem 11 fix: discard stale HTTP search results
             if (requestId != searchRequestId) {
                 Log.d(TAG, "Ignoring stale search response for requestId=$requestId")
                 return@launch
             }
-            searchRequestId++
+            var searchResult = result.getOrElse { e ->
+                Log.e(TAG, "searchProducts failed", e)
+                searchProgressJob?.cancel()
+                _uiState.value = _uiState.value.copy(
+                    productsLoading = false,
+                    toastMessage = str(R.string.search_failed, e.message ?: "")
+                )
+                return@launch
+            }
 
-            result.onSuccess { searchResult ->
+            if (searchResult.inProgress) {
+                currentSearchRunId = searchResult.searchRunId ?: currentSearchRunId
+                Log.i(TAG, "searchProducts: backend still in progress, waiting for final progress")
+                delay(SEARCH_IN_PROGRESS_RETRY_DELAY_MS)
+                if (requestId != searchRequestId) {
+                    Log.d(TAG, "Ignoring in-progress retry for stale requestId=$requestId")
+                    return@launch
+                }
+                repository.searchProducts(request)
+                    .onSuccess { retryResult ->
+                        searchResult = retryResult
+                        currentSearchRunId = retryResult.searchRunId ?: currentSearchRunId
+                    }
+                    .onFailure { e ->
+                        Log.w(TAG, "searchProducts in-progress retry failed; continuing WebSocket wait", e)
+                    }
+
+                if (requestId != searchRequestId) {
+                    Log.d(TAG, "Ignoring stale retry response for requestId=$requestId")
+                    return@launch
+                }
+
+                if (searchResult.inProgress) {
+                    searchProgressJob?.join()
+                    if (requestId != searchRequestId) return@launch
+                    if (_uiState.value.productsLoading) {
+                        searchRequestId++
+                        _uiState.value = _uiState.value.copy(
+                            productsLoading = false,
+                            toastMessage = str(R.string.search_failed, "timeout")
+                        )
+                    }
+                    return@launch
+                }
+            }
+
+            searchProgressJob?.cancel() // Stop listening once final result arrives
+            if (requestId != searchRequestId) {
+                Log.d(TAG, "Ignoring stale final search response for requestId=$requestId")
+                return@launch
+            }
+            searchRequestId++
+            run {
                 // HTTP final belongs to this requestId, so it is authoritative. A late progress
                 // message from the previous backend run may have arrived before this response and
                 // temporarily populated currentSearchRunId; do not let that poison the final result.
@@ -439,7 +490,7 @@ class MainViewModel(
                     filterTags = emptyList(), // clear NLP tags on fresh search
                     structuredFilterTags = emptyList(),
                     deriveFilterTagsFromFilter = true,
-                    poolSize = 0
+                    poolSize = searchResult.total.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                 )
                 // AI 导购卡异步生成：搜索返回后延迟拉一次，确保拿到 insight cards
                 val hasInsight = mergedCards.any { it.id.startsWith("insight_") }
@@ -447,12 +498,6 @@ class MainViewModel(
                     Log.i(TAG, "searchProducts: no insight cards yet, scheduling delayed pull")
                     loadSuggestionCards(sessionId)
                 }
-            }.onFailure { e ->
-                Log.e(TAG, "searchProducts failed", e)
-                _uiState.value = _uiState.value.copy(
-                    productsLoading = false,
-                    toastMessage = str(R.string.search_failed, e.message ?: "")
-                )
             }
         }
     }

@@ -11,6 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +20,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 class RecognitionServiceTest {
@@ -93,11 +95,46 @@ class RecognitionServiceTest {
         assertThat(result.get(0).getSessionId()).isEqualTo("s1");
     }
 
+    @Test
+    void attributeOptionsFilterDynamicBrandsThroughCategoryCatalog() {
+        RecognitionHistory history = new RecognitionHistory();
+        history.setSessionId("session-1");
+        history.setAttributesJson(toJson(Map.of(
+                "品牌", new AttributeValue("未知", 0.3, false),
+                "类目", new AttributeValue("电动剃须刀", 0.9, true)
+        )));
+
+        when(historyRepository.findById("session-1")).thenReturn(Optional.of(history));
+        when(searchOrchestrator.search(any(SearchRequest.class), isNull())).thenReturn(new SearchResult(
+                2,
+                List.of(product("1", "Apple 电动剃须刀", "Apple"), product("2", "Philips 电动剃须刀", "Philips")),
+                List.of(),
+                List.of()
+        ));
+
+        List<String> options = recognitionService.attributeOptions("个护 / 剃须刀 / 电动剃须刀", "品牌", "session-1", null);
+
+        assertThat(options).contains("Philips", "飞利浦", "Braun");
+        assertThat(options).doesNotContain("Apple", "苹果", "Nike", "Adidas");
+    }
+
+    @Test
+    void attributeOptionsReturnEmptyForUnknownBrandCategory() {
+        List<String> options = recognitionService.attributeOptions("未知类目", "品牌", null, null);
+
+        assertThat(options).isEmpty();
+    }
+
     private String toJson(Object obj) {
         try {
             return objectMapper.writeValueAsString(obj);
         } catch (Exception e) {
             return "{}";
         }
+    }
+
+    private ProductCard product(String id, String title, String brand) {
+        return new ProductCard(id, title, "", BigDecimal.TEN, null, "taobao", false,
+                "shop", 4.8, 100, 0.9, List.of(), "", brand, "none", null);
     }
 }

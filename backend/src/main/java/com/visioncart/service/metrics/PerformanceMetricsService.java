@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -70,6 +71,29 @@ public class PerformanceMetricsService {
         sample.stop(registry.timer("recognition.latency", "success", String.valueOf(success)));
     }
 
+    public void recordRecognitionMultiProductPending() {
+        incrementCounter("recognition_multi_product_pending");
+    }
+
+    public void recordRecognitionDetectedCandidates(int count) {
+        setGauge("recognition_detected_candidates_count", Math.max(0, count));
+    }
+
+    public void recordRecognitionSelectedCandidates(int count) {
+        setGauge("recognition_selected_candidates_count", Math.max(0, count));
+    }
+
+    public void recordRecognitionLowConfidenceCandidateKept(int count) {
+        if (count > 0) {
+            incrementCounterBy("recognition_low_confidence_candidate_kept", count);
+        }
+    }
+
+    public void recordRecognitionSingleStageFallback(String reason) {
+        incrementCounter("recognition_single_stage_fallback",
+                "reason", reasonTag(reason));
+    }
+
     /**
      * 记录视觉模型延迟
      */
@@ -121,6 +145,35 @@ public class PerformanceMetricsService {
         registry.counter("search.cache", "result", "miss").increment();
     }
 
+    public void recordSearchInProgress(String source) {
+        incrementCounter("search_in_progress",
+                "source", tagValue(source));
+    }
+
+    public void recordSearchFinalEmpty(String reason) {
+        incrementCounter("search_final_empty",
+                "reason", reasonTag(reason));
+    }
+
+    public void recordSearchPlatformOutcome(String platform, String stage, String result, String reason) {
+        incrementCounter("search_platform_outcome",
+                "platform", tagValue(platform),
+                "stage", tagValue(stage),
+                "result", tagValue(result),
+                "reason", reasonTag(reason));
+    }
+
+    public void recordSearchPlatformProducts(String platform, String stage, int count) {
+        setGauge("search_platform_products_count", Math.max(0, count),
+                "platform", tagValue(platform),
+                "stage", tagValue(stage));
+    }
+
+    public void recordSearchCacheSkipped(String reason) {
+        incrementCounter("search_cache_skipped",
+                "reason", reasonTag(reason));
+    }
+
     /**
      * 获取搜索缓存命中率
      */
@@ -158,6 +211,27 @@ public class PerformanceMetricsService {
     public void recordNlpRequest() {
         nlpTotalRequests.incrementAndGet();
         registry.counter("nlp.requests").increment();
+    }
+
+    public void recordNlpStatePush() {
+        incrementCounter("nlp_state_push");
+    }
+
+    public void recordNlpStateUndo() {
+        incrementCounter("nlp_state_undo");
+    }
+
+    public void recordNlpStateClear() {
+        incrementCounter("nlp_state_clear");
+    }
+
+    public void recordNlpZeroResultRollback() {
+        incrementCounter("nlp_zero_result_rollback");
+    }
+
+    public void recordNlpPlanConditions(String type, int count) {
+        setGauge("nlp_plan_conditions_count", Math.max(0, count),
+                "type", tagValue(type));
     }
 
     /**
@@ -309,6 +383,24 @@ public class PerformanceMetricsService {
         registry.counter("deep_suggestion.fallback_count").increment();
     }
 
+    // ==================== 收藏与价格提醒指标 ====================
+
+    public void recordFavoriteCreate(String result) {
+        incrementCounter("favorite_create",
+                "result", tagValue(result));
+    }
+
+    public void recordPriceRefresh(String platform, String result) {
+        incrementCounter("price_refresh",
+                "platform", tagValue(platform),
+                "result", tagValue(result));
+    }
+
+    public void recordPriceAlertTriggered(String type) {
+        incrementCounter("price_alert_triggered",
+                "type", tagValue(type));
+    }
+
     // ==================== 通用指标工具 ====================
 
     /**
@@ -333,6 +425,17 @@ public class PerformanceMetricsService {
                 .increment();
     }
 
+    public void incrementCounterBy(String name, double amount, String... tags) {
+        if (amount <= 0) {
+            return;
+        }
+        counterCache.computeIfAbsent(name + String.join("", tags),
+                k -> Counter.builder(name)
+                        .tags(tags)
+                        .register(registry))
+                .increment(amount);
+    }
+
     /**
      * 记录自定义 Gauge
      */
@@ -346,6 +449,56 @@ public class PerformanceMetricsService {
                     return gauge;
                 })
                 .set((long) value);
+    }
+
+    private String tagValue(String value) {
+        if (StringUtils.isBlank(value)) {
+            return "unknown";
+        }
+        if (value.contains("淘宝") || value.contains("淘寶")) {
+            return "taobao";
+        }
+        if (value.contains("拼多多")) {
+            return "pdd";
+        }
+        if (value.contains("京东") || value.contains("京東")) {
+            return "jd";
+        }
+        if (value.toLowerCase(Locale.ROOT).contains("ebay")) {
+            return "ebay";
+        }
+        String normalized = value.trim()
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9_-]+", "_")
+                .replaceAll("_+", "_")
+                .replaceAll("^_+|_+$", "");
+        if (normalized.isBlank()) {
+            return "unknown";
+        }
+        return normalized.length() > 48 ? normalized.substring(0, 48) : normalized;
+    }
+
+    private String reasonTag(String reason) {
+        if (StringUtils.isBlank(reason)) {
+            return "none";
+        }
+        String value = reason.toLowerCase(Locale.ROOT);
+        if (value.contains("timeout")) {
+            return "timeout";
+        }
+        if (value.contains("queue_full")) {
+            return "queue_full";
+        }
+        if (value.contains("circuit_open")) {
+            return "circuit_open";
+        }
+        if (value.startsWith("error:")) {
+            return "error";
+        }
+        if (value.contains("collection_failed")) {
+            return "collection_failed";
+        }
+        return tagValue(reason);
     }
 
     /**

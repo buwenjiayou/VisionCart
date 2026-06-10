@@ -52,8 +52,9 @@ public class TaobaoSearchService implements PlatformSearchService {
         this.searchExecutor = searchExecutor;
         this.detailExecutor = detailExecutor;
         var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(java.time.Duration.ofSeconds(5));
-        factory.setReadTimeout(java.time.Duration.ofSeconds(15));
+        Duration platformTimeout = platformTimeout();
+        factory.setConnectTimeout(platformTimeout);
+        factory.setReadTimeout(platformTimeout);
         this.restClient = RestClient.builder().requestFactory(factory).build();
     }
 
@@ -219,11 +220,16 @@ public class TaobaoSearchService implements PlatformSearchService {
         try {
             java.util.concurrent.CompletableFuture
                     .allOf(futures.toArray(new java.util.concurrent.CompletableFuture[0]))
-                    .get(12, java.util.concurrent.TimeUnit.SECONDS);
+                    .get(platformTimeout().toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             long completed = futures.stream().filter(java.util.concurrent.CompletableFuture::isDone).count();
             log.warn("{} query batch timed out; using {} completed of {} queries", platform, completed, futures.size());
         }
+    }
+
+    private Duration platformTimeout() {
+        long timeoutMs = properties.getPlatforms().getPlatform(platform()).getTimeoutMs();
+        return Duration.ofMillis(Math.max(1_000, timeoutMs));
     }
 
     private Map<String, String> buildParams(String query,

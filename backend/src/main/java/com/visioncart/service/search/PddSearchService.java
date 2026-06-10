@@ -58,8 +58,9 @@ public class PddSearchService implements PlatformSearchService {
         this.searchExecutor = searchExecutor;
         this.detailExecutor = detailExecutor;
         var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(java.time.Duration.ofSeconds(5));
-        factory.setReadTimeout(java.time.Duration.ofSeconds(15));
+        Duration platformTimeout = platformTimeout();
+        factory.setConnectTimeout(platformTimeout);
+        factory.setReadTimeout(platformTimeout);
         this.restClient = RestClient.builder().requestFactory(factory).build();
     }
 
@@ -162,11 +163,16 @@ public class PddSearchService implements PlatformSearchService {
         try {
             CompletableFuture
                     .allOf(futures.toArray(new CompletableFuture[0]))
-                    .get(12, java.util.concurrent.TimeUnit.SECONDS);
+                    .get(platformTimeout().toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             long completed = futures.stream().filter(CompletableFuture::isDone).count();
             log.warn("PDD query batch timed out; using {} completed of {} queries", completed, futures.size());
         }
+    }
+
+    private Duration platformTimeout() {
+        long timeoutMs = properties.getPlatforms().getPlatform(platform()).getTimeoutMs();
+        return Duration.ofMillis(Math.max(1_000, timeoutMs));
     }
 
     private String executeSearch(String keyword, int page, int pageSize) throws Exception {

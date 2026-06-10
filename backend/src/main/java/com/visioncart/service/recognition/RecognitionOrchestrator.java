@@ -262,6 +262,7 @@ public class RecognitionOrchestrator {
                     () -> visionClient.detectProducts(processed, contentType, region));
         } catch (Exception e) {
             log.warn("Two-stage Flash detection failed for session {}, falling back to single-stage: {}", sessionId, e.getMessage());
+            metricsService.recordRecognitionSingleStageFallback("detect_failed");
             RecognitionResult result;
             try {
                 result = executeWithRetry(sessionId, "single-fallback", () -> visionClient.analyze(processed, contentType, region));
@@ -274,6 +275,7 @@ public class RecognitionOrchestrator {
         }
         log.info("Session {} detection: raw={} candidates, minConfidence={}", sessionId,
                 detected != null ? detected.size() : 0, properties.getRecognition().getMinDetectionConfidence());
+        metricsService.recordRecognitionDetectedCandidates(detected != null ? detected.size() : 0);
         if (detected != null) {
             for (RecognitionCandidate c : detected) {
                 log.info("  detected: category={}, brand={}, confidence={}", c.category(), c.brand(), c.confidence());
@@ -292,6 +294,7 @@ public class RecognitionOrchestrator {
         log.info("Session {} after filtering: {} candidates passed threshold", sessionId, candidates.size());
         if (candidates.isEmpty()) {
             log.warn("No candidates passed confidence threshold for session {}, falling back to single-stage", sessionId);
+            metricsService.recordRecognitionSingleStageFallback("no_candidates_after_filter");
             RecognitionResult result;
             try {
                 result = executeWithRetry(sessionId, "single-fallback", () -> visionClient.analyze(processed, contentType, region));
@@ -323,6 +326,7 @@ public class RecognitionOrchestrator {
             }
             if (visibleCandidates.isEmpty()) {
                 log.warn("All candidate crops failed to save for session {}, falling back to single-stage", sessionId);
+                metricsService.recordRecognitionSingleStageFallback("crop_save_failed");
                 RecognitionResult result;
                 try {
                     result = executeWithRetry(sessionId, "single-fallback", () -> visionClient.analyze(processed, contentType, region));
@@ -333,6 +337,8 @@ public class RecognitionOrchestrator {
                 completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic, processed);
                 return false;
             }
+            metricsService.recordRecognitionSelectedCandidates(visibleCandidates.size());
+            metricsService.recordRecognitionMultiProductPending();
             taskManager.markMultiProductPending(sessionId, visibleCandidates, cropFilePaths);
             messagingTemplate.convertAndSend(WS_TOPIC + sessionId, new RecognitionTaskResult(
                     sessionId, "MULTI_PRODUCT_PENDING", null, null, null, null, visibleCandidates
@@ -491,10 +497,18 @@ public class RecognitionOrchestrator {
             return List.of();
         }
         List<CandidateWork> candidates = new ArrayList<>();
+        List<CandidateWork> fallbackCandidates = new ArrayList<>();
         double minConfidence = properties.getRecognition().getMinDetectionConfidence();
+        double fallbackMinConfidence = Math.min(minConfidence, 0.35);
+        int threshold = Math.max(2, properties.getRecognition().getMultiProductThreshold());
+        int lowConfidenceSkipped = 0;
+        int invalidCropSkipped = 0;
         int index = 1;
         for (RecognitionCandidate candidate : detected) {
-            if (candidate.confidence() < minConfidence) {
+            if (candidate.confidence() < fallbackMinConfidence) {
+                lowConfidenceSkipped++;
+                log.debug("Skipping detected candidate below fallback confidence: category={}, confidence={}, min={}",
+                        candidate.category(), candidate.confidence(), fallbackMinConfidence);
                 continue;
             }
             try {
@@ -512,17 +526,42 @@ public class RecognitionOrchestrator {
                         candidate.confidence(),
                         imageUrl
                 );
-                candidates.add(new CandidateWork(visible, crop.bytes(), crop.sourceArea()));
+                CandidateWork work = new CandidateWork(visible, crop.bytes(), crop.sourceArea());
+                if (candidate.confidence() >= minConfidence) {
+                    candidates.add(work);
+                } else {
+                    fallbackCandidates.add(work);
+                }
             } catch (ImageQualityException e) {
+                invalidCropSkipped++;
                 log.debug("Skipping invalid detected bbox {}: {}", candidate.bbox(), e.getReason());
             }
         }
-        return candidates.stream()
+        List<CandidateWork> selected = new ArrayList<>(candidates);
+        if (detected.size() >= threshold && selected.size() < threshold && !fallbackCandidates.isEmpty()) {
+            fallbackCandidates.stream()
+                    .sorted(Comparator
+                            .comparingLong(CandidateWork::sourceArea).reversed()
+                            .thenComparing((CandidateWork item) -> item.candidate().confidence(), Comparator.reverseOrder()))
+                    .limit(Math.max(0, threshold - selected.size()))
+                    .forEach(selected::add);
+        }
+        List<CandidateWork> limited = selected.stream()
                 .sorted(Comparator
                         .comparingLong(CandidateWork::sourceArea).reversed()
                         .thenComparing((CandidateWork item) -> item.candidate().confidence(), Comparator.reverseOrder()))
                 .limit(Math.max(1, properties.getRecognition().getMaxProducts()))
                 .toList();
+        int lowConfidenceKept = (int) limited.stream()
+                .filter(item -> item.candidate().confidence() < minConfidence)
+                .count();
+        metricsService.recordRecognitionSelectedCandidates(limited.size());
+        metricsService.recordRecognitionLowConfidenceCandidateKept(lowConfidenceKept);
+        log.info("Session {} candidate filtering: raw={}, highConfidence={}, fallbackEligible={}, selected={}, " +
+                        "lowConfidenceSkipped={}, invalidCropSkipped={}, minConfidence={}, fallbackMin={}",
+                sessionId, detected.size(), candidates.size(), fallbackCandidates.size(), limited.size(),
+                lowConfidenceSkipped, invalidCropSkipped, minConfidence, fallbackMinConfidence);
+        return limited;
     }
 
     private <T> T executeWithRetry(String sessionId, String stage, RetryableOperation<T> operation) throws Exception {
@@ -554,7 +593,7 @@ public class RecognitionOrchestrator {
     private RecognitionResult enrichWithPlatformStats(RecognitionResult result, boolean domestic) {
         try {
             SearchResult searchResult = searchOrchestrator.search(new SearchRequest(
-                    result.sessionId(), RecognitionSearchMapper.toSearchAttributes(result), null, 1, 50, "recognition"
+                    null, RecognitionSearchMapper.toSearchAttributes(result), null, 1, 50, "recognition"
             ), domestic);
 
             List<PlatformPriceStat> stats = searchResult.platformStats();

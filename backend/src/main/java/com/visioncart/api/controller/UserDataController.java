@@ -22,9 +22,11 @@ import com.visioncart.repository.RecognitionHistoryRepository;
 import com.visioncart.service.price.PriceMonitorService;
 import com.visioncart.service.recognition.AsyncRecognitionTaskManager;
 import com.visioncart.service.recognition.RecognitionImageStorage;
+import com.visioncart.service.metrics.PerformanceMetricsService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.Resource;
 import org.springframework.data.domain.Page;
@@ -69,6 +71,7 @@ public class UserDataController {
     private final ObjectMapper objectMapper;
     private final RecognitionImageStorage imageStorage;
     private final AsyncRecognitionTaskManager taskManager;
+    private final PerformanceMetricsService metricsService;
 
     public UserDataController(FavoriteProductRepository favoriteRepository,
                               RecognitionHistoryRepository historyRepository,
@@ -80,6 +83,23 @@ public class UserDataController {
                               ObjectMapper objectMapper,
                               RecognitionImageStorage imageStorage,
                               AsyncRecognitionTaskManager taskManager) {
+        this(favoriteRepository, historyRepository, priceHistoryRepository, priceAlertRepository,
+                historyProductRepository, priceMonitorService, searchExecutor, objectMapper,
+                imageStorage, taskManager, null);
+    }
+
+    @Autowired
+    public UserDataController(FavoriteProductRepository favoriteRepository,
+                              RecognitionHistoryRepository historyRepository,
+                              PriceHistoryRepository priceHistoryRepository,
+                              PriceAlertRepository priceAlertRepository,
+                              RecognitionHistoryProductRepository historyProductRepository,
+                              PriceMonitorService priceMonitorService,
+                              @Qualifier("searchExecutor") ExecutorService searchExecutor,
+                              ObjectMapper objectMapper,
+                              RecognitionImageStorage imageStorage,
+                              AsyncRecognitionTaskManager taskManager,
+                              PerformanceMetricsService metricsService) {
         this.favoriteRepository = favoriteRepository;
         this.historyRepository = historyRepository;
         this.priceHistoryRepository = priceHistoryRepository;
@@ -90,36 +110,44 @@ public class UserDataController {
         this.objectMapper = objectMapper;
         this.imageStorage = imageStorage;
         this.taskManager = taskManager;
+        this.metricsService = metricsService;
     }
 
     @Transactional
     @PostMapping("/favorites")
     public ApiResponse<FavoriteCard> addFavorite(@Valid @RequestBody FavoriteRequest request) {
-        Long userId = SecurityUtils.currentUserId();
-        FavoriteProduct existingByProduct = favoriteRepository.findByProductIdAndUserId(request.productId(), userId)
-                .orElse(null);
-        if (existingByProduct != null && request.updatedAt() != null) {
-            Instant clientTime = Instant.ofEpochMilli(request.updatedAt());
-            if (existingByProduct.getUpdatedAt() != null && clientTime.isBefore(existingByProduct.getUpdatedAt())) {
-                return ApiResponse.ok(toCard(existingByProduct));
+        try {
+            Long userId = SecurityUtils.currentUserId();
+            FavoriteProduct existingByProduct = favoriteRepository.findByProductIdAndUserId(request.productId(), userId)
+                    .orElse(null);
+            if (existingByProduct != null && request.updatedAt() != null) {
+                Instant clientTime = Instant.ofEpochMilli(request.updatedAt());
+                if (existingByProduct.getUpdatedAt() != null && clientTime.isBefore(existingByProduct.getUpdatedAt())) {
+                    recordFavoriteCreate("success");
+                    return ApiResponse.ok(toCard(existingByProduct));
+                }
             }
-        }
 
-        FavoriteProduct favorite = existingByProduct != null ? existingByProduct : new FavoriteProduct();
-        favorite.setProductId(request.productId());
-        favorite.setUserId(userId);
-        favorite.setPlatform(request.platform());
-        favorite.setTitle(request.title());
-        favorite.setImageUrl(request.imageUrl());
-        favorite.setPrice(request.price());
-        favorite.setDetailUrl(request.detailUrl());
-        Instant now = Instant.now();
-        favorite.setUpdatedAt(now);
-        if (favorite.getId() == null) {
-            favorite.setCreatedAt(now);
+            FavoriteProduct favorite = existingByProduct != null ? existingByProduct : new FavoriteProduct();
+            favorite.setProductId(request.productId());
+            favorite.setUserId(userId);
+            favorite.setPlatform(request.platform());
+            favorite.setTitle(request.title());
+            favorite.setImageUrl(request.imageUrl());
+            favorite.setPrice(request.price());
+            favorite.setDetailUrl(request.detailUrl());
+            Instant now = Instant.now();
+            favorite.setUpdatedAt(now);
+            if (favorite.getId() == null) {
+                favorite.setCreatedAt(now);
+            }
+            FavoriteProduct saved = favoriteRepository.save(favorite);
+            recordFavoriteCreate("success");
+            return ApiResponse.ok(toCard(saved));
+        } catch (RuntimeException e) {
+            recordFavoriteCreate("failed");
+            throw e;
         }
-        FavoriteProduct saved = favoriteRepository.save(favorite);
-        return ApiResponse.ok(toCard(saved));
     }
 
     @GetMapping("/favorites")
@@ -247,6 +275,12 @@ public class UserDataController {
         return new FavoriteCard(f.getProductId(), f.getPlatform(), f.getTitle(),
                 f.getImageUrl(), f.getPrice(), f.getDetailUrl(), updatedMillis,
                 currentPrice, null, isLowest);
+    }
+
+    private void recordFavoriteCreate(String result) {
+        if (metricsService != null) {
+            metricsService.recordFavoriteCreate(result);
+        }
     }
 
     private HistoryItem toHistoryItem(RecognitionHistory h) {

@@ -170,6 +170,67 @@ class PerformanceMetricsServiceTest {
     }
 
     @Test
+    void recordsSearchStabilityMetrics() {
+        metricsService.recordSearchInProgress("app");
+        metricsService.recordSearchFinalEmpty("all_platform_failed");
+        metricsService.recordSearchPlatformOutcome("pdd", "main", "failed", "main_timeout");
+        metricsService.recordSearchPlatformProducts("taobao", "main", 12);
+        metricsService.recordSearchCacheSkipped("platform_failure");
+
+        assertEquals(1.0, registry.find("search_in_progress")
+                .tags("source", "app").counter().count());
+        assertEquals(1.0, registry.find("search_final_empty")
+                .tags("reason", "all_platform_failed").counter().count());
+        assertEquals(1.0, registry.find("search_platform_outcome")
+                .tags("platform", "pdd", "stage", "main", "result", "failed", "reason", "timeout")
+                .counter().count());
+        assertEquals(12.0, registry.find("search_platform_products_count")
+                .tags("platform", "taobao", "stage", "main").gauge().value());
+        assertEquals(1.0, registry.find("search_cache_skipped")
+                .tags("reason", "platform_failure").counter().count());
+    }
+
+    @Test
+    void recordsRecognitionNlpFavoriteAndPriceMetrics() {
+        metricsService.recordRecognitionMultiProductPending();
+        metricsService.recordRecognitionDetectedCandidates(3);
+        metricsService.recordRecognitionSelectedCandidates(2);
+        metricsService.recordRecognitionLowConfidenceCandidateKept(2);
+        metricsService.recordRecognitionSingleStageFallback("detect_failed");
+
+        metricsService.recordNlpStatePush();
+        metricsService.recordNlpStateUndo();
+        metricsService.recordNlpStateClear();
+        metricsService.recordNlpZeroResultRollback();
+        metricsService.recordNlpPlanConditions("preference", 2);
+
+        metricsService.recordFavoriteCreate("success");
+        metricsService.recordPriceRefresh("pdd", "failed");
+        metricsService.recordPriceAlertTriggered("target_reached");
+
+        assertEquals(1.0, registry.find("recognition_multi_product_pending").counter().count());
+        assertEquals(3.0, registry.find("recognition_detected_candidates_count").gauge().value());
+        assertEquals(2.0, registry.find("recognition_selected_candidates_count").gauge().value());
+        assertEquals(2.0, registry.find("recognition_low_confidence_candidate_kept").counter().count());
+        assertEquals(1.0, registry.find("recognition_single_stage_fallback")
+                .tags("reason", "detect_failed").counter().count());
+
+        assertEquals(1.0, registry.find("nlp_state_push").counter().count());
+        assertEquals(1.0, registry.find("nlp_state_undo").counter().count());
+        assertEquals(1.0, registry.find("nlp_state_clear").counter().count());
+        assertEquals(1.0, registry.find("nlp_zero_result_rollback").counter().count());
+        assertEquals(2.0, registry.find("nlp_plan_conditions_count")
+                .tags("type", "preference").gauge().value());
+
+        assertEquals(1.0, registry.find("favorite_create")
+                .tags("result", "success").counter().count());
+        assertEquals(1.0, registry.find("price_refresh")
+                .tags("platform", "pdd", "result", "failed").counter().count());
+        assertEquals(1.0, registry.find("price_alert_triggered")
+                .tags("type", "target_reached").counter().count());
+    }
+
+    @Test
     void testMetricsSummaryContainsAllSections() {
         // Given
         metricsService.recordSearchCacheHit();

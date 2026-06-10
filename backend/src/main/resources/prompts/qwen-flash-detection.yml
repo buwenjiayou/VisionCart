@@ -1,6 +1,11 @@
 version: "1.1"
 description: "Qwen3-VL-Flash product detection and coarse recognition prompt"
 prompt: |
+  Multi-product rule:
+  - Output every independent purchasable item in the image, not only the most prominent subject.
+  - If an accessory, nearby object, or side item can be bought independently, output it as a separate product.
+  - Do not merge separate products into one bbox/category; keep separate bboxes even when they are adjacent.
+  - If multiple likely products exist, keep all candidates with confidence >= 0.35.
   你是电商商品检测专家。
   请检测图片中所有主要可购买商品，最多 8 个。
   忽略背景、包装杂物、无关屏幕内容和装饰物。

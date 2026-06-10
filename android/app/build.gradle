@@ -11,6 +11,19 @@ if (localPropertiesFile.exists()) {
     localPropertiesFile.withInputStream { localProperties.load(it) }
 }
 def apiBaseUrl = localProperties.getProperty("VISIONCART_API_BASE_URL", "http://10.0.2.2:8080/").trim()
+def allowHttpRelease = localProperties.getProperty("VISIONCART_ALLOW_HTTP_RELEASE", "false").trim().toBoolean()
+def allowedHttpReleaseHosts = localProperties.getProperty("VISIONCART_ALLOWED_HTTP_RELEASE_HOSTS", "")
+        .split(",")
+        .collect { it.trim() }
+        .findAll { !it.isBlank() }
+def releaseStoreFilePath = localProperties.getProperty("VISIONCART_RELEASE_STORE_FILE", "").trim()
+def releaseStorePassword = localProperties.getProperty("VISIONCART_RELEASE_STORE_PASSWORD", "").trim()
+def releaseKeyAlias = localProperties.getProperty("VISIONCART_RELEASE_KEY_ALIAS", "").trim()
+def releaseKeyPassword = localProperties.getProperty("VISIONCART_RELEASE_KEY_PASSWORD", "").trim()
+def hasReleaseSigning = releaseStoreFilePath &&
+        releaseStorePassword &&
+        releaseKeyAlias &&
+        releaseKeyPassword
 
 tasks.register("validateReleaseApiBaseUrl") {
     doLast {
@@ -20,8 +33,14 @@ tasks.register("validateReleaseApiBaseUrl") {
                 host ==~ /^192\.168\..*/ ||
                 host ==~ /^172\.(1[6-9]|2[0-9]|3[01])\..*/
         def devHost = ["localhost", "127.0.0.1", "10.0.2.2"].contains(host) || privateIp
+        def selfUseHttpAllowed = allowHttpRelease &&
+                "http".equalsIgnoreCase(uri.scheme) &&
+                allowedHttpReleaseHosts.contains(host)
+        if (selfUseHttpAllowed) {
+            return
+        }
         if (!"https".equalsIgnoreCase(uri.scheme) || devHost) {
-            throw new GradleException("Release builds require VISIONCART_API_BASE_URL to be HTTPS and not localhost/LAN: ${apiBaseUrl}")
+            throw new GradleException("Release builds require VISIONCART_API_BASE_URL to be HTTPS and not localhost/LAN, unless VISIONCART_ALLOW_HTTP_RELEASE is enabled for this host: ${apiBaseUrl}")
         }
     }
 }
@@ -37,6 +56,25 @@ android {
         versionCode 1
         versionName "0.2.0"
         buildConfigField "String", "API_BASE_URL", "\"${apiBaseUrl}\""
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile rootProject.file(releaseStoreFilePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
     }
 
     buildFeatures {

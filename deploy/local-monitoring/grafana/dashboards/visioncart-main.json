@@ -1,0 +1,1025 @@
+{
+    "annotations":  {
+                        "list":  [
+                                     {
+                                         "hide":  true,
+                                         "datasource":  {
+                                                            "type":  "grafana",
+                                                            "uid":  "-- Grafana --"
+                                                        },
+                                         "name":  "Annotations \u0026 Alerts",
+                                         "type":  "dashboard",
+                                         "builtIn":  1,
+                                         "target":  {
+                                                        "matchAny":  false,
+                                                        "type":  "dashboard",
+                                                        "limit":  100,
+                                                        "tags":  [
+
+                                                                 ]
+                                                    },
+                                         "enable":  true,
+                                         "iconColor":  "rgba(0, 211, 255, 1)"
+                                     }
+                                 ]
+                    },
+    "editable":  true,
+    "fiscalYearStartMonth":  0,
+    "graphTooltip":  0,
+    "id":  null,
+    "links":  [
+
+              ],
+    "liveNow":  false,
+    "panels":  [
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "ms",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  1,
+                       "gridPos":  {
+                                       "y":  0,
+                                       "w":  12,
+                                       "h":  8,
+                                       "x":  0
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "HTTP 请求延迟（http_server_requests_seconds）",
+                       "targets":  [
+                                       {
+                                           "expr":  "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{uri!~\".*actuator.*\"}[5m])) by (le, uri)) * 1000",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "p95 {{uri}}",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{uri!~\".*actuator.*\"}[5m])) by (le, uri)) * 1000",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "p50 {{uri}}",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "reqps",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  2,
+                       "gridPos":  {
+                                       "y":  0,
+                                       "w":  12,
+                                       "h":  8,
+                                       "x":  12
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "HTTP QPS（http_server_requests_seconds_count）",
+                       "targets":  [
+                                       {
+                                           "expr":  "sum(rate(http_server_requests_seconds_count{uri!~\".*actuator.*\"}[1m])) by (uri, status)",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "{{status}} {{uri}}",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "bytes",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  3,
+                       "gridPos":  {
+                                       "y":  8,
+                                       "w":  8,
+                                       "h":  8,
+                                       "x":  0
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "JVM 内存（jvm_memory_*）",
+                       "targets":  [
+                                       {
+                                           "expr":  "sum(jvm_memory_used_bytes) by (area)",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "used {{area}}",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "sum(jvm_memory_committed_bytes) by (area)",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "committed {{area}}",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "sum(jvm_memory_max_bytes) by (area)",
+                                           "editorMode":  "code",
+                                           "refId":  "C",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "max {{area}}",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "short",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  4,
+                       "gridPos":  {
+                                       "y":  8,
+                                       "w":  8,
+                                       "h":  8,
+                                       "x":  8
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "GC（jvm_gc_*）",
+                       "targets":  [
+                                       {
+                                           "expr":  "sum(rate(jvm_gc_pause_seconds_count[5m])) by (gc)",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "pause/s {{gc}}",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "sum(rate(jvm_gc_pause_seconds_sum[5m])) by (gc)",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "seconds/s {{gc}}",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "jvm_gc_overhead",
+                                           "editorMode":  "code",
+                                           "refId":  "C",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "overhead",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "short",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  5,
+                       "gridPos":  {
+                                       "y":  8,
+                                       "w":  8,
+                                       "h":  8,
+                                       "x":  16
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "Hikari 连接池（hikaricp_*）",
+                       "targets":  [
+                                       {
+                                           "expr":  "hikaricp_connections_active",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "active",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "hikaricp_connections_idle",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "idle",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "hikaricp_connections_pending",
+                                           "editorMode":  "code",
+                                           "refId":  "C",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "pending",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "hikaricp_connections_max",
+                                           "editorMode":  "code",
+                                           "refId":  "D",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "max",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "ops",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  6,
+                       "gridPos":  {
+                                       "y":  16,
+                                       "w":  8,
+                                       "h":  8,
+                                       "x":  0
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "Redis/Lettuce（lettuce_command_*）",
+                       "targets":  [
+                                       {
+                                           "expr":  "sum(rate(lettuce_command_completion_seconds_count[5m])) by (command)",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "{{command}} complete/s",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "histogram_quantile(0.95, sum(rate(lettuce_command_completion_seconds_bucket[5m])) by (le, command)) * 1000",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "p95 {{command}} ms",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "short",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  7,
+                       "gridPos":  {
+                                       "y":  16,
+                                       "w":  8,
+                                       "h":  8,
+                                       "x":  8
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "NLP（nlp_total_requests / nlp_llm_fallback_count）",
+                       "targets":  [
+                                       {
+                                           "expr":  "rate(nlp_total_requests[5m])",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "requests/s",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "rate(nlp_llm_fallback_count[5m])",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "fallback/s",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "increase(nlp_total_requests[1h])",
+                                           "editorMode":  "code",
+                                           "refId":  "C",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "requests 1h",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "percentunit",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  8,
+                       "gridPos":  {
+                                       "y":  16,
+                                       "w":  8,
+                                       "h":  8,
+                                       "x":  16
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "搜索缓存（search_cache_*）",
+                       "targets":  [
+                                       {
+                                           "expr":  "search_cache_hit_count / clamp_min(search_cache_hit_count + search_cache_miss_count, 1)",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "hit ratio",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "rate(search_cache_hit_count[5m])",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "hit/s",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "rate(search_cache_miss_count[5m])",
+                                           "editorMode":  "code",
+                                           "refId":  "C",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "miss/s",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "percentunit",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  9,
+                       "gridPos":  {
+                                       "y":  24,
+                                       "w":  12,
+                                       "h":  7,
+                                       "x":  0
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "CPU（process_cpu_usage / system_cpu_usage）",
+                       "targets":  [
+                                       {
+                                           "expr":  "process_cpu_usage",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "process",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "system_cpu_usage",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "system",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   },
+                   {
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  12,
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               },
+                                                                           "showPoints":  "never",
+                                                                           "drawStyle":  "line",
+                                                                           "lineWidth":  2,
+                                                                           "axisPlacement":  "auto",
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        }
+                                                                       },
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "value":  null,
+                                                                                                 "color":  "green"
+                                                                                             }
+                                                                                         ],
+                                                                               "mode":  "absolute"
+                                                                           },
+                                                            "unit":  "short",
+                                                            "mappings":  [
+
+                                                                         ]
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "id":  10,
+                       "gridPos":  {
+                                       "y":  24,
+                                       "w":  12,
+                                       "h":  7,
+                                       "x":  12
+                                   },
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "visioncart-prometheus"
+                                      },
+                       "title":  "线程池（executor_*）",
+                       "targets":  [
+                                       {
+                                           "expr":  "executor_active_threads",
+                                           "editorMode":  "code",
+                                           "refId":  "A",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "active {{name}}",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "executor_queued_tasks",
+                                           "editorMode":  "code",
+                                           "refId":  "B",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "queued {{name}}",
+                                           "range":  true
+                                       },
+                                       {
+                                           "expr":  "executor_queue_remaining_tasks",
+                                           "editorMode":  "code",
+                                           "refId":  "C",
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "visioncart-prometheus"
+                                                          },
+                                           "legendFormat":  "remaining {{name}}",
+                                           "range":  true
+                                       }
+                                   ],
+                       "type":  "timeseries",
+                       "options":  {
+                                       "legend":  {
+                                                      "placement":  "bottom",
+                                                      "showLegend":  true,
+                                                      "calcs":  [
+                                                                    "lastNotNull"
+                                                                ],
+                                                      "displayMode":  "table"
+                                                  },
+                                       "tooltip":  {
+                                                       "sort":  "none",
+                                                       "mode":  "multi"
+                                                   }
+                                   }
+                   }
+               ],
+    "refresh":  "10s",
+    "schemaVersion":  39,
+    "tags":  [
+                 "visioncart",
+                 "prod"
+             ],
+    "templating":  {
+                       "list":  [
+
+                                ]
+                   },
+    "time":  {
+                 "to":  "now",
+                 "from":  "now-1h"
+             },
+    "timepicker":  {
+
+                   },
+    "timezone":  "browser",
+    "title":  "VisionCart Main",
+    "uid":  "visioncart-main",
+    "version":  2,
+    "weekStart":  ""
+}

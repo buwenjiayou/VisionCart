@@ -369,17 +369,14 @@ fun VisionCartApp(
     fun onAttributeClick(name: String, value: String) {
         correctingAttribute = name
         correctingCurrentValue = value
-        val category = uiState.categoryText.split(" / ").lastOrNull() ?: ""
-        // Show local attribute suggestions immediately
-        attributeOptions = getDefaultOptions(name, uiState.categoryText)
+        val category = uiState.categoryText
+        attributeOptions = emptyList()
         showAttributeDialog = true
         // Load remote options asynchronously
         scope.launch {
             val result = repository.getAttributeOptions(category, name, uiState.sessionId)
             result.onSuccess { options ->
-                if (options.isNotEmpty()) {
-                    attributeOptions = options
-                }
+                attributeOptions = options
             }
         }
     }
@@ -1112,74 +1109,5 @@ private fun SecondaryActionButton(
         Icon(icon, contentDescription = null, modifier = Modifier.size(19.dp))
         Spacer(Modifier.width(7.dp))
         Text(label)
-    }
-}
-
-// ==================== Default Options ====================
-
-private fun getDefaultOptions(attribute: String, category: String = ""): List<String> {
-    val cat = category.lowercase()
-    return when (attribute) {
-        "品牌" -> when {
-            cat.contains("鞋") || cat.contains("靴") || cat.contains("拖鞋") || cat.contains("凉鞋") ->
-                listOf("Nike", "耐克", "Adidas", "阿迪达斯", "李宁", "安踏", "特步", "PUMA", "彪马", "New Balance", "新百伦", "FILA", "斐乐", "Converse", "匡威", "Vans", "范斯", "Reebok", "锐步", "Skechers", "斯凯奇", "ASICS", "亚瑟士", "Salomon", "萨洛蒙", "Hoka", "昂跑", "未知")
-            cat.contains("手机") || cat.contains("平板") || cat.contains("pad") ->
-                listOf("Apple", "苹果", "Huawei", "华为", "Xiaomi", "小米", "OPPO", "vivo", "Samsung", "三星", "Honor", "荣耀", "OnePlus", "一加", "Realme", "真我", "iQOO", "魅族", "索尼", "Google", "Nothing", "未知")
-            cat.contains("电脑") || cat.contains("笔记本") || cat.contains("外设") || cat.contains("鼠标") || cat.contains("键盘") || cat.contains("显示器") ->
-                listOf("Apple", "苹果", "Huawei", "华为", "Xiaomi", "小米", "Lenovo", "联想", "Dell", "戴尔", "HP", "惠普", "ASUS", "华硕", "Acer", "宏碁", "Microsoft", "微软", "ThinkPad", "Logitech", "罗技", "Razer", "雷蛇", "ZOWIE", "卓威", "未知")
-            cat.contains("耳机") || cat.contains("音箱") || cat.contains("音频") || cat.contains("音响") ->
-                listOf("Apple", "苹果", "Sony", "索尼", "Bose", "JBL", "Sennheiser", "森海塞尔", "Huawei", "华为", "Xiaomi", "小米", "Beats", "Marshall", "马歇尔", "Harman Kardon", "哈曼卡顿", "Edifier", "漫步者", "未知")
-            cat.contains("手表") || cat.contains("手环") || cat.contains("穿戴") ->
-                listOf("Apple", "苹果", "Huawei", "华为", "Xiaomi", "小米", "Samsung", "三星", "Garmin", "佳明", "OPPO", "vivo", "Fitbit", "Amazfit", "华米", "未知")
-            cat.contains("相机") || cat.contains("镜头") || cat.contains("摄影") || cat.contains("摄像") ->
-                listOf("Canon", "佳能", "Sony", "索尼", "Nikon", "尼康", "Fujifilm", "富士", "Panasonic", "松下", "DJI", "大疆", "GoPro", "Leica", "徕卡", "未知")
-            cat.contains("剃须") || cat.contains("个护") || cat.contains("护理") || cat.contains("电动牙刷") || cat.contains("吹风") || cat.contains("美容仪") ->
-                listOf("飞利浦", "Philips", "博朗", "Braun", "松下", "Panasonic", "飞科", "奔腾", "须眉", "素士", "Oral-B", "欧乐B", "戴森", "Dyson", "未知")
-            cat.contains("家电") || cat.contains("冰箱") || cat.contains("洗衣机") || cat.contains("空调") || cat.contains("电视") || cat.contains("厨") || cat.contains("清洁") || cat.contains("吸尘") || cat.contains("扫地") ->
-                listOf("美的", "格力", "海尔", "小米", "华为", "Samsung", "三星", "LG", "Sony", "索尼", "Panasonic", "松下", "西门子", "博世", "戴森", "Dyson", "飞利浦", "九阳", "苏泊尔", "石头", "追觅", "科沃斯", "未知")
-            cat.contains("衣") || cat.contains("服") || cat.contains("裤") || cat.contains("裙") || cat.contains("t恤") || cat.contains("衬衫") || cat.contains("夹克") || cat.contains("外套") || cat.contains("卫衣") || cat.contains("毛衣") || cat.contains("西装") ->
-                listOf("Nike", "耐克", "Adidas", "阿迪达斯", "优衣库", "UNIQLO", "ZARA", "H&M", "李宁", "安踏", "特步", "PUMA", "Converse", "GAP", "Levi's", "李维斯", "MUJI", "无印良品", "太平鸟", "海澜之家", "波司登", "未知")
-            cat.contains("包") || cat.contains("箱") || cat.contains("行李") ->
-                listOf("LV", "Louis Vuitton", "路易威登", "Gucci", "古驰", "Chanel", "香奈儿", "Hermès", "爱马仕", "Coach", "蔻驰", "Michael Kors", "MK", "Longchamp", "珑骧", "Samsonite", "新秀丽", "Herschel", "未知")
-            cat.contains("美妆") || cat.contains("护肤") || cat.contains("化妆") || cat.contains("口红") || cat.contains("面膜") || cat.contains("精华") || cat.contains("防晒") ->
-                listOf("兰蔻", "Lancôme", "雅诗兰黛", "Estée Lauder", "SK-II", "欧莱雅", "L'Oréal", "资生堂", "Shiseido", "完美日记", "花西子", "珀莱雅", "薇诺娜", "自然堂", "MAC", "YSL", "迪奥", "Dior", "香奈儿", "Chanel", "海蓝之谜", "La Mer", "未知")
-            cat.contains("食") || cat.contains("零食") || cat.contains("饮料") || cat.contains("茶") || cat.contains("咖啡") || cat.contains("酒") ->
-                listOf("三只松鼠", "良品铺子", "百草味", "蒙牛", "伊利", "康师傅", "农夫山泉", "元气森林", "星巴克", "瑞幸", "雀巢", "可口可乐", "百事", "统一", "未知")
-            cat.contains("母婴") || cat.contains("玩具") || cat.contains("婴儿") || cat.contains("童装") || cat.contains("纸尿裤") || cat.contains("奶粉") ->
-                listOf("babycare", "好孩子", "帮宝适", "花王", "美赞臣", "飞鹤", "乐高", "LEGO", "费雪", "Fisher-Price", "巴拉巴拉", "安奈儿", "未知")
-            cat.contains("汽车") || cat.contains("车载") ->
-                listOf("特斯拉", "Tesla", "比亚迪", "宝马", "BMW", "奔驰", "Mercedes", "大众", "丰田", "本田", "蔚来", "小鹏", "理想", "未知")
-            cat.contains("宠物") || cat.contains("猫") || cat.contains("狗") ->
-                listOf("皇家", "Royal Canin", "渴望", "Orijen", "冠能", "Pro Plan", "网易严选", "麦富迪", "卫仕", "未知")
-            else -> listOf("Apple", "华为", "小米", "Nike", "Adidas", "罗技", "索尼", "三星", "未知")
-        }
-        "颜色" -> when {
-            cat.contains("鞋") -> listOf("黑色", "白色", "灰色", "红色", "蓝色", "绿色", "粉色", "橙色", "紫色", "棕色", "米色", "银色", "金色", "荧光绿", "荧光粉")
-            cat.contains("衣") || cat.contains("服") || cat.contains("裤") || cat.contains("裙") -> listOf("黑色", "白色", "灰色", "红色", "蓝色", "深蓝", "藏青", "绿色", "粉色", "黄色", "棕色", "卡其色", "米色", "紫色", "橙色", "酒红", "军绿", "驼色")
-            cat.contains("手机") || cat.contains("数码") || cat.contains("电脑") -> listOf("黑色", "白色", "银色", "金色", "灰色", "蓝色", "绿色", "紫色", "红色", "粉色", "星光色", "远峰蓝", "暗夜紫")
-            cat.contains("包") -> listOf("黑色", "白色", "棕色", "米色", "红色", "蓝色", "绿色", "粉色", "灰色", "酒红", "驼色", "拼色")
-            cat.contains("美妆") || cat.contains("护肤") -> listOf("自然色", "象牙白", "小麦色", "粉调", "黄调", "冷白皮", "暖白皮")
-            cat.contains("食") -> listOf("原味", "麻辣", "番茄", "牛肉", "鸡肉", "海鲜", "芝士", "巧克力", "草莓", "柠檬")
-            else -> listOf("黑色", "白色", "红色", "蓝色", "灰色", "绿色", "粉色", "棕色", "紫色", "橙色", "银色", "金色")
-        }
-        "材质" -> when {
-            cat.contains("鞋") -> listOf("网面", "飞织", "真皮", "PU皮", "帆布", "橡胶", "EVA", "Boost", "React", "Gore-Tex", "编织", "麂皮", "翻毛皮", "合成革", "碳板")
-            cat.contains("衣") || cat.contains("服") || cat.contains("裤") || cat.contains("裙") -> listOf("棉", "纯棉", "涤纶", "尼龙", "真丝", "丝绸", "羊毛", "羊绒", "羽绒", "皮革", "雪纺", "牛仔", "灯芯绒", "亚麻", "莫代尔", "莱卡", "聚酯纤维", "氨纶")
-            cat.contains("包") -> listOf("真皮", "牛皮", "羊皮", "PU皮", "帆布", "尼龙", "编织", "草编", "PVC", "漆皮", "麂皮", "鳄鱼皮")
-            cat.contains("手机") || cat.contains("数码") -> listOf("金属", "铝合金", "玻璃", "陶瓷", "塑料", "素皮", "碳纤维", "钛合金")
-            cat.contains("家具") || cat.contains("家居") -> listOf("实木", "板材", "皮革", "布艺", "藤编", "金属", "玻璃", "大理石", "岩板")
-            cat.contains("食") -> listOf("袋装", "罐装", "瓶装", "盒装", "散装", "独立包装")
-            else -> listOf("棉", "涤纶", "尼龙", "真皮", "PU皮", "金属", "塑料", "橡胶", "玻璃", "木材")
-        }
-        "款式" -> when {
-            cat.contains("鞋") -> listOf("跑鞋", "篮球鞋", "足球鞋", "板鞋", "休闲鞋", "凉鞋", "拖鞋", "登山鞋", "帆布鞋", "老爹鞋", "高帮", "低帮", "中帮", "切尔西靴", "马丁靴", "雪地靴", "豆豆鞋", "乐福鞋")
-            cat.contains("衣") || cat.contains("服") || cat.contains("裤") || cat.contains("裙") -> listOf("休闲", "商务", "运动", "时尚", "简约", "复古", "宽松", "修身", "短款", "长款", "oversize", "工装", "街头", "学院风", "韩版", "日系", "欧美", "国潮", "通勤", "度假")
-            cat.contains("包") -> listOf("手提包", "单肩包", "双肩包", "斜挎包", "钱包", "手拿包", "旅行包", "腰包", "腋下包", "托特包", "邮差包", "水桶包", "贝壳包", "信封包", "链条包")
-            cat.contains("手机") || cat.contains("数码") -> listOf("旗舰", "中端", "入门", "游戏", "拍照", "商务", "轻薄", "折叠")
-            cat.contains("家具") || cat.contains("家居") -> listOf("现代", "简约", "北欧", "中式", "美式", "日式", "轻奢", "工业风", "田园", "地中海")
-            cat.contains("美妆") || cat.contains("护肤") -> listOf("保湿", "美白", "抗老", "控油", "祛痘", "防晒", "修复", "补水", "紧致", "淡斑")
-            else -> listOf("休闲", "商务", "运动", "时尚", "简约", "复古", "潮流", "经典")
-        }
-        else -> emptyList()
     }
 }

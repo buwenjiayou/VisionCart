@@ -84,6 +84,8 @@ class ApiDtoContractTest {
 
         assertThat(json.has("platform_stats")).isTrue();
         assertThat(json.has("suggestion_cards")).isTrue();
+        assertThat(json.has("in_progress")).isTrue();
+        assertThat(json.path("in_progress").asBoolean()).isFalse();
         assertThat(productJson.has("image_url")).isTrue();
         assertThat(productJson.has("original_price")).isTrue();
         assertThat(productJson.has("self_operated")).isTrue();

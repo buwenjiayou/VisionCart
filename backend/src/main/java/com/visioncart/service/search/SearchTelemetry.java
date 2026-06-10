@@ -10,7 +10,7 @@ public class SearchTelemetry {
 
     public SearchTelemetry(String searchRunId) {
         this.searchRunId = searchRunId;
-        fields.put("searchRunId", searchRunId);
+        put("searchRunId", searchRunId);
     }
 
     public SearchTelemetry put(String key, Object value) {

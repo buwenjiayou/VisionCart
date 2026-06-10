@@ -267,7 +267,7 @@ class VisionCartRepository(private val context: Context) {
             stompClient.connectAndListen(baseUrl, token, topic, timeoutMs) { body ->
                 try {
                     val message = progressAdapter.fromJson(body)
-                    if (message != null && message.products.isNotEmpty()) {
+                    if (message != null && (!message.staging || message.products.isNotEmpty())) {
                         onProgress(message)
                     }
                 } catch (e: Exception) {

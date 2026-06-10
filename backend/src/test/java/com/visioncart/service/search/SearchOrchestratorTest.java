@@ -346,6 +346,7 @@ class SearchOrchestratorTest {
 
         assertThat(result.products()).isEmpty();
         assertThat(result.total()).isEqualTo(0);
+        assertThat(result.inProgress()).isTrue();
         verify(taobao, never()).search(any(), any(), anyInt(), anyInt());
         verify(pdd, never()).search(any(), any(), anyInt(), anyInt());
     }
@@ -364,6 +365,7 @@ class SearchOrchestratorTest {
         assertThat(result.products()).extracting(ProductCard::title)
                 .containsExactly("Cached lock result");
         assertThat(result.total()).isEqualTo(1);
+        assertThat(result.inProgress()).isFalse();
         verify(taobao, never()).search(any(), any(), anyInt(), anyInt());
         verify(pdd, never()).search(any(), any(), anyInt(), anyInt());
     }

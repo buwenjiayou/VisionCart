@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "visioncart-backend"
+    metrics_path: "/actuator/prometheus"
+    static_configs:
+      - targets: ["47.94.4.31:8080"]
+        labels:
+          app: "visioncart"
+          env: "prod"
+    authorization:
+      type: Bearer
+      credentials: "__VISIONCART_MONITOR_TOKEN__"
