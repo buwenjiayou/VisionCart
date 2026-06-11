@@ -53,6 +53,9 @@ android/gradle/wrapper/
 
 # Local delivery artifacts and generated handoff files
 /交付物/
+docs/*.md
+docs/*.txt
+!docs/grafana-dashboard.json
 
 # CodeGraph local index
 .codegraph/
