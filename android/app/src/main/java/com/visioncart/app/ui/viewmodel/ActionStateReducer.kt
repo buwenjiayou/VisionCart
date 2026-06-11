@@ -221,13 +221,24 @@ object ActionStateReducer {
      */
     fun reduceUndo(current: MainUiState, result: ActionResult): MainUiState {
         val newProducts = result.products.take(MAX_PRODUCTS)
-        val newTags = result.filterTags.map { it.label }
+        val preserveVisibleTags = result.actionSource == "undo:suggestion" ||
+                result.actionSource == "undo:sort"
+        val newTags = if (preserveVisibleTags) {
+            current.filterTags
+        } else {
+            result.filterTags.map { it.label }
+        }
+        val newStructuredTags = if (preserveVisibleTags) {
+            current.structuredFilterTags
+        } else {
+            result.filterTags
+        }
         return current.copy(
             products = newProducts,
             currentFilter = result.appliedFilter ?: current.currentFilter,
             filterTags = newTags,
-            structuredFilterTags = result.filterTags,
-            deriveFilterTagsFromFilter = true,
+            structuredFilterTags = newStructuredTags,
+            deriveFilterTagsFromFilter = if (preserveVisibleTags) current.deriveFilterTagsFromFilter else true,
             poolSize = result.totalInPool,
             canUndo = result.canUndo,
             toastMessage = resolveMessage(result.messageCode, result.message),

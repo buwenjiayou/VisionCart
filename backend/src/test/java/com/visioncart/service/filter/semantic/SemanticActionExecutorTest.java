@@ -205,10 +205,24 @@ class SemanticActionExecutorTest {
                 .filter(product -> filter.priceRange() == null
                         || filter.priceRange().max() == null
                         || product.price().doubleValue() <= filter.priceRange().max())
+                .filter(product -> matchesAttributes(product, filter.attributes()))
                 .filter(product -> filter.excludeRoles() == null
                         || filter.excludeRoles().isEmpty()
                         || !filter.excludeRoles().contains(product.productRole()))
                 .toList();
+    }
+
+    private boolean matchesAttributes(ProductCard product, Map<String, String> attributes) {
+        if (attributes == null || attributes.isEmpty()) return true;
+        String text = String.join(" ",
+                product.title() != null ? product.title() : "",
+                product.brand() != null ? product.brand() : "",
+                product.shopName() != null ? product.shopName() : "",
+                String.join(" ", product.tags() == null ? List.of() : product.tags())
+        ).toLowerCase();
+        return attributes.values().stream()
+                .filter(value -> value != null && !value.isBlank())
+                .allMatch(value -> text.contains(value.toLowerCase()));
     }
 
     // ==================== Sort tests ====================
@@ -285,6 +299,109 @@ class SemanticActionExecutorTest {
 
         assertThat(result.filterApplied()).isTrue();
         assertThat(result.appliedFilter().priceRange().max()).isEqualTo(50.0);
+    }
+
+    @Test
+    void hardFilterAttributeTypeWiredMouse() {
+        SemanticActionPlan plan = new SemanticActionPlan(
+                "filter_current_results", "STRICT_FILTER", "mouse",
+                List.of(new SemanticActionPlan.HardFilter(
+                        "attribute:\u7c7b\u578b", "equals", "\u6709\u7ebf")),
+                null, null, null, null, "KEEP_PREVIOUS_RESULTS");
+
+        ProductCard wired = product("p1", "USB \u6709\u7ebf\u9f20\u6807 office", 49.0, "main");
+        ProductCard wireless = product("p2", "Bluetooth \u65e0\u7ebf\u9f20\u6807 office", 59.0, "main");
+
+        ActionResult result = executor.execute(
+                "session-attr", List.of(wired, wireless),
+                SearchFilter.empty(), plan, List.of(wired, wireless));
+
+        assertThat(result.filterApplied()).isTrue();
+        assertThat(result.products()).extracting(ProductCard::id).containsExactly("p1");
+        assertThat(result.appliedFilter().attributes())
+                .containsEntry("\u7c7b\u578b", "\u6709\u7ebf");
+        assertThat(result.filterTags()).extracting(FilterTag::filterPath)
+                .contains("attributes.\u7c7b\u578b");
+        assertThat(result.filterTags()).extracting(FilterTag::label)
+                .contains("\u6709\u7ebf");
+    }
+
+    @Test
+    void hardFilterAttributeSupportsWirelessBluetoothInterfaceAndMaterial() {
+        SemanticActionPlan wirelessPlan = new SemanticActionPlan(
+                "filter_current_results", "STRICT_FILTER", "mouse",
+                List.of(new SemanticActionPlan.HardFilter(
+                        "attribute:\u8fde\u63a5\u65b9\u5f0f", "equals", "\u84dd\u7259")),
+                null, null, null, null, "KEEP_PREVIOUS_RESULTS");
+        ProductCard bluetoothMouse = product("p1", "\u84dd\u7259 \u65e0\u7ebf\u9f20\u6807 2.4G", 79.0, "main");
+        ProductCard usbMouse = product("p2", "USB \u6709\u7ebf\u9f20\u6807", 39.0, "main");
+
+        ActionResult wirelessResult = executor.execute(
+                "session-attr-1", List.of(bluetoothMouse, usbMouse),
+                SearchFilter.empty(), wirelessPlan, List.of(bluetoothMouse, usbMouse));
+
+        assertThat(wirelessResult.products()).extracting(ProductCard::id).containsExactly("p1");
+        assertThat(wirelessResult.appliedFilter().attributes())
+                .containsEntry("\u8fde\u63a5\u65b9\u5f0f", "\u84dd\u7259");
+
+        SemanticActionPlan interfacePlan = new SemanticActionPlan(
+                "filter_current_results", "STRICT_FILTER", "charger",
+                List.of(new SemanticActionPlan.HardFilter(
+                        "attribute:\u63a5\u53e3", "equals", "Type-C")),
+                null, null, null, null, "KEEP_PREVIOUS_RESULTS");
+        ProductCard typeC = product("p3", "Type-C \u63a5\u53e3 \u5feb\u5145\u5145\u7535\u5668", 49.0, "main");
+        ProductCard lightning = product("p4", "Lightning \u63a5\u53e3 \u5145\u7535\u5668", 59.0, "main");
+
+        ActionResult interfaceResult = executor.execute(
+                "session-attr-2", List.of(typeC, lightning),
+                SearchFilter.empty(), interfacePlan, List.of(typeC, lightning));
+
+        assertThat(interfaceResult.products()).extracting(ProductCard::id).containsExactly("p3");
+        assertThat(interfaceResult.appliedFilter().attributes())
+                .containsEntry("\u63a5\u53e3", "Type-C");
+
+        SemanticActionPlan materialPlan = new SemanticActionPlan(
+                "filter_current_results", "STRICT_FILTER", "case",
+                List.of(new SemanticActionPlan.HardFilter(
+                        "attribute:\u6750\u8d28", "equals", "\u7845\u80f6")),
+                null, null, null, null, "KEEP_PREVIOUS_RESULTS");
+        ProductCard silicone = product("p5", "iPhone15 \u7845\u80f6 \u624b\u673a\u58f3", 29.0, "main");
+        ProductCard metal = product("p6", "iPhone15 \u91d1\u5c5e \u624b\u673a\u58f3", 39.0, "main");
+
+        ActionResult materialResult = executor.execute(
+                "session-attr-3", List.of(silicone, metal),
+                SearchFilter.empty(), materialPlan, List.of(silicone, metal));
+
+        assertThat(materialResult.products()).extracting(ProductCard::id).containsExactly("p5");
+        assertThat(materialResult.appliedFilter().attributes())
+                .containsEntry("\u6750\u8d28", "\u7845\u80f6");
+    }
+
+    @Test
+    void hardFilterAttributesRequireAllObjectiveAttributesToMatch() {
+        SemanticActionPlan plan = new SemanticActionPlan(
+                "filter_current_results", "STRICT_FILTER", "phone case",
+                List.of(
+                        new SemanticActionPlan.HardFilter(
+                                "attribute:\u6750\u8d28", "equals", "\u7845\u80f6"),
+                        new SemanticActionPlan.HardFilter(
+                                "attribute:\u9002\u914d\u578b\u53f7", "equals", "iPhone15")),
+                null, null, null, null, "KEEP_PREVIOUS_RESULTS");
+
+        ProductCard both = product("p1", "iPhone15 \u7845\u80f6 \u624b\u673a\u58f3", 29.0, "main");
+        ProductCard onlyModel = product("p2", "iPhone15 \u900f\u660e PC \u624b\u673a\u58f3", 19.0, "main");
+        ProductCard onlyMaterial = product("p3", "\u5c0f\u7c73 \u7845\u80f6 \u624b\u673a\u58f3", 19.0, "main");
+
+        ActionResult result = executor.execute(
+                "session-attr-all", List.of(both, onlyModel, onlyMaterial),
+                SearchFilter.empty(), plan, List.of(both, onlyModel, onlyMaterial));
+
+        assertThat(result.products()).extracting(ProductCard::id).containsExactly("p1");
+        assertThat(result.appliedFilter().attributes())
+                .containsEntry("\u6750\u8d28", "\u7845\u80f6")
+                .containsEntry("\u9002\u914d\u578b\u53f7", "iPhone15");
+        assertThat(result.filterTags()).extracting(FilterTag::filterPath)
+                .contains("attributes.\u6750\u8d28", "attributes.\u9002\u914d\u578b\u53f7");
     }
 
     @Test

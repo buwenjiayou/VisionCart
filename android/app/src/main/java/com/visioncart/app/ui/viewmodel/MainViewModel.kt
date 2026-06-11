@@ -116,7 +116,8 @@ data class MainUiState(
     // NLP background filtering state
     val nlpFiltering: Boolean = false,
     val nlpMessage: String? = null,
-    val nlpRequestId: Long = 0
+    val nlpRequestId: Long = 0,
+    val regionMode: String = "auto"
 ) {
     fun toRecognitionUiState() = RecognitionUiState(
         recognitionState, sessionId, imageUri, imagePreviewUrl,
@@ -220,12 +221,22 @@ class MainViewModel(
         _uiState.value = MainUiState()
     }
 
+    fun setOverseasMode(enabled: Boolean) {
+        val nextMode = if (enabled) "international" else "auto"
+        if (_uiState.value.regionMode == nextMode) return
+        _uiState.value = _uiState.value.copy(regionMode = nextMode)
+        if (_uiState.value.sessionId != null && _uiState.value.currentAttributes.isNotEmpty()) {
+            searchProducts()
+        }
+    }
+
     // ==================== Recognition ====================
 
     fun analyzeImage(imageUri: Uri) {
         recognitionJob?.cancel()
         // 归档当前会话到 MySQL（识别历史）
         val previousSessionId = _uiState.value.sessionId
+        val regionMode = _uiState.value.regionMode
         recognitionJob = viewModelScope.launch {
             if (!previousSessionId.isNullOrBlank()) {
                 repository.archiveSession(previousSessionId)
@@ -261,9 +272,13 @@ class MainViewModel(
                 undoMetric = null,
                 undoTone = null
             )
-            val result = repository.analyzeImage(imageUri) { step ->
-                _uiState.value = _uiState.value.copy(progressStep = step)
-            }
+            val result = repository.analyzeImage(
+                imageUri = imageUri,
+                onProgress = { step ->
+                    _uiState.value = _uiState.value.copy(progressStep = step)
+                },
+                regionMode = regionMode
+            )
             result.onSuccess { recognition ->
                 handleRecognitionSuccess(recognition)
             }.onFailure { e ->
@@ -304,6 +319,7 @@ class MainViewModel(
         val previousImageUri = _uiState.value.imageUri
         val previousImagePreviewUrl = _uiState.value.imagePreviewUrl
         val previousCandidates = _uiState.value.multiProductCandidates
+        val regionMode = _uiState.value.regionMode
         recognitionJob?.cancel()
         recognitionJob = viewModelScope.launch {
             val selectedPreviewUrl = candidate.previewImageUrl ?: _uiState.value.imagePreviewUrl
@@ -320,7 +336,8 @@ class MainViewModel(
             val result = repository.selectProductForRecognition(
                 sessionId,
                 candidate.candidateId,
-                selectedPreviewUrl
+                selectedPreviewUrl,
+                regionMode
             )
             result.onSuccess { recognition ->
                 handleRecognitionSuccess(recognition)
@@ -414,7 +431,8 @@ class MainViewModel(
             val request = SearchRequest(
                 sessionId = sessionId,
                 attributes = state.currentAttributes,
-                filter = state.currentFilter
+                filter = state.currentFilter,
+                regionMode = state.regionMode
             )
             val result = repository.searchProducts(request)
 
@@ -528,7 +546,8 @@ class MainViewModel(
                     sessionId = sessionId,
                     rawText = "$attribute=$newValue",
                     payload = UserActionPayload(field = attribute, value = newValue),
-                    clientRequestId = "corr-$requestId"
+                    clientRequestId = "corr-$requestId",
+                    regionMode = _uiState.value.regionMode
                 )
             )
             // Stale response protection: discard if a newer correction was issued
@@ -692,7 +711,8 @@ class MainViewModel(
                 sessionId = sessionId,
                 action = card.action,
                 currentProducts = state.products,
-                currentFilter = state.currentFilter
+                currentFilter = state.currentFilter,
+                regionMode = state.regionMode
             )
             result.onSuccess { actionResult ->
                 // Handle flow actions returned by backend (P1-7)
@@ -752,7 +772,8 @@ class MainViewModel(
                     source = "clear_filter",
                     sessionId = sessionId,
                     rawText = "clear filters",
-                    payload = UserActionPayload(action = "clear_all")
+                    payload = UserActionPayload(action = "clear_all"),
+                    regionMode = _uiState.value.regionMode
                 )
             )
             result.onSuccess { actionResult ->
@@ -823,7 +844,8 @@ class MainViewModel(
                     source = "sort",
                     sessionId = sessionId,
                     rawText = "sort:$sortKey",
-                    payload = UserActionPayload(sortBy = sortKey)
+                    payload = UserActionPayload(sortBy = sortKey),
+                    regionMode = state.regionMode
                 )
             )
             result.onSuccess { actionResult ->
@@ -893,7 +915,8 @@ class MainViewModel(
                     source = "nlp",
                     sessionId = sessionId,
                     rawText = userInput,
-                    payload = UserActionPayload(context = context)
+                    payload = UserActionPayload(context = context),
+                    regionMode = _uiState.value.regionMode
                 )
             )
 
@@ -954,7 +977,8 @@ class MainViewModel(
                     source = "tag_delete",
                     sessionId = sessionId,
                     rawText = "remove filter:$fieldName",
-                    payload = UserActionPayload(tagId = fieldName, filterPath = fieldName)
+                    payload = UserActionPayload(tagId = fieldName, filterPath = fieldName),
+                    regionMode = _uiState.value.regionMode
                 )
             )
             result.onSuccess { actionResult ->

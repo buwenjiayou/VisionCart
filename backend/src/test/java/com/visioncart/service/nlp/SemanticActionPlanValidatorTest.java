@@ -60,6 +60,60 @@ class SemanticActionPlanValidatorTest {
     }
 
     @Test
+    void attributeHardFilterPassesThroughButUnsafeAttributesAreDropped() {
+        SemanticActionPlan plan = new SemanticActionPlan(
+                "filter_current_results",
+                "STRICT_FILTER",
+                "mouse",
+                List.of(
+                        new SemanticActionPlan.HardFilter("attribute:类型", "EQUALS", "有线"),
+                        new SemanticActionPlan.HardFilter("attribute:<script>", "equals", "bad"),
+                        new SemanticActionPlan.HardFilter("attribute:", "equals", "bad"),
+                        new SemanticActionPlan.HardFilter("attribute:name", "equals", "<script>bad</script>"),
+                        new SemanticActionPlan.HardFilter("attribute:类型", "equals", true),
+                        new SemanticActionPlan.HardFilter("unknown_field", "equals", "x")
+                ),
+                null, null, null, null, "KEEP_PREVIOUS_RESULTS");
+
+        SemanticActionPlan result = SemanticActionPlanValidator.validate(plan);
+
+        assertThat(result).isNotNull();
+        assertThat(result.hardFilters()).hasSize(1);
+        assertThat(result.hardFilters().get(0).field()).isEqualTo("attribute:类型");
+        assertThat(result.hardFilters().get(0).operator()).isEqualTo("equals");
+        assertThat(result.hardFilters().get(0).value()).isEqualTo("有线");
+    }
+
+    @Test
+    void diverseObjectiveAttributeHardFiltersAreAllowed() {
+        SemanticActionPlan plan = new SemanticActionPlan(
+                "filter_current_results",
+                "STRICT_FILTER",
+                "product",
+                List.of(
+                        new SemanticActionPlan.HardFilter("attribute:\u8fde\u63a5\u65b9\u5f0f", "equals", "\u84dd\u7259"),
+                        new SemanticActionPlan.HardFilter("attribute:\u63a5\u53e3", "equals", "Type-C"),
+                        new SemanticActionPlan.HardFilter("attribute:\u6750\u8d28", "equals", "\u7845\u80f6"),
+                        new SemanticActionPlan.HardFilter("attribute:\u9002\u914d\u578b\u53f7", "equals", "iPhone15"),
+                        new SemanticActionPlan.HardFilter("attribute:\u6b3e\u5f0f", "in",
+                                List.of("\u900f\u660e", "\u78e8\u7802"))
+                ),
+                null, null, null, null, "KEEP_PREVIOUS_RESULTS");
+
+        SemanticActionPlan result = SemanticActionPlanValidator.validate(plan);
+
+        assertThat(result).isNotNull();
+        assertThat(result.hardFilters()).hasSize(5);
+        assertThat(result.hardFilters()).extracting(SemanticActionPlan.HardFilter::field)
+                .containsExactly(
+                        "attribute:\u8fde\u63a5\u65b9\u5f0f",
+                        "attribute:\u63a5\u53e3",
+                        "attribute:\u6750\u8d28",
+                        "attribute:\u9002\u914d\u578b\u53f7",
+                        "attribute:\u6b3e\u5f0f");
+    }
+
+    @Test
     void invalidCoreFieldsReturnNull() {
         SemanticActionPlan badIntent = new SemanticActionPlan(
                 "delete_everything", "STRICT_FILTER", null,

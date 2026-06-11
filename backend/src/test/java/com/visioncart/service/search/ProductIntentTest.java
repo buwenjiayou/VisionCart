@@ -194,6 +194,33 @@ class ProductIntentTest {
     }
 
     @Test
+    void powerBankPhotoQueryPlanKeepsOnlySafeVisualRetrievalTerms() {
+        Map<String, String> attrs = new LinkedHashMap<>();
+        attrs.put(SearchTextUtils.ATTR_CATEGORY, "数码配件 / 移动电源 / 充电宝");
+        attrs.put(SearchTextUtils.ATTR_KEYWORDS, "黄色LED指示灯充电宝,20Ah 透明电路板充电宝");
+        attrs.put("规格", "20Ah");
+        attrs.put("颜色", "透明黑+黄色");
+        attrs.put("材质", "PC透明壳+ABS底壳");
+        attrs.put("款式", "透明外壳露电路板款");
+
+        ProductIntent intent = builder.build(attrs, "powerbank-photo");
+        QueryPlan plan = planner.plan(intent);
+
+        assertEquals("充电宝", intent.canonicalProduct());
+        assertEquals("power_bank", intent.productFamily());
+        assertTrue(plan.primaryQueries().contains("20Ah 充电宝"),
+                "primary should include capacity anchored to product: " + plan.primaryQueries());
+        assertTrue(plan.primaryQueries().contains("透明外壳 充电宝"),
+                "primary should keep safe visual phrase anchored to product: " + plan.primaryQueries());
+        assertFalse(plan.allQueries().stream().anyMatch(q -> q.contains("露电路板") || q.contains("电路板")),
+                "board/circuit terms should stay out of retrieval queries: " + plan.allQueries());
+        assertTrue(plan.secondaryQueries().contains("黄色LED指示灯 充电宝"),
+                "secondary should keep LED indicator phrase anchored to product: " + plan.secondaryQueries());
+        assertFalse(plan.allQueries().stream().anyMatch(q -> List.of("LED灯", "透明", "黄色", "指示灯").contains(q)),
+                "queries must not contain bare visual terms: " + plan.allQueries());
+    }
+
+    @Test
     void phoneCaseStrategyRanksMagneticCasesBeforePlainAppleCases() {
         com.visioncart.service.search.strategy.PhoneCaseStrategy strategy =
                 new com.visioncart.service.search.strategy.PhoneCaseStrategy(planner, gate);
@@ -381,6 +408,92 @@ class ProductIntentTest {
         );
         assertEquals(IntentGate.IntentTier.SAME_FAMILY, gate.classify(intent, pegasusShoe),
                 "Pegasus shoe should be SAME_FAMILY, not REJECTED (asus inside pegasus is not a brand conflict)");
+    }
+
+    @Test
+    void powerBankIntentRejectsLampDominantResultsButKeepsLedPowerBanks() {
+        ProductIntent intent = new ProductIntent(
+                "powerbank", "充电宝", "power_bank",
+                ProductIntent.ProductRole.MAIN_PRODUCT,
+                "", "", "",
+                false,
+                Map.of("规格", "20Ah", "类目", "充电宝"),
+                Map.of("款式", "透明外壳露电路板款"),
+                List.of("黄色LED指示灯充电宝"),
+                List.of(),
+                List.of(), 0.9, "test"
+        );
+
+        assertEquals(IntentGate.IntentTier.REJECT, gate.classify(intent,
+                product("USB小夜灯充电宝随身灯节能插电护眼台灯学生led灯", "")));
+        assertEquals(IntentGate.IntentTier.REJECT, gate.classify(intent,
+                product("LED小夜灯随身灯USB小台灯电脑键盘台灯充电宝移动电源", "")));
+        assertEquals(IntentGate.IntentTier.EXACT_MAIN, gate.classify(intent,
+                product("20Ah透明外壳露电路板黄色LED指示灯充电宝", "")));
+        assertEquals(IntentGate.IntentTier.EXACT_MAIN, gate.classify(intent,
+                product("20000mAh移动电源带LED照明灯", "")));
+    }
+
+    @Test
+    void powerBankIntentRejectsComponentDominantResultsButKeepsFinishedProducts() {
+        ProductIntent intent = new ProductIntent(
+                "powerbank", "充电宝", "power_bank",
+                ProductIntent.ProductRole.MAIN_PRODUCT,
+                "", "", "",
+                false,
+                Map.of("规格", "20Ah", "类目", "充电宝"),
+                Map.of("款式", "透明外壳露电路板款"),
+                List.of("黄色LED指示灯充电宝"),
+                List.of(),
+                List.of(), 0.9, "test"
+        );
+
+        List<String> rejectedTitles = List.of(
+                "12v电池盒外壳户外移动电源外接多功能充电夜市铅酸12v20ah电瓶盒",
+                "22W移动电源模块主板充电宝快充电路板",
+                "18650移动电源盒DIY免焊充电宝套件",
+                "USB充电模块锂电池充电板",
+                "65W移动电源升压板",
+                "3.7v20ah聚合物电池20000毫安LED灯5锂电池30000mA",
+                "电台锂电池磷酸铁锂足量20AH汽车启动防爆电芯逆变器充电",
+                "适用手机碳纤维背膜8英寸改色贴纸摸防指纹A4尺寸外壳"
+        );
+        for (String title : rejectedTitles) {
+            assertEquals(IntentGate.IntentTier.REJECT, gate.classify(intent, product(title, "")),
+                    "component-like power bank result should be rejected: " + title);
+        }
+
+        assertEquals(IntentGate.IntentTier.EXACT_MAIN, gate.classify(intent,
+                product("20Ah透明外壳露电路板黄色LED指示灯充电宝", "")));
+        assertEquals(IntentGate.IntentTier.EXACT_MAIN, gate.classify(intent,
+                product("20000mAh移动电源带LED电量显示", "")));
+        assertEquals(IntentGate.IntentTier.EXACT_MAIN, gate.classify(intent,
+                product("透明外壳充电宝20Ah快充", "")));
+        assertEquals(IntentGate.IntentTier.EXACT_MAIN, gate.classify(intent,
+                product("充大容量20000毫安手机通用充电宝", "")));
+        assertEquals(IntentGate.IntentTier.EXACT_MAIN, gate.classify(intent,
+                product("自带线快充移动电源20000mAh", "")));
+        assertEquals(IntentGate.IntentTier.SAME_FAMILY, gate.classify(intent,
+                product("220V大功率户外电源露营储能电源", "")));
+    }
+
+    @Test
+    void powerBankRelevanceRankerRejectsComponentDominantResults() {
+        Map<String, String> attrs = new LinkedHashMap<>();
+        attrs.put(SearchTextUtils.ATTR_CATEGORY, "数码配件 / 移动电源 / 充电宝");
+        attrs.put(SearchTextUtils.ATTR_KEYWORDS, "20Ah 透明外壳充电宝");
+        attrs.put("规格", "20Ah");
+        SearchIntent intent = SearchIntent.from(attrs, null);
+
+        ProductCard component = product("65W移动电源升压板", "").withRole("powerbank", "main");
+        ProductCard rawBattery = product("3.7v20ah聚合物电池20000毫安LED灯5锂电池30000mA", "").withRole("powerbank", "main");
+        ProductCard phoneFilm = product("适用手机碳纤维背膜8英寸改色贴纸摸防指纹A4尺寸外壳", "").withRole("powerbank", "main");
+        ProductCard outdoorPower = product("220V大功率户外电源露营储能电源", "").withRole("powerbank", "main");
+
+        assertEquals(RelevanceRanker.RelevanceTier.REJECTED, ranker.tier(component, intent));
+        assertEquals(RelevanceRanker.RelevanceTier.REJECTED, ranker.tier(rawBattery, intent));
+        assertEquals(RelevanceRanker.RelevanceTier.REJECTED, ranker.tier(phoneFilm, intent));
+        assertEquals(RelevanceRanker.RelevanceTier.SAFE_FILL, ranker.tier(outdoorPower, intent));
     }
 
     // ====== 辅助 ======

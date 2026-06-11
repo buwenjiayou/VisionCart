@@ -107,6 +107,16 @@ public class IntentGate {
 
     private IntentTier classifyMainProduct(ProductIntent intent, ProductCard product,
                                             String title, String canonicalProduct, String brand) {
+        if (PowerBankSearchRules.isPowerBank(intent)) {
+            PowerBankProductClassifier.Type powerBankType = PowerBankProductClassifier.classify(product.title());
+            if (powerBankType == PowerBankProductClassifier.Type.NON_TARGET) {
+                return IntentTier.REJECT;
+            }
+            if (powerBankType == PowerBankProductClassifier.Type.RELATED_BUT_NOT_TARGET) {
+                return IntentTier.SAME_FAMILY;
+            }
+        }
+
         boolean hasProductInTitle = containsNormalized(title, canonicalProduct);
 
         // 先检查是否含配件词 → 搜手机不要手机壳
@@ -223,6 +233,7 @@ public class IntentGate {
             case "phone_case" -> java.util.List.of("手机壳", "手机套", "保护壳", "保护套", "case");
             case "screen_protector" -> java.util.List.of("手机膜", "钢化膜", "贴膜", "screen protector");
             case "earbuds" -> java.util.List.of("耳机", "蓝牙耳机", "earbuds", "earphone");
+            case "power_bank" -> java.util.List.of("充电宝", "移动电源", "应急电源", "户外电源", "power bank");
             case "earphone_case" -> java.util.List.of("耳机壳", "耳机套", "earphone case");
             case "watch" -> java.util.List.of("手表", "智能手表", "watch");
             case "watch_band" -> java.util.List.of("表带", "手表带", "watch band");
@@ -247,6 +258,7 @@ public class IntentGate {
         return switch (family) {
             case "phone", "phone_case", "screen_protector" -> "phone".equals(code);
             case "earbuds", "earphone_case" -> "headphone".equals(code);
+            case "power_bank" -> "powerbank".equals(code);
             case "watch", "watch_band" -> "watch".equals(code);
             case "laptop", "laptop_bag" -> "laptop".equals(code);
             case "shoe", "shoe_insole" -> "shoe".equals(code);

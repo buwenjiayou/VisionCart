@@ -59,6 +59,8 @@ public class ProductIntentBuilder {
         String material = useful(attrs.get("材质"));
         String style = useful(attrs.get("款式"));
         String type = useful(attrs.get("类型"));
+        String spec = useful(attrs.get("规格"));
+        String capacity = useful(attrs.get("容量"));
 
         List<String> keywords = new ArrayList<>(SearchTextUtils.splitSearchTerms(keywordsStr));
         // Problem 8 fix: merge non-empty keyword into keywords list if not already present
@@ -122,6 +124,8 @@ public class ProductIntentBuilder {
         Map<String, String> softAttributes = new LinkedHashMap<>();
 
         if (!model.isBlank()) hardAttributes.put("型号", model);
+        if (!spec.isBlank()) hardAttributes.put("规格", spec);
+        if (!capacity.isBlank()) hardAttributes.put("容量", capacity);
         if (!canonicalProduct.isBlank()) hardAttributes.put("类目", canonicalProduct);
 
         if (!color.isBlank()) softAttributes.put("颜色", color);
@@ -172,6 +176,10 @@ public class ProductIntentBuilder {
 
         // 2. 品类注册表的 primary 列表
         if (entry != null && !entry.primary().isEmpty()) {
+            if ("power_bank".equals(entry.family())
+                    && (category.contains("充电宝") || keywords.stream().anyMatch(kw -> kw.contains("充电宝")))) {
+                return "充电宝";
+            }
             // 找最长匹配的 primary
             String best = "";
             for (String p : entry.primary()) {
@@ -227,6 +235,8 @@ public class ProductIntentBuilder {
         if (catLower.contains("手机膜") || catLower.contains("钢化膜") || catLower.contains("贴膜")) return "screen_protector";
         if (catLower.contains("手机")) return "phone";
         if (catLower.contains("耳机")) return "earbuds";
+        if (catLower.contains("充电宝") || catLower.contains("移动电源")
+                || catLower.contains("应急电源") || catLower.contains("户外电源")) return "power_bank";
         if (catLower.contains("手表") || catLower.contains("手环")) return "watch";
         if (catLower.contains("鞋")) return "shoe";
         if (catLower.contains("包")) return "bag";

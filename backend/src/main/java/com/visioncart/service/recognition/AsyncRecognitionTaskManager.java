@@ -161,8 +161,8 @@ public class AsyncRecognitionTaskManager {
 
     public void markCompleted(String sessionId, RecognitionResult result) {
         // Don't overwrite if already terminal (e.g., timed out and marked FAILED)
-        if (isTerminal(sessionId)) {
-            log.info("Skipping markCompleted for session {} — already terminal", sessionId);
+        if (isTerminal(sessionId) || isAwaitingProductSelection(sessionId)) {
+            log.info("Skipping markCompleted for session {} because task is terminal or awaiting product selection", sessionId);
             return;
         }
         String key = KEY_PREFIX + sessionId;
@@ -267,6 +267,16 @@ public class AsyncRecognitionTaskManager {
         } catch (Exception e) {
             String status = getFieldLocal(key, "status");
             return "COMPLETED".equals(status) || "FAILED".equals(status);
+        }
+    }
+
+    public boolean isAwaitingProductSelection(String sessionId) {
+        String key = KEY_PREFIX + sessionId;
+        try {
+            Object status = redisTemplate.opsForHash().get(key, "status");
+            return "MULTI_PRODUCT_PENDING".equals(status);
+        } catch (Exception e) {
+            return "MULTI_PRODUCT_PENDING".equals(getFieldLocal(key, "status"));
         }
     }
 

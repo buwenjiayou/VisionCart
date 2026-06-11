@@ -25,6 +25,8 @@ android/local.properties
 *.jks
 *.apk
 *.aab
+*.zip
+*.tar.gz
 
 logs/
 tmp/
@@ -37,6 +39,7 @@ test-output.txt
 /data/
 backend/data/
 .claude/
+.trae/
 
 # CodeGraph local index
 .codegraph/

@@ -65,7 +65,9 @@ public class SemanticPlannerModelService {
 
             SemanticActionPlan parsed = parseSemanticPlanJson(json);
             SemanticActionPlan validated = SemanticActionPlanValidator.validate(parsed);
-            return sanitize(validated);
+            SemanticActionPlan grounded = SemanticPlanConstraintProvenanceGuard.enforce(
+                    validated, sanitizedInput, historyText);
+            return sanitize(grounded);
         } catch (Exception e) {
             log.warn("Direct semantic planning failed, will fall back to legacy path: {}", e.getMessage());
             return null;

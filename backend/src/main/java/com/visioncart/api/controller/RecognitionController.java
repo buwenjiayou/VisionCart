@@ -90,6 +90,7 @@ public class RecognitionController {
     @PostMapping("/analyze")
     public ApiResponse<AsyncRecognitionResponse> analyze(@RequestParam("image") MultipartFile image,
                                                          @RequestParam(value = "region", required = false) String region,
+                                                         @RequestParam(value = "region_mode", required = false) String regionMode,
                                                          @RequestParam(value = "previous_session_id", required = false) String previousSessionId) {
         if (image.isEmpty()) {
             return ApiResponse.fail(400, "图片文件不能为空");
@@ -117,7 +118,7 @@ public class RecognitionController {
                 log.warn("Skipping archive: previousSessionId {} does not belong to user {}", previousSessionId, userId);
             }
         }
-        return ApiResponse.ok(orchestrator.submitAsync(image, region, userId));
+        return ApiResponse.ok(orchestrator.submitAsync(image, region, userId, regionMode));
     }
 
     private boolean looksLikeImageUpload(MultipartFile image, String contentType) {

@@ -31,8 +31,26 @@ public record SearchCandidatePool(
         List<ProductCard> rawCandidates,
         SearchFilter currentFilter,
         String currentSort,
-        List<ProductCard> currentDisplayPage
+        List<ProductCard> currentDisplayPage,
+        Boolean domestic
 ) {
+    public SearchCandidatePool(String sessionId,
+                               String searchRunId,
+                               String searchIdentity,
+                               ProductIntent productIntent,
+                               String strategyName,
+                               SearchFilter baseFilter,
+                               List<ClassifiedProduct> classifiedPool,
+                               int rawCandidateCount,
+                               List<ProductCard> rawCandidates,
+                               SearchFilter currentFilter,
+                               String currentSort,
+                               List<ProductCard> currentDisplayPage) {
+        this(sessionId, searchRunId, searchIdentity, productIntent, strategyName, baseFilter,
+                classifiedPool, rawCandidateCount, rawCandidates, currentFilter, currentSort,
+                currentDisplayPage, Boolean.TRUE);
+    }
+
     public SearchCandidatePool(String sessionId,
                                String searchRunId,
                                String searchIdentity,
@@ -43,7 +61,7 @@ public record SearchCandidatePool(
                                int rawCandidateCount) {
         this(sessionId, searchRunId, searchIdentity, productIntent, strategyName, baseFilter,
                 classifiedPool, rawCandidateCount, List.of(), baseFilter,
-                baseFilter != null ? baseFilter.sortBy() : null, List.of());
+                baseFilter != null ? baseFilter.sortBy() : null, List.of(), Boolean.TRUE);
     }
 
     public SearchCandidatePool {
@@ -53,6 +71,7 @@ public record SearchCandidatePool(
                 : baseFilter != null ? baseFilter : SearchFilter.empty();
         currentSort = currentSort != null ? currentSort : currentFilter.sortBy();
         currentDisplayPage = currentDisplayPage == null ? List.of() : currentDisplayPage;
+        domestic = domestic == null ? Boolean.TRUE : domestic;
     }
 
     /**
@@ -72,6 +91,10 @@ public record SearchCandidatePool(
                 .toList();
     }
 
+    public boolean isDomestic() {
+        return Boolean.TRUE.equals(domestic);
+    }
+
     public SearchCandidatePool withCurrentState(SearchFilter filter, List<ProductCard> displayPage) {
         SearchFilter effectiveFilter = filter != null ? filter : SearchFilter.empty();
         return new SearchCandidatePool(
@@ -86,7 +109,8 @@ public record SearchCandidatePool(
                 rawCandidates,
                 effectiveFilter,
                 effectiveFilter.sortBy(),
-                displayPage == null ? List.of() : displayPage
+                displayPage == null ? List.of() : displayPage,
+                domestic
         );
     }
 }

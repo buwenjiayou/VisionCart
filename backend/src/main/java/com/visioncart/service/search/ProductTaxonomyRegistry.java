@@ -94,6 +94,13 @@ public class ProductTaxonomyRegistry {
                 List.of("耳机套", "耳机壳", "耳帽", "耳塞", "充电盒"),
                 List.of());
 
+        // === 充电宝 / 移动电源 ===
+        register("power_bank", "MAIN_PRODUCT",
+                List.of("充电宝", "移动电源", "应急电源", "户外电源", "便携充电器"),
+                List.of("快充", "大容量", "10000mAh", "20000mAh", "20Ah", "PD", "QC", "磁吸", "无线充电"),
+                List.of("保护套", "收纳袋", "数据线", "充电线", "充电器"),
+                List.of());
+
         // === 鞋类 ===
         register("shoe", "MAIN_PRODUCT",
                 List.of("运动鞋", "跑鞋", "篮球鞋", "板鞋", "休闲鞋", "皮鞋", "拖鞋", "凉鞋",

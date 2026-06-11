@@ -59,14 +59,14 @@
     "name": "semantic-planner-system",
     "version": "1.0",
     "description": "Semantic planner system prompt — LLM directly outputs SemanticActionPlan JSON",
-    "contentSha256": "72fac3baf22b1b6f74355bfc2e3da449d01094195a9a3e26432325c22013805c",
+    "contentSha256": "26b8f70cb98c1e5b97322eeb9133d600f92964b11c84172fae3eb0e3ac014e53",
     "placeholderCount": 0
   },
   {
     "name": "semantic-planner-user",
     "version": "1.0",
     "description": "Semantic planner user prompt template",
-    "contentSha256": "6a6124d09f2876632b99c4e7a459812346e46b4dd7659fef842fca78426a1876",
+    "contentSha256": "e01b36119c8aebfe1f44b57d3639e10fe83967a4ce49ab022e023cdd4d4831cb",
     "placeholderCount": 4
   },
   {

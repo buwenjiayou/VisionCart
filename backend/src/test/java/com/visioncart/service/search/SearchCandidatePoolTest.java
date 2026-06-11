@@ -89,6 +89,7 @@ class SearchCandidatePoolTest {
         assertThat(restored.get().poolSize()).isEqualTo(2);
         assertThat(restored.get().searchRunId()).isEqualTo("run-123");
         assertThat(restored.get().strategyName()).isEqualTo("DefaultProductIntentStrategy");
+        assertThat(restored.get().isDomestic()).isTrue();
         assertThat(restored.get().classifiedPool()).hasSize(2);
         assertThat(restored.get().classifiedPool().get(0).tier()).isEqualTo(IntentGate.IntentTier.EXACT_MAIN);
         assertThat(restored.get().classifiedPool().get(1).tier()).isEqualTo(IntentGate.IntentTier.RELATED_ACCESSORY);
@@ -244,5 +245,48 @@ class SearchCandidatePoolTest {
         assertThat(cards.get(1).id()).isEqualTo("p2");
         // Tiers are stripped
         assertThat(pool.poolSize()).isEqualTo(2);
+    }
+
+    @Test
+    void classifiedPoolPersistsOverseasRouteFlag() {
+        StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> valueOps = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        ObjectMapper objectMapper = new ObjectMapper();
+        CandidateSessionCache cache = new CandidateSessionCache(redisTemplate, objectMapper);
+
+        ProductCard product = product("ebay-1", "Logitech wireless mouse", "eBay", 39.0);
+        ProductIntent intent = new ProductIntent(
+                "sess-overseas", "mouse", "mouse",
+                ProductIntent.ProductRole.MAIN_PRODUCT,
+                "", "", "", false,
+                Map.of(), Map.of(), List.of(), List.of(), List.of(), 0.9, "test"
+        );
+        SearchCandidatePool pool = new SearchCandidatePool(
+                "sess-overseas", "run-1", "id-1",
+                intent, "OverseasEnglishIntentMatcher(DefaultProductIntentStrategy)",
+                SearchFilter.empty(),
+                List.of(new VerticalSearchStrategy.ClassifiedProduct(product, IntentGate.IntentTier.EXACT_MAIN)),
+                1,
+                List.of(product),
+                SearchFilter.empty(),
+                null,
+                List.of(product),
+                false
+        );
+
+        ArgumentCaptor<String> poolJson = ArgumentCaptor.forClass(String.class);
+        cache.saveClassifiedPool("sess-overseas", pool);
+        verify(valueOps).set(
+                eq("visioncart:session:classified_pool:sess-overseas"),
+                poolJson.capture(),
+                eq(30L), eq(TimeUnit.MINUTES)
+        );
+        when(valueOps.get("visioncart:session:classified_pool:sess-overseas")).thenReturn(poolJson.getValue());
+
+        SearchCandidatePool restored = cache.getClassifiedPool("sess-overseas").orElseThrow();
+
+        assertThat(restored.isDomestic()).isFalse();
+        assertThat(restored.domestic()).isFalse();
     }
 }

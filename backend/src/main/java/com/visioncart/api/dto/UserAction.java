@@ -25,7 +25,9 @@ public record UserAction(
         /** Action payload — source-specific data */
         ActionPayload payload,
         /** Client request ID for deduplication */
-        String clientRequestId
+        String clientRequestId,
+        /** Optional explicit region mode: auto, domestic, international */
+        String regionMode
 ) {
     /**
      * Factory for NLP filter action.
@@ -35,6 +37,7 @@ public record UserAction(
                 "nlp-" + System.currentTimeMillis(),
                 "nlp", sessionId, userInput,
                 new ActionPayload(null, null, null, null, null, null, null, null),
+                null,
                 null
         );
     }
@@ -47,6 +50,7 @@ public record UserAction(
                 "sug-" + System.currentTimeMillis(),
                 "suggestion", sessionId, rawText != null ? rawText : action,
                 new ActionPayload(action, null, null, null, null, null, null, null),
+                null,
                 null
         );
     }
@@ -59,6 +63,7 @@ public record UserAction(
                 "corr-" + System.currentTimeMillis(),
                 "correction", sessionId, field + "=" + newValue,
                 new ActionPayload(null, field, newValue, null, null, null, null, null),
+                null,
                 null
         );
     }
@@ -71,6 +76,7 @@ public record UserAction(
                 "tag-" + System.currentTimeMillis(),
                 "tag_delete", sessionId, "删除标签: " + tagId,
                 new ActionPayload(null, null, null, tagId, filterPath, null, null, null),
+                null,
                 null
         );
     }
@@ -83,6 +89,7 @@ public record UserAction(
                 "sort-" + System.currentTimeMillis(),
                 "sort", sessionId, "排序: " + sortBy,
                 new ActionPayload("sort_" + sortBy, null, null, null, null, sortBy, null, null),
+                null,
                 null
         );
     }
@@ -95,6 +102,7 @@ public record UserAction(
                 "filter-" + System.currentTimeMillis(),
                 "manual_filter", sessionId, "筛选: " + field,
                 new ActionPayload(null, field, String.valueOf(value), null, null, null, null, null),
+                null,
                 null
         );
     }

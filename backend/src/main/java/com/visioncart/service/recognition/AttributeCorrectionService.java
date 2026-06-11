@@ -79,6 +79,14 @@ public class AttributeCorrectionService {
             String sessionId,
             AttributeCorrectionRequest request,
             Long userId) {
+        return correctAttribute(sessionId, request, userId, null);
+    }
+
+    public ApiResponse<AttributeCorrectionResult> correctAttribute(
+            String sessionId,
+            AttributeCorrectionRequest request,
+            Long userId,
+            String regionMode) {
         try {
             boolean ownsTask = taskManager.belongsToUser(sessionId, userId);
             Optional<RecognitionHistory> historyOpt = historyRepository.findBySessionIdAndUserId(sessionId, userId);
@@ -94,7 +102,7 @@ public class AttributeCorrectionService {
             log.info("Attribute correction: session={}, field={}, value={}, mode={}", sessionId, field, newValue, mode);
 
             if (mode == CorrectionMode.RECALL_REFRESH) {
-                return handleRecallRefresh(sessionId, historyOpt, parsedAttributes, field, newValue);
+                return handleRecallRefresh(sessionId, historyOpt, parsedAttributes, field, newValue, regionMode);
             }
             return handleLocalFilter(sessionId, historyOpt, parsedAttributes, field, newValue, userId);
         } catch (Exception e) {
@@ -108,7 +116,8 @@ public class AttributeCorrectionService {
             Optional<RecognitionHistory> historyOpt,
             Map<String, AttributeValue> parsedAttributes,
             String field,
-            String newValue) throws Exception {
+            String newValue,
+            String regionMode) throws Exception {
 
         // 1. Update recognition attributes
         Map<String, AttributeValue> updatedAttributes = new HashMap<>(parsedAttributes);
@@ -135,7 +144,8 @@ public class AttributeCorrectionService {
         // 5. Re-search with updated attributes + cleaned filter
         List<ProductCard> previousProducts = sessionCache.getBestCandidates(sessionId);
         SearchRequest searchRequest = new SearchRequest(
-                sessionId, searchAttributes, cleanFilter, 1, DEFAULT_PAGE_SIZE, DEFAULT_RECALL_SIZE, "attribute_correction");
+                sessionId, searchAttributes, cleanFilter, 1, DEFAULT_PAGE_SIZE, DEFAULT_RECALL_SIZE,
+                "attribute_correction", regionMode);
         log.info("Attribute correction search: session={}, field={}, value={}, searchAttrs={}, cleanFilter={}",
                 sessionId, field, newValue, searchAttributes, cleanFilter);
 

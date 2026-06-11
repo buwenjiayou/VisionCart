@@ -123,9 +123,12 @@ public class ActionUndoController {
         String undoneSource = undoResult.undoneSource();
         boolean nlpUndo = "nlp".equals(undoneSource);
         java.util.Optional<NlpStateStackService.NlpState> restoredNlpState = java.util.Optional.empty();
+        java.util.Optional<NlpStateStackService.NlpState> currentNlpStateForTags = java.util.Optional.empty();
         if (nlpUndo) {
             nlpStateStackService.pop(sessionId);
             restoredNlpState = nlpStateStackService.peek(sessionId);
+        } else if ("suggestion".equals(undoneSource)) {
+            currentNlpStateForTags = nlpStateStackService.peek(sessionId);
         }
 
         // Restore filter state
@@ -188,9 +191,13 @@ public class ActionUndoController {
 
         // Generate structured filter tags from restored filter
         SearchFilter finalRestoredFilter = restoredFilter;
+        java.util.Optional<NlpStateStackService.NlpState> finalCurrentNlpStateForTags = currentNlpStateForTags;
         List<FilterTag> restoredTags = restoredNlpState
                 .map(NlpStateStackService.NlpState::tags)
                 .filter(tags -> tags != null && !tags.isEmpty())
+                .or(() -> finalCurrentNlpStateForTags
+                        .map(NlpStateStackService.NlpState::tags)
+                        .filter(tags -> tags != null && !tags.isEmpty()))
                 .orElseGet(() -> actionExecutionService.generateStructuredTags(finalRestoredFilter));
 
         // Restore attributes if this was a correction undo

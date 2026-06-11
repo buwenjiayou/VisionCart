@@ -45,6 +45,8 @@ class SearchOrchestratorTest {
     private CandidateSessionCache sessionCache;
     private VisionCartProperties properties;
     private SearchOrchestrator orchestrator;
+    private OverseasEnglishIntentMatcher overseasEnglishIntentMatcher;
+    private RegionResolver regionResolver;
 
     @BeforeEach
     void setUp() {
@@ -52,11 +54,8 @@ class SearchOrchestratorTest {
         pdd = mock(PlatformSearchService.class);
         ebay = mock(PlatformSearchService.class);
         when(taobao.platform()).thenReturn("淘宝");
-        when(taobao.domesticOnly()).thenReturn(true);
         when(pdd.platform()).thenReturn("拼多多");
-        when(pdd.domesticOnly()).thenReturn(true);
         when(ebay.platform()).thenReturn("eBay");
-        when(ebay.domesticOnly()).thenReturn(false);
 
         deduplicator = new ProductDeduplicator();
         ranker = new RelevanceRanker();
@@ -83,8 +82,22 @@ class SearchOrchestratorTest {
         com.visioncart.service.metrics.PerformanceMetricsService metricsService =
                 mock(com.visioncart.service.metrics.PerformanceMetricsService.class);
         PlatformCircuitBreaker circuitBreaker = new PlatformCircuitBreaker(properties, metricsService);
-        RegionResolver regionResolver = mock(RegionResolver.class);
+        regionResolver = mock(RegionResolver.class);
         when(regionResolver.isDomestic()).thenReturn(true);
+        when(regionResolver.resolve(any())).thenAnswer(invocation -> {
+            String mode = RegionResolver.normalizeRegionMode(invocation.getArgument(0, String.class));
+            boolean domestic = !"international".equals(mode);
+            return new RegionResolver.RegionDecision(
+                    mode,
+                    domestic ? "domestic" : "international",
+                    domestic,
+                    domestic ? "218.12.18.80" : "8.8.8.8",
+                    domestic ? "218.12.18.80" : "8.8.8.8",
+                    "",
+                    "",
+                    domestic ? "CN" : "US",
+                    "test");
+        });
         recognitionHistoryRepository = mock(RecognitionHistoryRepository.class);
         when(recognitionHistoryRepository.findById(anyString())).thenReturn(Optional.empty());
         sessionCache = mock(CandidateSessionCache.class);
@@ -104,13 +117,14 @@ class SearchOrchestratorTest {
         com.visioncart.service.search.strategy.VerticalStrategyRegistry strategyRegistry =
                 new com.visioncart.service.search.strategy.VerticalStrategyRegistry(
                         java.util.List.of(phoneCaseStrategy), defaultStrategy);
+        overseasEnglishIntentMatcher = spy(new OverseasEnglishIntentMatcher());
 
         orchestrator = new SearchOrchestrator(
                 List.of(taobao, pdd, ebay), deduplicator, ranker, suggestionService, deepSuggestionService,
                 platformExecutor, aiSuggestionExecutor, properties, redisTemplate, objectMapper, circuitBreaker, regionResolver,
                 recognitionHistoryRepository, sessionCache, suggestionCardCache, messagingTemplate, metricsService,
                 new ProductSortService(new ProductReputationService()), new ProductReputationService(),
-                productIntentBuilder, queryPlanner, intentGate, strategyRegistry);
+                productIntentBuilder, queryPlanner, intentGate, strategyRegistry, overseasEnglishIntentMatcher);
     }
 
     @AfterEach
@@ -170,6 +184,86 @@ class SearchOrchestratorTest {
         assertThat(result.products()).extracting(ProductCard::platform)
                 .containsExactly("eBay");
         verify(ebay, atLeastOnce()).search(any(), any(), anyInt(), anyInt());
+        verify(taobao, never()).search(any(), any(), anyInt(), anyInt());
+        verify(pdd, never()).search(any(), any(), anyInt(), anyInt());
+    }
+
+    @Test
+    void explicitInternationalRegionModeRoutesToEbayEvenWhenAutoWouldBeDomestic() {
+        when(ebay.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("ebay-mouse", "Logitech wireless mouse", "eBay", BigDecimal.valueOf(49))
+        ));
+        SearchRequest request = new SearchRequest("manual-overseas",
+                Map.of(SearchTextUtils.ATTR_CATEGORY, "\u9f20\u6807",
+                        SearchTextUtils.ATTR_KEYWORD, "\u9f20\u6807"),
+                null, 1, 20, null, "app", "international");
+
+        SearchResult result = orchestrator.search(request, 1L);
+
+        assertThat(result.products()).extracting(ProductCard::platform).contains("eBay");
+        verify(ebay, atLeastOnce()).search(any(), any(), anyInt(), anyInt());
+        verify(taobao, never()).search(any(), any(), anyInt(), anyInt());
+        verify(pdd, never()).search(any(), any(), anyInt(), anyInt());
+    }
+
+    @Test
+    void explicitDomesticRegionModeRoutesToDomesticPlatforms() {
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("tb-mouse", "\u9f20\u6807", "\u6dd8\u5b9d", BigDecimal.valueOf(99))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+        SearchRequest request = new SearchRequest("manual-domestic",
+                Map.of(SearchTextUtils.ATTR_CATEGORY, "\u9f20\u6807",
+                        SearchTextUtils.ATTR_KEYWORD, "\u9f20\u6807"),
+                null, 1, 20, null, "app", "domestic");
+
+        SearchResult result = orchestrator.search(request, 1L);
+
+        assertThat(result.products()).extracting(ProductCard::platform).contains("\u6dd8\u5b9d");
+        verify(ebay, never()).search(any(), any(), anyInt(), anyInt());
+        verify(taobao, atLeastOnce()).search(any(), any(), anyInt(), anyInt());
+    }
+
+    @Test
+    void domesticProductIntentDoesNotUseOverseasEnglishMatcher() {
+        clearInvocations(overseasEnglishIntentMatcher);
+        when(taobao.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("tb-mouse", "Logitech wireless mouse", "\u6dd8\u5b9d", BigDecimal.valueOf(99))
+        ));
+        when(pdd.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of());
+
+        SearchRequest request = new SearchRequest("domestic-mouse",
+                Map.of(SearchTextUtils.ATTR_CATEGORY, "\u9f20\u6807",
+                        SearchTextUtils.ATTR_KEYWORD, "\u9f20\u6807"),
+                null, 1, 20, "app");
+
+        orchestrator.search(request, true);
+
+        verify(overseasEnglishIntentMatcher, never()).classify(any(), any());
+        verify(overseasEnglishIntentMatcher, never()).sortWithinTier(any(), anyList());
+        verify(ebay, never()).search(any(), any(), anyInt(), anyInt());
+    }
+
+    @Test
+    void overseasProductIntentUsesEnglishMatcherAndKeepsMainProducts() {
+        clearInvocations(overseasEnglishIntentMatcher);
+        when(ebay.search(any(), any(), anyInt(), anyInt())).thenReturn(List.of(
+                product("mouse-main", "Logitech M650 wireless mouse", "eBay", BigDecimal.valueOf(39)),
+                product("mouse-pad", "Large gaming mouse pad desk mat", "eBay", BigDecimal.valueOf(12)),
+                product("mouse-skates", "Mouse skates feet for Logitech mouse", "eBay", BigDecimal.valueOf(8))
+        ));
+
+        SearchRequest request = new SearchRequest("overseas-mouse",
+                Map.of(SearchTextUtils.ATTR_CATEGORY, "\u9f20\u6807",
+                        SearchTextUtils.ATTR_KEYWORD, "\u9f20\u6807"),
+                null, 1, 20, "app");
+
+        SearchResult result = orchestrator.search(request, false);
+
+        assertThat(result.products()).extracting(ProductCard::id)
+                .contains("mouse-main")
+                .doesNotContain("mouse-pad", "mouse-skates");
+        verify(overseasEnglishIntentMatcher, atLeastOnce()).classify(any(), any());
         verify(taobao, never()).search(any(), any(), anyInt(), anyInt());
         verify(pdd, never()).search(any(), any(), anyInt(), anyInt());
     }
@@ -923,7 +1017,7 @@ class SearchOrchestratorTest {
                 circuitBreaker, regionResolver, recognitionHistoryRepository, sessionCache,
                 mock(SuggestionCardCache.class), messagingTemplate, metricsService,
                 new ProductSortService(new ProductReputationService()), new ProductReputationService(),
-                pibCap, qpCap, igCap, vsrCap);
+                pibCap, qpCap, igCap, vsrCap, new OverseasEnglishIntentMatcher());
 
         // Simulate 192 products
         List<ProductCard> products = new ArrayList<>();
@@ -987,7 +1081,7 @@ class SearchOrchestratorTest {
                 circuitBreaker, regionResolver, recognitionHistoryRepository, sessionCache,
                 mock(SuggestionCardCache.class), messagingTemplate, metricsService,
                 new ProductSortService(new ProductReputationService()), new ProductReputationService(),
-                pibCap, qpCap, igCap, vsrCap);
+                pibCap, qpCap, igCap, vsrCap, new OverseasEnglishIntentMatcher());
 
         // Platform 1 returns 100 products, platform 2 returns 92
         List<ProductCard> batch1 = new ArrayList<>();

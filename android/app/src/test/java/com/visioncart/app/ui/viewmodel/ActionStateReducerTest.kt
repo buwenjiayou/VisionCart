@@ -127,6 +127,67 @@ class ActionStateReducerTest {
         assertFalse(reduced.canUndo)
     }
 
+    @Test
+    fun `undo suggestion preserves current nlp tags when backend returns stale tags`() {
+        val currentTags = listOf(
+            FilterTag("nlp-brand", "brand Apple", "brands.Apple", "structured"),
+            FilterTag("nlp-price", "under 100", "price_range.max", "structured")
+        )
+        val staleTag = FilterTag("old-brand", "brand Apple", "brands.Apple", "structured")
+        val current = MainUiState(
+            products = listOf(product("suggested", "suggested result")),
+            filterTags = currentTags.map { it.label },
+            structuredFilterTags = currentTags,
+            deriveFilterTagsFromFilter = false
+        )
+
+        val reduced = ActionStateReducer.reduceUndo(
+            current,
+            ActionResult(
+                products = listOf(product("restored", "restored result")),
+                appliedFilter = SearchFilter(brands = listOf("Apple")),
+                filterTags = listOf(staleTag),
+                filterApplied = true,
+                canUndo = true,
+                actionSource = "undo:suggestion"
+            )
+        )
+
+        assertEquals(currentTags.map { it.label }, reduced.filterTags)
+        assertEquals(currentTags, reduced.structuredFilterTags)
+        assertFalse(reduced.deriveFilterTagsFromFilter)
+        assertEquals(listOf("restored"), reduced.products.map { it.id })
+    }
+
+    @Test
+    fun `undo nlp replaces tags with backend previous nlp tags`() {
+        val previousNlpTag = FilterTag("nlp-brand", "brand Apple", "brands.Apple", "structured")
+        val current = MainUiState(
+            filterTags = listOf("brand Apple", "under 100"),
+            structuredFilterTags = listOf(
+                previousNlpTag,
+                FilterTag("nlp-price", "under 100", "price_range.max", "structured")
+            ),
+            deriveFilterTagsFromFilter = false
+        )
+
+        val reduced = ActionStateReducer.reduceUndo(
+            current,
+            ActionResult(
+                products = listOf(product("p1", "restored result")),
+                appliedFilter = SearchFilter(brands = listOf("Apple")),
+                filterTags = listOf(previousNlpTag),
+                filterApplied = true,
+                canUndo = true,
+                actionSource = "undo:nlp"
+            )
+        )
+
+        assertEquals(listOf("brand Apple"), reduced.filterTags)
+        assertEquals(listOf(previousNlpTag), reduced.structuredFilterTags)
+        assertTrue(reduced.deriveFilterTagsFromFilter)
+    }
+
     private fun product(id: String, title: String) = ProductCard(
         id = id,
         title = title,

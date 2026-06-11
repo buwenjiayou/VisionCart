@@ -13,6 +13,7 @@ import java.util.List;
 public class IntentAwareSorter {
 
     private final ProductSortService productSortService;
+    private final PhotoRelevanceScorer photoRelevanceScorer = new PhotoRelevanceScorer();
 
     public IntentAwareSorter(ProductSortService productSortService) {
         this.productSortService = productSortService;
@@ -21,6 +22,13 @@ public class IntentAwareSorter {
     public List<VerticalSearchStrategy.ClassifiedProduct> sortClassified(
             List<VerticalSearchStrategy.ClassifiedProduct> products,
             SearchFilter filter) {
+        return sortClassified(products, filter, null);
+    }
+
+    public List<VerticalSearchStrategy.ClassifiedProduct> sortClassified(
+            List<VerticalSearchStrategy.ClassifiedProduct> products,
+            SearchFilter filter,
+            ProductIntent intent) {
         if (products == null || products.size() <= 1) {
             return products == null ? List.of() : products;
         }
@@ -30,7 +38,7 @@ public class IntentAwareSorter {
                     .filter(item -> item.tier() == tier)
                     .map(VerticalSearchStrategy.ClassifiedProduct::product)
                     .toList();
-            for (ProductCard product : productSortService.applySort(tierProducts, filter)) {
+            for (ProductCard product : applyPhotoSort(productSortService.applySort(tierProducts, filter), intent)) {
                 sorted.add(new VerticalSearchStrategy.ClassifiedProduct(product, tier));
             }
         }
@@ -48,9 +56,19 @@ public class IntentAwareSorter {
                 .map(product -> new VerticalSearchStrategy.ClassifiedProduct(
                         product, strategy.classify(intent, product)))
                 .toList();
-        return sortClassified(classified, filter).stream()
+        return sortClassified(classified, filter, intent).stream()
                 .map(VerticalSearchStrategy.ClassifiedProduct::product)
                 .toList();
+    }
+
+    private List<ProductCard> applyPhotoSort(List<ProductCard> products, ProductIntent intent) {
+        if (intent == null || products == null || products.size() <= 1) {
+            return products == null ? List.of() : products;
+        }
+        List<ProductCard> sorted = new ArrayList<>(products);
+        sorted.sort(Comparator.comparingDouble(
+                (ProductCard product) -> photoRelevanceScorer.score(intent, product)).reversed());
+        return sorted;
     }
 
     private List<IntentGate.IntentTier> tierOrder() {

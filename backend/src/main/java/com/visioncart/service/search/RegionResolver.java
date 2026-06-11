@@ -52,35 +52,67 @@ public class RegionResolver {
     @PreDestroy
     void destroy() {
         if (dbReader != null) {
-            try { dbReader.close(); } catch (Exception ignored) {}
+            try {
+                dbReader.close();
+            } catch (Exception ignored) {
+            }
         }
     }
 
-    /**
-     * 判断当前请求是否来自国内。
-     * GeoIP 不可用时默认返回 true（安全策略）。
-     */
     public boolean isDomestic() {
-        if (!available) return true;
-        HttpServletRequest request = currentRequest();
-        if (request == null) return true;
-        String ip = extractClientIp(request);
-        return isDomesticIp(ip);
+        return resolve(null).domestic();
     }
 
-    private boolean isDomesticIp(String ip) {
-        if (ip == null || ip.isBlank()) return true;
+    public RegionDecision resolve(String regionMode) {
+        String requestedMode = normalizeRegionMode(regionMode);
+        HttpServletRequest request = currentRequest();
+        String remoteAddr = request == null ? "" : safe(request.getRemoteAddr());
+        String xForwardedFor = request == null ? "" : safe(request.getHeader("X-Forwarded-For"));
+        String xRealIp = request == null ? "" : safe(request.getHeader("X-Real-IP"));
+        String clientIp = request == null ? "" : extractClientIp(request);
+        GeoLookup lookup = lookup(clientIp);
+
+        if ("domestic".equals(requestedMode)) {
+            return new RegionDecision(requestedMode, "domestic", true, clientIp, remoteAddr,
+                    xForwardedFor, xRealIp, lookup.countryCode(), "explicit");
+        }
+        if ("international".equals(requestedMode)) {
+            return new RegionDecision(requestedMode, "international", false, clientIp, remoteAddr,
+                    xForwardedFor, xRealIp, lookup.countryCode(), "explicit");
+        }
+        return new RegionDecision(requestedMode, lookup.domestic() ? "domestic" : "international",
+                lookup.domestic(), clientIp, remoteAddr, xForwardedFor, xRealIp,
+                lookup.countryCode(), "geoip");
+    }
+
+    public static String normalizeRegionMode(String regionMode) {
+        if (regionMode == null || regionMode.isBlank()) {
+            return "auto";
+        }
+        String normalized = regionMode.trim().toLowerCase();
+        return switch (normalized) {
+            case "domestic", "cn", "china" -> "domestic";
+            case "international", "overseas", "global", "intl", "ebay" -> "international";
+            default -> "auto";
+        };
+    }
+
+    private GeoLookup lookup(String ip) {
+        if (!available) return new GeoLookup("UNAVAILABLE", true);
+        if (ip == null || ip.isBlank()) return new GeoLookup("UNKNOWN", true);
         try {
             InetAddress addr = InetAddress.getByName(ip);
-            // 本地地址直接当国内
-            if (addr.isLoopbackAddress() || addr.isSiteLocalAddress()) return true;
+            if (addr.isLoopbackAddress() || addr.isSiteLocalAddress()) {
+                return new GeoLookup("LOCAL", true);
+            }
             CountryResponse response = dbReader.country(addr);
             Country country = response.getCountry();
             String isoCode = country.getIsoCode();
-            return isoCode == null || CN_COUNTRY_CODES.contains(isoCode);
+            return new GeoLookup(isoCode == null ? "UNKNOWN" : isoCode,
+                    isoCode == null || CN_COUNTRY_CODES.contains(isoCode));
         } catch (Exception e) {
             log.debug("GeoIP lookup failed for {}: {}", ip, e.getMessage());
-            return true; // 查不到默认国内
+            return new GeoLookup("LOOKUP_FAILED", true);
         }
     }
 
@@ -94,8 +126,7 @@ public class RegionResolver {
     }
 
     private String extractClientIp(HttpServletRequest request) {
-        String remoteAddr = request.getRemoteAddr();
-        // Only trust proxy headers when the direct connection is from a trusted proxy (localhost/private)
+        String remoteAddr = safe(request.getRemoteAddr());
         if (isTrustedProxy(remoteAddr)) {
             String ip = request.getHeader("X-Forwarded-For");
             if (ip != null && !ip.isBlank()) {
@@ -113,16 +144,36 @@ public class RegionResolver {
         if (ip == null) return false;
         if (ip.equals("127.0.0.1") || ip.equals("0:0:0:0:0:0:0:1")) return true;
         if (ip.startsWith("10.") || ip.startsWith("192.168.")) return true;
-        // 172.16.0.0/12: 172.16.x.x ~ 172.31.x.x
         if (ip.startsWith("172.")) {
             String[] parts = ip.split("\\.");
             if (parts.length >= 2) {
                 try {
                     int second = Integer.parseInt(parts[1]);
                     return second >= 16 && second <= 31;
-                } catch (NumberFormatException ignored) {}
+                } catch (NumberFormatException ignored) {
+                }
             }
         }
         return false;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    private record GeoLookup(String countryCode, boolean domestic) {
+    }
+
+    public record RegionDecision(
+            String requestedMode,
+            String effectiveMode,
+            boolean domestic,
+            String clientIp,
+            String remoteAddr,
+            String xForwardedFor,
+            String xRealIp,
+            String countryCode,
+            String source
+    ) {
     }
 }

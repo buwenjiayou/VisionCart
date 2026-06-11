@@ -32,6 +32,10 @@ public class QueryPlanner {
      * 从 ProductIntent 生成查询计划。
      */
     public QueryPlan plan(ProductIntent intent) {
+        if (PowerBankSearchRules.isPowerBank(intent)) {
+            return powerBankPlan(intent);
+        }
+
         List<String> primary = new ArrayList<>();
         List<String> secondary = new ArrayList<>();
         List<String> fallback = new ArrayList<>();
@@ -96,6 +100,134 @@ public class QueryPlanner {
                 plan.fallbackQueries(), plan.forbiddenStandaloneTerms());
 
         return plan;
+    }
+
+    private QueryPlan powerBankPlan(ProductIntent intent) {
+        List<String> primary = new ArrayList<>();
+        List<String> secondary = new ArrayList<>();
+        List<String> fallback = new ArrayList<>();
+
+        String product = StringUtils.defaultIfBlank(intent.canonicalProduct(), "充电宝");
+        String brand = intent.hasReliableBrand() ? intent.bestBrand() : "";
+
+        for (String spec : powerBankSpecs(intent)) {
+            add(primary, brand, spec, product);
+        }
+
+        List<String> visualFromSoftAttributes = powerBankVisualsFromSoftAttributes(intent, true);
+        List<String> safePrimaryVisuals = safePowerBankRetrievalVisuals(visualFromSoftAttributes);
+        for (String visual : safePrimaryVisuals) {
+            add(primary, brand, visual, product);
+        }
+
+        List<String> visualFromFeatures = powerBankVisualsFromFeatures(intent);
+        for (String visual : safePowerBankRetrievalVisuals(visualFromFeatures)) {
+            add(secondary, visual, product);
+            if (!brand.isBlank()) {
+                add(secondary, brand, visual, product);
+            }
+        }
+
+        List<String> extraVisualFromSoftAttributes = powerBankVisualsFromSoftAttributes(intent, false);
+        for (String visual : safePowerBankRetrievalVisuals(extraVisualFromSoftAttributes)) {
+            add(secondary, visual, product);
+        }
+
+        for (String related : safeList(intent.relatedOnlyTerms())) {
+            if (PowerBankSearchRules.isUnsafePowerBankRetrievalTerm(related)) {
+                continue;
+            }
+            add(secondary, product, related);
+        }
+
+        add(primary, brand, product);
+        add(primary, product);
+        add(fallback, product);
+        if (!"充电宝".equals(product)) {
+            add(fallback, "充电宝");
+        }
+        if (!"移动电源".equals(product)) {
+            add(fallback, "移动电源");
+        }
+
+        List<String> forbidden = new ArrayList<>();
+        forbidden.addAll(List.of("LED灯", "黄色LED", "透明", "黄色", "指示灯", "小夜灯", "台灯", "灯泡"));
+        forbidden.addAll(visualFromSoftAttributes);
+        forbidden.addAll(extraVisualFromSoftAttributes);
+        forbidden.addAll(visualFromFeatures);
+
+        QueryPlan plan = new QueryPlan(
+                unique(primary).stream().limit(4).toList(),
+                unique(secondary).stream().limit(4).toList(),
+                unique(fallback).stream().limit(2).toList(),
+                unique(forbidden),
+                debugMap(intent)
+        );
+
+        log.info("PowerBank QueryPlan: primary={}, secondary={}, fallback={}, forbidden={}",
+                plan.primaryQueries(), plan.secondaryQueries(),
+                plan.fallbackQueries(), plan.forbiddenStandaloneTerms());
+        return plan;
+    }
+
+    private List<String> powerBankSpecs(ProductIntent intent) {
+        LinkedHashSet<String> specs = new LinkedHashSet<>();
+        addPowerBankSpecs(specs, intent.model());
+        if (intent.hardAttributes() != null) {
+            intent.hardAttributes().values().forEach(value -> addPowerBankSpecs(specs, value));
+        }
+        for (String feature : safeList(intent.featureTerms())) {
+            if (PowerBankSearchRules.isStrongSpecOrFeature(feature)) {
+                specs.add(feature);
+            }
+            addPowerBankSpecs(specs, feature);
+        }
+        return new ArrayList<>(specs);
+    }
+
+    private void addPowerBankSpecs(LinkedHashSet<String> specs, String value) {
+        specs.addAll(PowerBankSearchRules.extractSpecs(value));
+    }
+
+    private List<String> powerBankVisualsFromSoftAttributes(ProductIntent intent, boolean primaryOnly) {
+        LinkedHashSet<String> visuals = new LinkedHashSet<>();
+        if (intent.softAttributes() != null) {
+            for (Map.Entry<String, String> entry : intent.softAttributes().entrySet()) {
+                if (primaryOnly && !List.of("款式", "类型", "风格").contains(entry.getKey())) {
+                    continue;
+                }
+                addPowerBankVisual(visuals, entry.getValue(), intent.canonicalProduct());
+            }
+        }
+        return new ArrayList<>(visuals);
+    }
+
+    private List<String> powerBankVisualsFromFeatures(ProductIntent intent) {
+        LinkedHashSet<String> visuals = new LinkedHashSet<>();
+        for (String feature : safeList(intent.featureTerms())) {
+            if (!PowerBankSearchRules.isStrongSpecOrFeature(feature)) {
+                addPowerBankVisual(visuals, feature, intent.canonicalProduct());
+            }
+        }
+        return new ArrayList<>(visuals);
+    }
+
+    private void addPowerBankVisual(LinkedHashSet<String> visuals, String value, String canonicalProduct) {
+        String cleaned = PowerBankSearchRules.cleanDescriptor(value, canonicalProduct);
+        if (!PowerBankSearchRules.isUsefulVisualDescriptor(cleaned)) {
+            return;
+        }
+        visuals.addAll(PowerBankSearchRules.expandVisualDescriptor(cleaned));
+    }
+
+    private List<String> safePowerBankRetrievalVisuals(List<String> visuals) {
+        return safeList(visuals).stream()
+                .filter(PowerBankSearchRules::isSafeRetrievalVisual)
+                .toList();
+    }
+
+    private List<String> safeList(List<String> values) {
+        return values == null ? List.of() : values;
     }
 
     /**

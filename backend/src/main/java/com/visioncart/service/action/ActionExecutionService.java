@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -112,9 +113,12 @@ public class ActionExecutionService {
         String userInput = action.rawText();
 
         if (nlpStateStackService.limitReached(sessionId)) {
-            SearchFilter currentFilter = conversationManager.getFilterState(sessionId);
             List<ProductCard> currentCandidates = currentProducts(sessionId);
             java.util.Optional<NlpStateStackService.NlpState> currentNlpState = peekNlpState(sessionId);
+            SearchFilter resolvedCurrentFilter = currentNlpState
+                    .map(NlpStateStackService.NlpState::filter)
+                    .orElseGet(() -> conversationManager.getFilterState(sessionId));
+            SearchFilter currentFilter = resolvedCurrentFilter != null ? resolvedCurrentFilter : SearchFilter.empty();
             List<ProductCard> currentDisplay = currentNlpState
                     .map(NlpStateStackService.NlpState::products)
                     .filter(products -> products != null && !products.isEmpty())
@@ -156,13 +160,17 @@ public class ActionExecutionService {
 
         // 2. Get current candidates (优先 classifiedPool Top300) and previous filter state
         List<ProductCard> candidates = sessionCache.getBestCandidates(sessionId);
-        SearchFilter previousFilter = conversationManager.getFilterState(sessionId);
         java.util.Optional<NlpStateStackService.NlpState> previousNlpState = peekNlpState(sessionId);
+        SearchFilter resolvedPreviousFilter = previousNlpState
+                .map(NlpStateStackService.NlpState::filter)
+                .orElseGet(() -> conversationManager.getFilterState(sessionId));
+        SearchFilter previousFilter = resolvedPreviousFilter != null ? resolvedPreviousFilter : SearchFilter.empty();
+        SearchFilter activePreviousFilter = previousFilter;
         List<ProductCard> previousProducts = previousNlpState
                 .map(NlpStateStackService.NlpState::products)
                 .filter(products -> products != null && !products.isEmpty())
                 .orElseGet(() -> filterService.filter(
-                        candidates, previousFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products());
+                        candidates, activePreviousFilter, Map.of(), DEFAULT_PAGE_SIZE, 1).products());
 
         // 3. Generate semantic plan via LLM
         LlmSemanticPlanner.ProductPoolSummary poolSummary = LlmSemanticPlanner.ProductPoolSummary.from(candidates);
@@ -180,22 +188,54 @@ public class ActionExecutionService {
                 plan.semanticFilters() == null ? 0 : plan.semanticFilters().size(),
                 historyText != null && !historyText.isBlank());
 
-        // 5. Rerank-only plans operate on the current display page, not the full candidate pool
-        List<ProductCard> executionPool = isRerankOnly(plan) ? previousProducts : candidates;
-
-        // Each successful NLP turn is a complete new state. History is sent to the LLM,
-        // and only conditions present in the returned plan should be committed.
-        SearchFilter executionFilterBase = SearchFilter.empty();
-        ActionResult result = semanticActionExecutor.execute(
-                sessionId, executionPool, executionFilterBase, plan, previousProducts);
-
-        // 5. Save undo point if filter, product order, or tags changed
-        List<ProductCard> resultDisplayProducts = displayProducts(result);
-        List<FilterTag> resultTags = safeFilterTags(result.filterTags());
         List<FilterTag> previousTags = previousNlpState
                 .map(NlpStateStackService.NlpState::tags)
                 .filter(tags -> tags != null && !tags.isEmpty())
                 .orElseGet(() -> generateStructuredTags(previousFilter));
+        if (!hasActionableNlpPlan(plan)) {
+            log.info("NLP semantic plan has no actionable conditions: session={}, input='{}'", sessionId, userInput);
+            return withSuggestionCards(new ActionResult(
+                    previousProducts,
+                    previousFilter,
+                    previousTags,
+                    false,
+                    true,
+                    undoService.canUndo(sessionId),
+                    "\u672a\u8bc6\u522b\u5230\u65b0\u7684\u7b5b\u9009\u6761\u4ef6\uff0c\u5df2\u4fdd\u7559\u5f53\u524d\u7ed3\u679c",
+                    List.of(),
+                    List.of(),
+                    null,
+                    candidates.size(),
+                    null,
+                    null,
+                    "nlp",
+                    null,
+                    null,
+                    "KEPT_PREVIOUS",
+                    "nlp.no_action",
+                    null,
+                    null));
+        }
+
+        // 5. Rerank-only plans operate on the current display page, not the full candidate pool
+        List<ProductCard> executionPool = isRerankOnly(plan) ? previousProducts : candidates;
+
+        // LLM returns the full target state for this turn, so successful NLP execution
+        // must not silently carry forward filters that the current plan omitted.
+        SearchFilter executionFilterBase = SearchFilter.empty();
+        ActionResult result = semanticActionExecutor.execute(
+                sessionId, executionPool, executionFilterBase, plan, previousProducts);
+
+        if (result.filterApplied()) {
+            SearchFilter activeFilter = result.appliedFilter() != null
+                    ? result.appliedFilter()
+                    : previousFilter;
+            conversationManager.setFilterState(sessionId, activeFilter);
+        }
+
+        // 5. Save undo point if filter, product order, or tags changed
+        List<ProductCard> resultDisplayProducts = displayProducts(result);
+        List<FilterTag> resultTags = safeFilterTags(result.filterTags());
         boolean filterChanged = result.appliedFilter() != null
                 && !java.util.Objects.equals(previousFilter, result.appliedFilter());
         boolean productsChanged = !sameProductIds(previousProducts, resultDisplayProducts);
@@ -305,6 +345,22 @@ public class ActionExecutionService {
                         || "LLM_RERANK".equals(plan.executionMode()));
     }
 
+    private static boolean hasActionableNlpPlan(SemanticActionPlan plan) {
+        return plan != null && (
+                hasItems(plan.hardFilters())
+                        || hasItems(plan.semanticFilters())
+                        || hasItems(plan.preferences())
+                        || hasItems(plan.exclusions())
+                        || hasItems(plan.criteria())
+                        || hasItems(plan.negativeCriteria())
+                        || plan.sort() != null
+                        || (plan.judge() != null && Boolean.TRUE.equals(plan.judge().required())));
+    }
+
+    private static boolean hasItems(Collection<?> items) {
+        return items != null && !items.isEmpty();
+    }
+
     /**
      * Map action string to ProductSortService sort key.
      * sort_by_review_quality → review_quality, sort_by_rating_desc → rating_desc, etc.
@@ -361,7 +417,8 @@ public class ActionExecutionService {
                     new UserAction.ActionPayload(actionString, field(action.payload()), value(action.payload()),
                             null, null, null, action.payload() != null ? action.payload().context() : null,
                             action.payload() != null ? action.payload().filterSpec() : null),
-                    action.clientRequestId()
+                    action.clientRequestId(),
+                    action.regionMode()
             );
             return executeCompiledAction(normalized, userId);
         }
@@ -398,7 +455,8 @@ public class ActionExecutionService {
         ApiResponse<AttributeCorrectionResult> body = attributeCorrectionService.correctAttribute(
                 sessionId,
                 new AttributeCorrectionRequest(sessionId, payload.field(), null, payload.value()),
-                userId);
+                userId,
+                action.regionMode());
         if (body == null || body.code() != 200 || body.data() == null) {
             throw new IllegalArgumentException(body != null ? body.message() : "修正操作失败");
         }

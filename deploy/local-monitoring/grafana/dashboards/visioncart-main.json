@@ -1,1025 +1,1602 @@
 {
-    "annotations":  {
-                        "list":  [
-                                     {
-                                         "hide":  true,
-                                         "datasource":  {
-                                                            "type":  "grafana",
-                                                            "uid":  "-- Grafana --"
-                                                        },
-                                         "name":  "Annotations \u0026 Alerts",
-                                         "type":  "dashboard",
-                                         "builtIn":  1,
-                                         "target":  {
-                                                        "matchAny":  false,
-                                                        "type":  "dashboard",
-                                                        "limit":  100,
-                                                        "tags":  [
-
-                                                                 ]
-                                                    },
-                                         "enable":  true,
-                                         "iconColor":  "rgba(0, 211, 255, 1)"
-                                     }
-                                 ]
-                    },
-    "editable":  true,
-    "fiscalYearStartMonth":  0,
-    "graphTooltip":  0,
-    "id":  null,
-    "links":  [
-
-              ],
-    "liveNow":  false,
-    "panels":  [
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "ms",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  1,
-                       "gridPos":  {
-                                       "y":  0,
-                                       "w":  12,
-                                       "h":  8,
-                                       "x":  0
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "HTTP 请求延迟（http_server_requests_seconds）",
-                       "targets":  [
-                                       {
-                                           "expr":  "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{uri!~\".*actuator.*\"}[5m])) by (le, uri)) * 1000",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "p95 {{uri}}",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{uri!~\".*actuator.*\"}[5m])) by (le, uri)) * 1000",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "p50 {{uri}}",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "reqps",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  2,
-                       "gridPos":  {
-                                       "y":  0,
-                                       "w":  12,
-                                       "h":  8,
-                                       "x":  12
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "HTTP QPS（http_server_requests_seconds_count）",
-                       "targets":  [
-                                       {
-                                           "expr":  "sum(rate(http_server_requests_seconds_count{uri!~\".*actuator.*\"}[1m])) by (uri, status)",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "{{status}} {{uri}}",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "bytes",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  3,
-                       "gridPos":  {
-                                       "y":  8,
-                                       "w":  8,
-                                       "h":  8,
-                                       "x":  0
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "JVM 内存（jvm_memory_*）",
-                       "targets":  [
-                                       {
-                                           "expr":  "sum(jvm_memory_used_bytes) by (area)",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "used {{area}}",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "sum(jvm_memory_committed_bytes) by (area)",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "committed {{area}}",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "sum(jvm_memory_max_bytes) by (area)",
-                                           "editorMode":  "code",
-                                           "refId":  "C",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "max {{area}}",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "short",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  4,
-                       "gridPos":  {
-                                       "y":  8,
-                                       "w":  8,
-                                       "h":  8,
-                                       "x":  8
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "GC（jvm_gc_*）",
-                       "targets":  [
-                                       {
-                                           "expr":  "sum(rate(jvm_gc_pause_seconds_count[5m])) by (gc)",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "pause/s {{gc}}",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "sum(rate(jvm_gc_pause_seconds_sum[5m])) by (gc)",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "seconds/s {{gc}}",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "jvm_gc_overhead",
-                                           "editorMode":  "code",
-                                           "refId":  "C",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "overhead",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "short",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  5,
-                       "gridPos":  {
-                                       "y":  8,
-                                       "w":  8,
-                                       "h":  8,
-                                       "x":  16
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "Hikari 连接池（hikaricp_*）",
-                       "targets":  [
-                                       {
-                                           "expr":  "hikaricp_connections_active",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "active",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "hikaricp_connections_idle",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "idle",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "hikaricp_connections_pending",
-                                           "editorMode":  "code",
-                                           "refId":  "C",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "pending",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "hikaricp_connections_max",
-                                           "editorMode":  "code",
-                                           "refId":  "D",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "max",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "ops",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  6,
-                       "gridPos":  {
-                                       "y":  16,
-                                       "w":  8,
-                                       "h":  8,
-                                       "x":  0
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "Redis/Lettuce（lettuce_command_*）",
-                       "targets":  [
-                                       {
-                                           "expr":  "sum(rate(lettuce_command_completion_seconds_count[5m])) by (command)",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "{{command}} complete/s",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "histogram_quantile(0.95, sum(rate(lettuce_command_completion_seconds_bucket[5m])) by (le, command)) * 1000",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "p95 {{command}} ms",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "short",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  7,
-                       "gridPos":  {
-                                       "y":  16,
-                                       "w":  8,
-                                       "h":  8,
-                                       "x":  8
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "NLP（nlp_total_requests / nlp_llm_fallback_count）",
-                       "targets":  [
-                                       {
-                                           "expr":  "rate(nlp_total_requests[5m])",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "requests/s",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "rate(nlp_llm_fallback_count[5m])",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "fallback/s",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "increase(nlp_total_requests[1h])",
-                                           "editorMode":  "code",
-                                           "refId":  "C",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "requests 1h",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "percentunit",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  8,
-                       "gridPos":  {
-                                       "y":  16,
-                                       "w":  8,
-                                       "h":  8,
-                                       "x":  16
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "搜索缓存（search_cache_*）",
-                       "targets":  [
-                                       {
-                                           "expr":  "search_cache_hit_count / clamp_min(search_cache_hit_count + search_cache_miss_count, 1)",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "hit ratio",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "rate(search_cache_hit_count[5m])",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "hit/s",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "rate(search_cache_miss_count[5m])",
-                                           "editorMode":  "code",
-                                           "refId":  "C",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "miss/s",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "percentunit",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  9,
-                       "gridPos":  {
-                                       "y":  24,
-                                       "w":  12,
-                                       "h":  7,
-                                       "x":  0
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "CPU（process_cpu_usage / system_cpu_usage）",
-                       "targets":  [
-                                       {
-                                           "expr":  "process_cpu_usage",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "process",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "system_cpu_usage",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "system",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   },
-                   {
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  12,
-                                                                           "thresholdsStyle":  {
-                                                                                                   "mode":  "off"
-                                                                                               },
-                                                                           "showPoints":  "never",
-                                                                           "drawStyle":  "line",
-                                                                           "lineWidth":  2,
-                                                                           "axisPlacement":  "auto",
-                                                                           "stacking":  {
-                                                                                            "group":  "A",
-                                                                                            "mode":  "none"
-                                                                                        }
-                                                                       },
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "value":  null,
-                                                                                                 "color":  "green"
-                                                                                             }
-                                                                                         ],
-                                                                               "mode":  "absolute"
-                                                                           },
-                                                            "unit":  "short",
-                                                            "mappings":  [
-
-                                                                         ]
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "id":  10,
-                       "gridPos":  {
-                                       "y":  24,
-                                       "w":  12,
-                                       "h":  7,
-                                       "x":  12
-                                   },
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "visioncart-prometheus"
-                                      },
-                       "title":  "线程池（executor_*）",
-                       "targets":  [
-                                       {
-                                           "expr":  "executor_active_threads",
-                                           "editorMode":  "code",
-                                           "refId":  "A",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "active {{name}}",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "executor_queued_tasks",
-                                           "editorMode":  "code",
-                                           "refId":  "B",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "queued {{name}}",
-                                           "range":  true
-                                       },
-                                       {
-                                           "expr":  "executor_queue_remaining_tasks",
-                                           "editorMode":  "code",
-                                           "refId":  "C",
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "visioncart-prometheus"
-                                                          },
-                                           "legendFormat":  "remaining {{name}}",
-                                           "range":  true
-                                       }
-                                   ],
-                       "type":  "timeseries",
-                       "options":  {
-                                       "legend":  {
-                                                      "placement":  "bottom",
-                                                      "showLegend":  true,
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table"
-                                                  },
-                                       "tooltip":  {
-                                                       "sort":  "none",
-                                                       "mode":  "multi"
-                                                   }
-                                   }
-                   }
-               ],
-    "refresh":  "10s",
-    "schemaVersion":  39,
-    "tags":  [
-                 "visioncart",
-                 "prod"
-             ],
-    "templating":  {
-                       "list":  [
-
-                                ]
-                   },
-    "time":  {
-                 "to":  "now",
-                 "from":  "now-1h"
-             },
-    "timepicker":  {
-
-                   },
-    "timezone":  "browser",
-    "title":  "VisionCart Main",
-    "uid":  "visioncart-main",
-    "version":  2,
-    "weekStart":  ""
+  "annotations": {
+    "list": [
+      {
+        "hide": true,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "name": "Annotations & Alerts",
+        "type": "dashboard",
+        "builtIn": 1,
+        "target": {
+          "matchAny": false,
+          "type": "dashboard",
+          "limit": 100,
+          "tags": []
+        },
+        "enable": true,
+        "iconColor": "rgba(0, 211, 255, 1)"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "ms",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 1,
+      "gridPos": {
+        "y": 0,
+        "w": 12,
+        "h": 8,
+        "x": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "HTTP Latency p50/p95",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{uri!~\".*actuator.*\"}[5m])) by (le, uri)) * 1000",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "p95 {{uri}}",
+          "range": true
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket{uri!~\".*actuator.*\"}[5m])) by (le, uri)) * 1000",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "p50 {{uri}}",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "reqps",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 2,
+      "gridPos": {
+        "y": 0,
+        "w": 12,
+        "h": 8,
+        "x": 12
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "HTTP QPS (Business)",
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{uri!~\".*actuator.*\",uri!=\"UNKNOWN\"}[1m])) by (uri, status)",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{status}} {{uri}}",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "bytes",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 3,
+      "gridPos": {
+        "y": 8,
+        "w": 8,
+        "h": 8,
+        "x": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "JVM Memory",
+      "targets": [
+        {
+          "expr": "sum(jvm_memory_used_bytes) by (area)",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "used {{area}}",
+          "range": true
+        },
+        {
+          "expr": "sum(jvm_memory_committed_bytes) by (area)",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "committed {{area}}",
+          "range": true
+        },
+        {
+          "expr": "sum(jvm_memory_max_bytes) by (area)",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "max {{area}}",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 4,
+      "gridPos": {
+        "y": 8,
+        "w": 8,
+        "h": 8,
+        "x": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "JVM GC",
+      "targets": [
+        {
+          "expr": "sum(rate(jvm_gc_pause_seconds_count[5m])) by (gc)",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "pause/s {{gc}}",
+          "range": true
+        },
+        {
+          "expr": "sum(rate(jvm_gc_pause_seconds_sum[5m])) by (gc)",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "seconds/s {{gc}}",
+          "range": true
+        },
+        {
+          "expr": "jvm_gc_overhead",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "overhead",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 5,
+      "gridPos": {
+        "y": 8,
+        "w": 8,
+        "h": 8,
+        "x": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "Hikari Connection Pool",
+      "targets": [
+        {
+          "expr": "hikaricp_connections_active",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "active",
+          "range": true
+        },
+        {
+          "expr": "hikaricp_connections_idle",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "idle",
+          "range": true
+        },
+        {
+          "expr": "hikaricp_connections_pending",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "pending",
+          "range": true
+        },
+        {
+          "expr": "hikaricp_connections_max",
+          "editorMode": "code",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "max",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 6,
+      "gridPos": {
+        "y": 16,
+        "w": 8,
+        "h": 8,
+        "x": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "Redis Lettuce Ops and Latency",
+      "targets": [
+        {
+          "expr": "sum(rate(lettuce_command_completion_seconds_count[5m])) by (command)",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{command}} ops/s",
+          "range": true
+        },
+        {
+          "expr": "sum(rate(lettuce_command_completion_seconds_sum[5m])) by (command) / clamp_min(sum(rate(lettuce_command_completion_seconds_count[5m])) by (command), 0.001) * 1000",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{command}} avg ms",
+          "range": true
+        },
+        {
+          "expr": "lettuce_command_completion_seconds_max * 1000",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{command}} max ms",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 7,
+      "gridPos": {
+        "y": 16,
+        "w": 8,
+        "h": 8,
+        "x": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "NLP Requests and Fallback",
+      "targets": [
+        {
+          "expr": "rate(nlp_total_requests[5m])",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "nlp req/s",
+          "range": true
+        },
+        {
+          "expr": "rate(nlp_llm_fallback_count[5m])",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "fallback/s",
+          "range": true
+        },
+        {
+          "expr": "increase(nlp_total_requests[1h])",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "nlp requests 1h",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "percentunit",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 8,
+      "gridPos": {
+        "y": 16,
+        "w": 8,
+        "h": 8,
+        "x": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "Search Cache",
+      "targets": [
+        {
+          "expr": "search_cache_hit_count / clamp_min(search_cache_hit_count + search_cache_miss_count, 1)",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "hit ratio",
+          "range": true
+        },
+        {
+          "expr": "rate(search_cache_hit_count[5m])",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "hit/s",
+          "range": true
+        },
+        {
+          "expr": "rate(search_cache_miss_count[5m])",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "miss/s",
+          "range": true
+        },
+        {
+          "expr": "rate(search_cache_total[5m])",
+          "editorMode": "code",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "cache total/s",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "percentunit",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 9,
+      "gridPos": {
+        "y": 24,
+        "w": 12,
+        "h": 7,
+        "x": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "CPU Usage",
+      "targets": [
+        {
+          "expr": "process_cpu_usage",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "process",
+          "range": true
+        },
+        {
+          "expr": "system_cpu_usage",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "system",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ],
+            "mode": "absolute"
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "id": 10,
+      "gridPos": {
+        "y": 24,
+        "w": 12,
+        "h": 7,
+        "x": 12
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "visioncart-prometheus"
+      },
+      "title": "Executor Queues",
+      "targets": [
+        {
+          "expr": "executor_active_threads",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "active {{name}}",
+          "range": true
+        },
+        {
+          "expr": "executor_queued_tasks",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "queued {{name}}",
+          "range": true
+        },
+        {
+          "expr": "executor_queue_remaining_tasks",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "remaining {{name}}",
+          "range": true
+        }
+      ],
+      "type": "timeseries",
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Business Latency",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "(sum(rate(recognition_latency_seconds_sum[5m])) by (success) / clamp_min(sum(rate(recognition_latency_seconds_count[5m])) by (success), 0.001) * 1000) or vector(0)",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "recognition {{success}} avg",
+          "range": true
+        },
+        {
+          "expr": "sum(rate(search_total_latency_seconds_sum[5m])) / clamp_min(sum(rate(search_total_latency_seconds_count[5m])), 0.001) * 1000",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "search total avg",
+          "range": true
+        },
+        {
+          "expr": "sum(rate(candidate_filter_latency_seconds_sum[5m])) / clamp_min(sum(rate(candidate_filter_latency_seconds_count[5m])), 0.001) * 1000",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "candidate filter avg",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Search Platform Latency and Calls",
+      "gridPos": {
+        "x": 12,
+        "y": 31,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(search_platform_latency_seconds_sum[5m])) by (platform, success) / clamp_min(sum(rate(search_platform_latency_seconds_count[5m])) by (platform, success), 0.001) * 1000",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{platform}} {{success}} avg ms",
+          "range": true
+        },
+        {
+          "expr": "sum(rate(search_platform_latency_seconds_count[5m])) by (platform, success)",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{platform}} {{success}} calls/s",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "AI Task Latency and Calls",
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(ai_task_latency_seconds_sum[5m])) by (task, decision) / clamp_min(sum(rate(ai_task_latency_seconds_count[5m])) by (task, decision), 0.001) * 1000",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{task}} {{decision}} avg ms",
+          "range": true
+        },
+        {
+          "expr": "sum(rate(ai_task_latency_seconds_count[5m])) by (task, decision)",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{task}} {{decision}} calls/s",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Thread Pools",
+      "gridPos": {
+        "x": 12,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "executor_active_threads",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "executor active {{name}}",
+          "range": true
+        },
+        {
+          "expr": "executor_queued_tasks",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "executor queued {{name}}",
+          "range": true
+        },
+        {
+          "expr": "threadpool_active",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "threadpool active {{threadpool}}",
+          "range": true
+        },
+        {
+          "expr": "threadpool_queue_size",
+          "editorMode": "code",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "threadpool queue {{threadpool}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Circuit Breakers and Deep Suggestions",
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "increase(platform_circuit_open_count_total[1h]) or vector(0)",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{platform}} circuit open 1h",
+          "range": true
+        },
+        {
+          "expr": "increase(platform_circuit_half_open_count_total[1h]) or vector(0)",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "{{platform}} half-open 1h",
+          "range": true
+        },
+        {
+          "expr": "increase(deep_suggestion_generated_count_total[1h])",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "deep suggestion generated 1h",
+          "range": true
+        },
+        {
+          "expr": "increase(deep_suggestion_timeout_count_total[1h])",
+          "editorMode": "code",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "deep suggestion timeout 1h",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Service Resources / Scrape / Blocked",
+      "gridPos": {
+        "x": 12,
+        "y": 47,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "axisPlacement": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table"
+        },
+        "tooltip": {
+          "sort": "none",
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "process_cpu_usage",
+          "editorMode": "code",
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "process cpu",
+          "range": true
+        },
+        {
+          "expr": "system_cpu_usage",
+          "editorMode": "code",
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "system cpu",
+          "range": true
+        },
+        {
+          "expr": "disk_free_bytes / disk_total_bytes",
+          "editorMode": "code",
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "disk free ratio",
+          "range": true
+        },
+        {
+          "expr": "process_uptime_seconds / 3600",
+          "editorMode": "code",
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "uptime hours",
+          "range": true
+        },
+        {
+          "expr": "up{job=\"visioncart-backend\"}",
+          "editorMode": "code",
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "prometheus scrape up",
+          "range": true
+        },
+        {
+          "expr": "scrape_duration_seconds{job=\"visioncart-backend\"} * 1000",
+          "editorMode": "code",
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "scrape duration ms",
+          "range": true
+        },
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{status=\"403\",uri=\"UNKNOWN\"}[5m]))",
+          "editorMode": "code",
+          "refId": "G",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "visioncart-prometheus"
+          },
+          "legendFormat": "blocked unknown 403/s",
+          "range": true
+        }
+      ]
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": [
+    "visioncart",
+    "prod"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "VisionCart Server Monitoring",
+  "uid": "visioncart-main",
+  "version": 4,
+  "weekStart": "",
+  "updated": "2026-06-10T09:20:30.892Z"
 }

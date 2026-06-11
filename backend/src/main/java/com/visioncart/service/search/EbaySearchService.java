@@ -8,6 +8,7 @@ import com.visioncart.config.VisionCartProperties;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -23,29 +24,37 @@ public class EbaySearchService implements PlatformSearchService {
     private final VisionCartProperties properties;
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
+    private final EbayQueryTranslator queryTranslator;
 
     // Cache eBay app token (valid ~2 hours)
     private volatile String cachedToken;
     private volatile long tokenExpiresAt = 0;
     private final java.util.concurrent.locks.ReentrantLock tokenLock = new java.util.concurrent.locks.ReentrantLock();
 
-    public EbaySearchService(VisionCartProperties properties, ObjectMapper objectMapper) {
+    @Autowired
+    public EbaySearchService(VisionCartProperties properties, ObjectMapper objectMapper,
+                             EbayQueryTranslator queryTranslator) {
+        this(properties, objectMapper, queryTranslator, defaultRestClient());
+    }
+
+    EbaySearchService(VisionCartProperties properties, ObjectMapper objectMapper,
+                      EbayQueryTranslator queryTranslator, RestClient restClient) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.queryTranslator = queryTranslator;
+        this.restClient = restClient;
+    }
+
+    private static RestClient defaultRestClient() {
         var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(java.time.Duration.ofSeconds(5));
         factory.setReadTimeout(java.time.Duration.ofSeconds(15));
-        this.restClient = RestClient.builder().requestFactory(factory).build();
+        return RestClient.builder().requestFactory(factory).build();
     }
 
     @Override
     public String platform() {
         return "eBay";
-    }
-
-    @Override
-    public boolean domesticOnly() {
-        return false;
     }
 
     /**
@@ -172,45 +181,13 @@ public class EbaySearchService implements PlatformSearchService {
                 return List.of();
             }
 
-            // Build search URL
-            int fetchSize = SearchQueryBuilder.platformFetchSize(pageSize);
-            StringBuilder url = new StringBuilder(ebay.getBrowseUrl());
-            url.append("?q=").append(java.net.URLEncoder.encode(keyword(attributes, filter), StandardCharsets.UTF_8));
-            url.append("&limit=").append(Math.min(100, fetchSize));
-            url.append("&offset=").append((page - 1) * pageSize);
-
-            // Price filter
-            if (filter.priceRange() != null) {
-                StringBuilder priceFilter = new StringBuilder("price:[");
-                if (filter.priceRange().min() != null) {
-                    priceFilter.append(filter.priceRange().min().longValue());
-                } else {
-                    priceFilter.append("0");
-                }
-                priceFilter.append("..");
-                if (filter.priceRange().max() != null) {
-                    priceFilter.append(filter.priceRange().max().longValue());
-                } else {
-                    priceFilter.append("100000");
-                }
-                priceFilter.append("]");
-                url.append("&filter=").append(java.net.URLEncoder.encode(priceFilter.toString(), StandardCharsets.UTF_8));
-            }
-
-            // Sort
-            if (filter.sortBy() != null) {
-                String sort = switch (filter.sortBy()) {
-                    case "price" -> "asc".equalsIgnoreCase(filter.sortOrder()) || "price_asc".equalsIgnoreCase(filter.sortOrder()) ? "price" : "-price";
-                    default -> null;
-                };
-                if (sort != null) url.append("&sort=").append(sort);
-            }
-
-            // Condition: new items
-            url.append("&filter=").append(java.net.URLEncoder.encode("conditions:{NEW}", StandardCharsets.UTF_8));
+            String rawKeyword = keyword(attributes, filter);
+            String ebayKeyword = queryTranslator.translateForEbay(rawKeyword);
+            log.info("eBay query translated: '{}' -> '{}'", rawKeyword, ebayKeyword);
+            String url = buildSearchUrl(ebay, ebayKeyword, filter, page, pageSize);
 
             String body = restClient.get()
-                    .uri(url.toString())
+                    .uri(url)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                     .header("X-EBAY-C-MARKETPLACE-ID", ebay.getMarketplaceId())
                     .retrieve()
@@ -221,6 +198,43 @@ public class EbaySearchService implements PlatformSearchService {
             log.warn("eBay search failed: {}", e.toString());
             return List.of();
         }
+    }
+
+    String buildSearchUrl(VisionCartProperties.Ebay ebay, String ebayKeyword,
+                          SearchFilter filter, int page, int pageSize) {
+        int fetchSize = SearchQueryBuilder.platformFetchSize(pageSize);
+        StringBuilder url = new StringBuilder(ebay.getBrowseUrl());
+        url.append("?q=").append(java.net.URLEncoder.encode(ebayKeyword, StandardCharsets.UTF_8));
+        url.append("&limit=").append(Math.min(100, fetchSize));
+        url.append("&offset=").append((page - 1) * pageSize);
+
+        if (filter.priceRange() != null) {
+            StringBuilder priceFilter = new StringBuilder("price:[");
+            if (filter.priceRange().min() != null) {
+                priceFilter.append(filter.priceRange().min().longValue());
+            } else {
+                priceFilter.append("0");
+            }
+            priceFilter.append("..");
+            if (filter.priceRange().max() != null) {
+                priceFilter.append(filter.priceRange().max().longValue());
+            } else {
+                priceFilter.append("100000");
+            }
+            priceFilter.append("]");
+            url.append("&filter=").append(java.net.URLEncoder.encode(priceFilter.toString(), StandardCharsets.UTF_8));
+        }
+
+        if (filter.sortBy() != null) {
+            String sort = switch (filter.sortBy()) {
+                case "price" -> "asc".equalsIgnoreCase(filter.sortOrder()) || "price_asc".equalsIgnoreCase(filter.sortOrder()) ? "price" : "-price";
+                default -> null;
+            };
+            if (sort != null) url.append("&sort=").append(sort);
+        }
+
+        url.append("&filter=").append(java.net.URLEncoder.encode("conditions:{NEW}", StandardCharsets.UTF_8));
+        return url.toString();
     }
 
     private String getAppToken(VisionCartProperties.Ebay ebay) {

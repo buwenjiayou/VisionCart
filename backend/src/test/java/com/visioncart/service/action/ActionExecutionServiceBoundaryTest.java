@@ -1,6 +1,7 @@
 package com.visioncart.service.action;
 
 import com.visioncart.api.dto.ActionResult;
+import com.visioncart.api.dto.FilterTag;
 import com.visioncart.api.dto.SemanticActionPlan;
 import com.visioncart.api.dto.ProductCard;
 import com.visioncart.api.dto.SearchFilter;
@@ -64,7 +65,8 @@ class ActionExecutionServiceBoundaryTest {
                 empty.ratingMin(), empty.sortBy(), empty.sortOrder(), empty.keyword(),
                 empty.attributes(), empty.excludeRoles(), empty.capabilities());
         SemanticActionPlan rawPlan = new SemanticActionPlan(
-                "filter_current_results", "STRICT_FILTER", "product", null, null,
+                "filter_current_results", "STRICT_FILTER", "product",
+                List.of(new SemanticActionPlan.HardFilter("price", ">=", 50.0)), null,
                 null, null, null, "KEEP_PREVIOUS_RESULTS");
         ActionResult executed = ActionResult.filtered(
                 List.of(product), applied, List.of(), true, "ok", List.of(), List.of());
@@ -118,6 +120,229 @@ class ActionExecutionServiceBoundaryTest {
     }
 
     @Test
+    void emptyNlpPlanKeepsCurrentStateAndTags() {
+        Harness h = harness();
+        ProductCard product = product("p1", "Product");
+        SearchFilter current = new SearchFilter(
+                new com.visioncart.api.dto.PriceRange(null, 10.0),
+                List.of(), null, List.of(), List.of(), null,
+                null, "desc", null, Map.of(), List.of(), Map.of());
+        List<FilterTag> currentTags = List.of(FilterTag.ofField("<=10", "price_range.max"));
+        SemanticActionPlan emptyPlan = new SemanticActionPlan(
+                "filter_current_results", "STRICT_FILTER", "product", null, null,
+                null, null, null, "KEEP_PREVIOUS_RESULTS");
+
+        when(h.nlpStateStackService.limitReached("sess-empty")).thenReturn(false);
+        when(h.nlpStateStackService.historyText("sess-empty")).thenReturn("1. under 10");
+        when(h.nlpStateStackService.peek("sess-empty")).thenReturn(Optional.of(
+                new NlpStateStackService.NlpState(
+                        "nlp-1",
+                        "under 10",
+                        current,
+                        currentTags,
+                        List.of(product),
+                        "2026-06-10T00:00:00Z")));
+        when(h.conversationManager.getFilterState("sess-empty")).thenReturn(current);
+        when(h.sessionCache.getBestCandidates("sess-empty")).thenReturn(List.of(product));
+        when(h.sessionContextService.resolve(eq("sess-empty"), eq(7L), any()))
+                .thenReturn(new SessionContextService.SessionContext(
+                        "sess-empty", "product", "product", "product", "main",
+                        Map.of(), Set.of("main"), true, "zh-CN"));
+        when(h.llmSemanticPlanner.plan(eq("for young people"), any(), any(), eq("1. under 10")))
+                .thenReturn(emptyPlan);
+        when(h.semanticExecutionPolicy.normalizeForSyncExecution(anyString(), same(emptyPlan), anyInt()))
+                .thenReturn(emptyPlan);
+
+        ActionResult result = h.service.execute(UserAction.nlpFilter("sess-empty", "for young people"), 7L);
+
+        assertThat(result.filterApplied()).isFalse();
+        assertThat(result.keptPreviousResults()).isTrue();
+        assertThat(result.messageCode()).isEqualTo("nlp.no_action");
+        assertThat(result.products()).extracting(ProductCard::id).containsExactly("p1");
+        assertThat(result.appliedFilter()).isEqualTo(current);
+        assertThat(result.filterTags()).isEqualTo(currentTags);
+        verifyNoInteractions(h.semanticActionExecutor);
+        verify(h.undoService, never()).saveUndoPoint(anyString(), any(), anyList(), anyString(), anyString(), any(), any(), any());
+        verify(h.nlpStateStackService, never()).push(anyString(), anyString(), anyString(), any(), anyList(), anyList());
+    }
+
+    @Test
+    void successfulNlpUsesCurrentPlanTagsWithoutMergingPreviousActiveTags() {
+        Harness h = harness();
+        ProductCard product = product("p1", "Power bank");
+        SearchFilter priceFilter = new SearchFilter(
+                new com.visioncart.api.dto.PriceRange(null, 50.0),
+                List.of(), null, List.of(), List.of(), null,
+                null, "desc", null, Map.of(), List.of(), Map.of());
+        SearchFilter empty = SearchFilter.empty();
+        SearchFilter applied = new SearchFilter(
+                empty.priceRange(), empty.platforms(), empty.selfOperated(),
+                empty.colors(), empty.brands(), empty.ratingMin(),
+                empty.sortBy(), empty.sortOrder(), empty.keyword(),
+                empty.attributes(), empty.excludeRoles(), Map.of("airplane_allowed", true));
+        List<FilterTag> previousTags = List.of(
+                FilterTag.ofField("<=50", "price_range.max"),
+                FilterTag.ofPreference("young_user", "young style", "young style"));
+        FilterTag airplaneTag = FilterTag.ofCapability(
+                "airplane_allowed", "airplane allowed", "airplane allowed");
+        SemanticActionPlan rawPlan = new SemanticActionPlan(
+                "filter_current_results", "SEMANTIC_SCREENING", "power_bank",
+                null,
+                List.of(new SemanticActionPlan.SemanticFilter(
+                        "airplane_allowed", "airplane allowed", "EVIDENCE_OR_SCORE",
+                        List.of(), List.of(), "KEEP_AS_SECONDARY")),
+                null, null, null, "KEEP_PREVIOUS_RESULTS");
+        ActionResult executed = ActionResult.filtered(
+                List.of(product), applied, List.of(airplaneTag), true,
+                "ok", List.of(), List.of());
+
+        when(h.nlpStateStackService.limitReached("sess-cumulative")).thenReturn(false);
+        when(h.nlpStateStackService.historyText("sess-cumulative"))
+                .thenReturn("1. under 50\n2. young style");
+        when(h.nlpStateStackService.peek("sess-cumulative")).thenReturn(Optional.of(
+                new NlpStateStackService.NlpState(
+                        "nlp-2", "young style", priceFilter, previousTags,
+                        List.of(product), "2026-06-10T00:00:00Z")));
+        when(h.conversationManager.getFilterState("sess-cumulative")).thenReturn(priceFilter);
+        when(h.sessionCache.getBestCandidates("sess-cumulative")).thenReturn(List.of(product));
+        when(h.sessionContextService.resolve(eq("sess-cumulative"), eq(7L), any()))
+                .thenReturn(new SessionContextService.SessionContext(
+                        "sess-cumulative", "power_bank", "power_bank", "power_bank", "main",
+                        Map.of(), Set.of("main"), true, "zh-CN"));
+        when(h.llmSemanticPlanner.plan(eq("airplane allowed"), any(), any(), anyString()))
+                .thenReturn(rawPlan);
+        when(h.semanticExecutionPolicy.normalizeForSyncExecution(anyString(), same(rawPlan), anyInt()))
+                .thenReturn(rawPlan);
+        when(h.semanticActionExecutor.execute(eq("sess-cumulative"), anyList(), eq(SearchFilter.empty()),
+                same(rawPlan), anyList())).thenReturn(executed);
+        when(h.suggestionService.cards(eq("app"), anyList(), anyMap(), any())).thenReturn(List.of());
+
+        ActionResult result = h.service.execute(UserAction.nlpFilter("sess-cumulative", "airplane allowed"), 7L);
+
+        assertThat(result.filterTags()).extracting(FilterTag::filterPath)
+                .containsExactly("capabilities.airplane_allowed");
+        assertThat(result.filterTags()).extracting(FilterTag::label)
+                .containsExactly("airplane allowed");
+        assertThat(result.appliedFilter()).isEqualTo(applied);
+        verify(h.conversationManager).setFilterState("sess-cumulative", applied);
+        verify(h.nlpStateStackService).push(eq("sess-cumulative"), anyString(), eq("airplane allowed"),
+                same(applied),
+                argThat(tags -> tags != null
+                        && tags.stream().map(FilterTag::filterPath).toList().equals(List.of(
+                        "capabilities.airplane_allowed"))),
+                eq(List.of(product)));
+    }
+
+    @Test
+    void successfulNlpReplacesSameFilterPathInsteadOfDuplicatingTags() {
+        Harness h = harness();
+        ProductCard product = product("p1", "Product");
+        SearchFilter previousFilter = new SearchFilter(
+                new com.visioncart.api.dto.PriceRange(null, 50.0),
+                List.of(), null, List.of(), List.of(), null,
+                null, "desc", null, Map.of(), List.of(), Map.of());
+        SearchFilter applied = new SearchFilter(
+                new com.visioncart.api.dto.PriceRange(null, 30.0),
+                List.of(), null, List.of(), List.of(), null,
+                null, "desc", null, Map.of(), List.of(), Map.of());
+        List<FilterTag> previousTags = List.of(FilterTag.ofField("<=50", "price_range.max"));
+        SemanticActionPlan rawPlan = new SemanticActionPlan(
+                "filter_current_results", "STRICT_FILTER", "product",
+                List.of(new SemanticActionPlan.HardFilter("price", "<=", 30.0)),
+                null, null, null, null, "KEEP_PREVIOUS_RESULTS");
+        ActionResult executed = ActionResult.filtered(
+                List.of(product), applied, List.of(FilterTag.ofField("<=30", "price_range.max")),
+                true, "ok", List.of(), List.of());
+
+        when(h.nlpStateStackService.limitReached("sess-replace")).thenReturn(false);
+        when(h.nlpStateStackService.historyText("sess-replace")).thenReturn("1. under 50");
+        when(h.nlpStateStackService.peek("sess-replace")).thenReturn(Optional.of(
+                new NlpStateStackService.NlpState(
+                        "nlp-1", "under 50", previousFilter, previousTags,
+                        List.of(product), "2026-06-10T00:00:00Z")));
+        when(h.conversationManager.getFilterState("sess-replace")).thenReturn(previousFilter);
+        when(h.sessionCache.getBestCandidates("sess-replace")).thenReturn(List.of(product));
+        when(h.sessionContextService.resolve(eq("sess-replace"), eq(7L), any()))
+                .thenReturn(new SessionContextService.SessionContext(
+                        "sess-replace", "product", "product", "product", "main",
+                        Map.of(), Set.of("main"), true, "zh-CN"));
+        when(h.llmSemanticPlanner.plan(eq("under 30"), any(), any(), anyString()))
+                .thenReturn(rawPlan);
+        when(h.semanticExecutionPolicy.normalizeForSyncExecution(anyString(), same(rawPlan), anyInt()))
+                .thenReturn(rawPlan);
+        when(h.semanticActionExecutor.execute(eq("sess-replace"), anyList(), eq(SearchFilter.empty()),
+                same(rawPlan), anyList())).thenReturn(executed);
+        when(h.suggestionService.cards(eq("app"), anyList(), anyMap(), any())).thenReturn(List.of());
+
+        ActionResult result = h.service.execute(UserAction.nlpFilter("sess-replace", "under 30"), 7L);
+
+        assertThat(result.filterTags()).extracting(FilterTag::filterPath)
+                .containsExactly("price_range.max");
+        assertThat(result.filterTags()).extracting(FilterTag::label)
+                .containsExactly("<=30");
+        assertThat(result.filterTags()).extracting(FilterTag::label)
+                .doesNotContain("<=50");
+    }
+
+    @Test
+    void successfulNlpStoresFullExecutorStateWithDifferentPriceAttributeAndPreference() {
+        Harness h = harness();
+        ProductCard product = product("p1", "Wireless mouse");
+        SearchFilter applied = new SearchFilter(
+                new com.visioncart.api.dto.PriceRange(200.0, null),
+                List.of(), null, List.of(), List.of(), null,
+                null, "desc", null,
+                Map.of("\u8fde\u63a5\u65b9\u5f0f", "\u65e0\u7ebf"),
+                List.of(), Map.of());
+        List<FilterTag> fullStateTags = List.of(
+                FilterTag.ofField(">=200", "price_range.min"),
+                FilterTag.ofField("\u65e0\u7ebf", "attributes.\u8fde\u63a5\u65b9\u5f0f"),
+                FilterTag.ofPreference("commuting_friendly", "\u901a\u52e4\u8f7b\u4fbf", "\u901a\u52e4\u8f7b\u4fbf"));
+        SemanticActionPlan rawPlan = new SemanticActionPlan(
+                "filter_current_results", "COMBINED", "mouse",
+                List.of(
+                        new SemanticActionPlan.HardFilter("price", ">=", 200.0),
+                        new SemanticActionPlan.HardFilter(
+                                "attribute:\u8fde\u63a5\u65b9\u5f0f", "equals", "\u65e0\u7ebf")),
+                null,
+                List.of(new SemanticActionPlan.PreferenceRule(
+                        "commuting_friendly", "\u901a\u52e4\u8f7b\u4fbf", 0.8)),
+                null, null, "KEEP_PREVIOUS_RESULTS");
+        ActionResult executed = ActionResult.filtered(
+                List.of(product), applied, fullStateTags, true, "ok", List.of(), List.of());
+
+        when(h.nlpStateStackService.limitReached("sess-full-state")).thenReturn(false);
+        when(h.nlpStateStackService.historyText("sess-full-state"))
+                .thenReturn("1. budget above 200");
+        when(h.conversationManager.getFilterState("sess-full-state")).thenReturn(SearchFilter.empty());
+        when(h.sessionCache.getBestCandidates("sess-full-state")).thenReturn(List.of(product));
+        when(h.filterService.filter(anyList(), any(), anyMap(), anyInt(), anyInt()))
+                .thenReturn(new CandidateFilterService.FilterResult(List.of(product), 1, 1, false, false));
+        when(h.sessionContextService.resolve(eq("sess-full-state"), eq(7L), any()))
+                .thenReturn(new SessionContextService.SessionContext(
+                        "sess-full-state", "mouse", "mouse", "mouse", "main",
+                        Map.of(), Set.of("main"), true, "zh-CN"));
+        when(h.llmSemanticPlanner.plan(eq("wireless commute mouse"), any(), any(), anyString()))
+                .thenReturn(rawPlan);
+        when(h.semanticExecutionPolicy.normalizeForSyncExecution(anyString(), same(rawPlan), anyInt()))
+                .thenReturn(rawPlan);
+        when(h.semanticActionExecutor.execute(eq("sess-full-state"), anyList(), eq(SearchFilter.empty()),
+                same(rawPlan), anyList())).thenReturn(executed);
+        when(h.suggestionService.cards(eq("app"), anyList(), anyMap(), any())).thenReturn(List.of());
+
+        ActionResult result = h.service.execute(
+                UserAction.nlpFilter("sess-full-state", "wireless commute mouse"), 7L);
+
+        assertThat(result.appliedFilter()).isEqualTo(applied);
+        assertThat(result.filterTags()).extracting(FilterTag::filterPath)
+                .containsExactly("price_range.min",
+                        "attributes.\u8fde\u63a5\u65b9\u5f0f",
+                        "preferences.commuting_friendly");
+        verify(h.nlpStateStackService).push(eq("sess-full-state"), anyString(), eq("wireless commute mouse"),
+                same(applied), eq(fullStateTags), eq(List.of(product)));
+    }
+
+    @Test
     void clearFilterClearsNlpStateStackAndUndoStack() {
         Harness h = harness();
         ProductCard product = product("p1", "Product");
@@ -132,6 +357,7 @@ class ActionExecutionServiceBoundaryTest {
         ActionResult result = h.service.execute(new UserAction(
                 "clear-1", "clear_filter", "sess-clear", "clear filters",
                 new UserAction.ActionPayload("clear_all", null, null, null, null, null, null, null),
+                null,
                 null), 7L);
 
         assertThat(result.appliedFilter()).isEqualTo(SearchFilter.empty());

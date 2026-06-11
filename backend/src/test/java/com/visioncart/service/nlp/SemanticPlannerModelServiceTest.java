@@ -105,6 +105,86 @@ class SemanticPlannerModelServiceTest {
         assertThat(plan.judge()).isNull();
     }
 
+    @Test
+    void dropsAttributeFilterNotMentionedByUserEvenWhenProductContextContainsIt() {
+        mockLlmResponse("""
+                {
+                  "intent": "filter_current_results",
+                  "execution_mode": "COMBINED",
+                  "hard_filters": [
+                    {"field": "price", "operator": "<=", "value": 50},
+                    {"field": "attribute:\u7c7b\u578b", "operator": "equals", "value": "\u6709\u7ebf"}
+                  ],
+                  "preferences": [
+                    {"code": "appearance", "userMeaning": "\u9002\u5408\u5e74\u8f7b\u4eba", "weight": 0.8}
+                  ],
+                  "zero_result_policy": "KEEP_PREVIOUS_RESULTS"
+                }
+                """);
+
+        var plan = service.plan(
+                "\u6211\u8981\u6bd4\u8f83\u9002\u5408\u5e74\u8f7b\u4eba\u7684\u6b3e\u5f0f",
+                "mouse",
+                "\u6709\u7ebf\u9f20\u6807",
+                "1. \u6211\u8981\u4f4e\u4e8e50\u7684");
+
+        assertThat(plan.hardFilters()).extracting(com.visioncart.api.dto.SemanticActionPlan.HardFilter::field)
+                .containsExactly("price");
+        assertThat(plan.preferences()).hasSize(1);
+    }
+
+    @Test
+    void keepsAttributeFilterMentionedInHistoryWhenCurrentAddsPreference() {
+        mockLlmResponse("""
+                {
+                  "intent": "filter_current_results",
+                  "execution_mode": "COMBINED",
+                  "hard_filters": [
+                    {"field": "price", "operator": "<=", "value": 50},
+                    {"field": "attribute:\u7c7b\u578b", "operator": "equals", "value": "\u6709\u7ebf"}
+                  ],
+                  "preferences": [
+                    {"code": "appearance", "userMeaning": "\u9002\u5408\u5e74\u8f7b\u4eba", "weight": 0.8}
+                  ],
+                  "zero_result_policy": "KEEP_PREVIOUS_RESULTS"
+                }
+                """);
+
+        var plan = service.plan(
+                "\u9002\u5408\u5e74\u8f7b\u4eba\u7684\u6b3e\u5f0f",
+                "mouse",
+                "\u6709\u7ebf\u9f20\u6807",
+                "1. \u6211\u8981\u4f4e\u4e8e50\u7684\n2. \u6211\u8981\u6709\u7ebf\u7684");
+
+        assertThat(plan.hardFilters()).extracting(com.visioncart.api.dto.SemanticActionPlan.HardFilter::field)
+                .containsExactly("price", "attribute:\u7c7b\u578b");
+    }
+
+    @Test
+    void keepsAttributeFiltersMentionedByCurrentInput() {
+        mockLlmResponse("""
+                {
+                  "intent": "filter_current_results",
+                  "execution_mode": "STRICT_FILTER",
+                  "hard_filters": [
+                    {"field": "attribute:\u63a5\u53e3", "operator": "equals", "value": "Type-C"},
+                    {"field": "attribute:\u6750\u8d28", "operator": "equals", "value": "\u7845\u80f6"},
+                    {"field": "attribute:\u6b3e\u5f0f", "operator": "equals", "value": "\u900f\u660e"}
+                  ],
+                  "zero_result_policy": "KEEP_PREVIOUS_RESULTS"
+                }
+                """);
+
+        var plan = service.plan(
+                "\u6211\u8981Type-C\u63a5\u53e3\u3001\u7845\u80f6\u6750\u8d28\u3001\u900f\u660e\u6b3e",
+                "phone_case",
+                "\u624b\u673a\u58f3",
+                "");
+
+        assertThat(plan.hardFilters()).extracting(com.visioncart.api.dto.SemanticActionPlan.HardFilter::field)
+                .containsExactly("attribute:\u63a5\u53e3", "attribute:\u6750\u8d28", "attribute:\u6b3e\u5f0f");
+    }
+
     private void mockLlmResponse(String response) {
         ChatClient.Builder builder = mock(ChatClient.Builder.class);
         ChatClient chatClient = mock(ChatClient.class);

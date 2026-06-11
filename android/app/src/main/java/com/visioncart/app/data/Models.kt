@@ -38,7 +38,8 @@ data class SearchRequest(
     val filter: SearchFilter = SearchFilter(),
     val page: Int = 1,
     @Json(name = "page_size") val pageSize: Int = 50,
-    @Json(name = "client_type") val clientType: String = "app"
+    @Json(name = "client_type") val clientType: String = "app",
+    @Json(name = "region_mode") val regionMode: String = "auto"
 )
 
 data class SearchFilter(
@@ -190,7 +191,8 @@ data class NlpParseResult(
 data class NlpFilterRequest(
     @Json(name = "session_id") val sessionId: String,
     @Json(name = "user_input") val userInput: String,
-    val context: NlpContext? = null
+    val context: NlpContext? = null,
+    @Json(name = "region_mode") val regionMode: String = "auto"
 )
 
 data class NlpFilterResult(
@@ -234,7 +236,8 @@ data class UserActionRequest(
     @Json(name = "session_id") val sessionId: String,
     @Json(name = "raw_text") val rawText: String? = null,
     val payload: UserActionPayload? = null,
-    @Json(name = "client_request_id") val clientRequestId: String? = null
+    @Json(name = "client_request_id") val clientRequestId: String? = null,
+    @Json(name = "region_mode") val regionMode: String = "auto"
 )
 
 data class UserActionPayload(

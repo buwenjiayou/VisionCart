@@ -115,7 +115,8 @@ public class NlpFilterController {
                 try {
                     Map<String, String> reSearchAttributes = buildReSearchAttributes(sessionId, request.context());
                     SearchRequest reSearchRequest = new SearchRequest(
-                            sessionId, reSearchAttributes, SearchFilter.empty(), 1, 50, 300, "overlay");
+                            sessionId, reSearchAttributes, SearchFilter.empty(), 1, 50, 300,
+                            "overlay", request.regionMode());
                     SearchResult reSearchResult = searchOrchestrator.search(reSearchRequest);
                     if (reSearchResult.products() != null && !reSearchResult.products().isEmpty()) {
                         log.info("Re-search found {} candidates for session {}", reSearchResult.products().size(), sessionId);
@@ -311,7 +312,8 @@ public class NlpFilterController {
                             null, tentativeFilter.platforms(), null, null, null, null, null, null,
                             null, Map.of(), List.of(), Map.of());
                     SearchRequest expandRequest = new SearchRequest(
-                            sessionId, attributes, broadFilter, 1, 50, 1000, "overlay");
+                            sessionId, attributes, broadFilter, 1, 50, 1000,
+                            "overlay", request.regionMode());
                     searchOrchestrator.search(expandRequest);
                     List<ProductCard> expandedCandidates = sessionCache.getBestCandidates(sessionId);
                     if (!expandedCandidates.isEmpty() && expandedCandidates.size() > candidates.size()) {

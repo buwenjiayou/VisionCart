@@ -83,6 +83,7 @@ public class SearchOrchestrator {
     private final QueryPlanner queryPlanner;
     private final IntentGate intentGate;
     private final com.visioncart.service.search.strategy.VerticalStrategyRegistry strategyRegistry;
+    private final OverseasEnglishIntentMatcher overseasEnglishIntentMatcher;
     private final Map<String, String> localSearchRuns = new java.util.concurrent.ConcurrentHashMap<>();
 
     public SearchOrchestrator(List<PlatformSearchService> platformServices,
@@ -107,7 +108,8 @@ public class SearchOrchestrator {
                               ProductIntentBuilder productIntentBuilder,
                               QueryPlanner queryPlanner,
                               IntentGate intentGate,
-                              com.visioncart.service.search.strategy.VerticalStrategyRegistry strategyRegistry) {
+                              com.visioncart.service.search.strategy.VerticalStrategyRegistry strategyRegistry,
+                              OverseasEnglishIntentMatcher overseasEnglishIntentMatcher) {
         this.platformServices = platformServices;
         this.deduplicator = deduplicator;
         this.ranker = ranker;
@@ -134,6 +136,7 @@ public class SearchOrchestrator {
         this.queryPlanner = queryPlanner;
         this.intentGate = intentGate;
         this.strategyRegistry = strategyRegistry;
+        this.overseasEnglishIntentMatcher = overseasEnglishIntentMatcher;
     }
 
     /**
@@ -149,12 +152,42 @@ public class SearchOrchestrator {
         return enrichRatingLabels(products);
     }
 
+    private RegionResolver.RegionDecision resolveRegionDecision(SearchRequest request) {
+        return regionResolver.resolve(request == null ? null : request.regionMode());
+    }
+
+    private void logRegionDecision(SearchRequest request,
+                                   RegionResolver.RegionDecision decision,
+                                   boolean domestic,
+                                   List<PlatformSearchService> eligible) {
+        List<String> eligiblePlatforms = eligible == null ? List.of()
+                : eligible.stream().map(PlatformSearchService::platform).toList();
+        if (decision == null) {
+            log.info("Search region decision: sessionId={}, requestedMode=legacy, effectiveMode={}, source=explicit-boolean, domestic={}, eligiblePlatforms={}",
+                    request == null ? null : request.sessionId(),
+                    domestic ? "domestic" : "international",
+                    domestic,
+                    eligiblePlatforms);
+            return;
+        }
+        log.info("Search region decision: sessionId={}, requestedMode={}, effectiveMode={}, source={}, domestic={}, clientIp={}, remoteAddr={}, country={}, eligiblePlatforms={}",
+                request == null ? null : request.sessionId(),
+                decision.requestedMode(),
+                decision.effectiveMode(),
+                decision.source(),
+                domestic,
+                decision.clientIp(),
+                decision.remoteAddr(),
+                decision.countryCode(),
+                eligiblePlatforms);
+    }
+
     public SearchResult search(SearchRequest request) {
-        return search(request, regionResolver.isDomestic());
+        return search(request, resolveRegionDecision(request));
     }
 
     public SearchResult search(SearchRequest request, Long userId) {
-        return search(request, regionResolver.isDomestic(), userId);
+        return search(request, resolveRegionDecision(request), userId);
     }
 
     public SearchResult search(SearchRequest request, boolean domestic) {
@@ -162,6 +195,20 @@ public class SearchOrchestrator {
     }
 
     public SearchResult search(SearchRequest request, boolean domestic, Long userId) {
+        return search(request, null, domestic, userId);
+    }
+
+    private SearchResult search(SearchRequest request, RegionResolver.RegionDecision regionDecision) {
+        return search(request, regionDecision, null);
+    }
+
+    private SearchResult search(SearchRequest request, RegionResolver.RegionDecision regionDecision, Long userId) {
+        boolean domestic = regionDecision == null || regionDecision.domestic();
+        return search(request, regionDecision, domestic, userId);
+    }
+
+    private SearchResult search(SearchRequest request, RegionResolver.RegionDecision regionDecision,
+                                boolean domestic, Long userId) {
         // Idempotent lock: prevent duplicate searches for the same session
         String sessionId = request.sessionId();
         String lockKey = null;
@@ -174,7 +221,8 @@ public class SearchOrchestrator {
             // Lock key includes filter+attributes+recallSize hash so different searches don't collide
             String lockInput = request.effectiveFilter().toString()
                     + "|" + (request.attributes() != null ? request.attributes().toString() : "")
-                    + "|recall=" + request.effectiveRecallSize();
+                    + "|recall=" + request.effectiveRecallSize()
+                    + "|region=" + (domestic ? "domestic" : "international");
             lockHash = HashUtils.md5Hex(lockInput);
             lockKey = SEARCH_LOCK_PREFIX + sessionId + ":" + lockHash.substring(0, 8);
             lockValue = java.util.UUID.randomUUID().toString();
@@ -201,7 +249,7 @@ public class SearchOrchestrator {
 
         try {
             String searchRunToken = beginSearchRun(sessionId);
-            return doSearch(request, domestic, userId, searchRunToken, lockHash);
+            return doSearch(request, domestic, userId, searchRunToken, lockHash, regionDecision);
         } finally {
             // Only release lock if this thread acquired it (atomic check-and-delete via Lua)
             if (lockAcquired && lockKey != null) {
@@ -260,7 +308,8 @@ public class SearchOrchestrator {
     }
 
     private SearchResult doSearch(SearchRequest request, boolean domestic, Long userId,
-                                  String searchRunToken, String searchIdentity) {
+                                  String searchRunToken, String searchIdentity,
+                                  RegionResolver.RegionDecision regionDecision) {
         // Start total search timer
         io.micrometer.core.instrument.Timer.Sample searchTimer = metricsService.startSearchTotalTimer();
 
@@ -322,7 +371,7 @@ public class SearchOrchestrator {
                 List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> cachedClassified;
                 boolean hasIntent = productIntent != null && !productIntent.canonicalProduct().isBlank();
                 if (hasIntent) {
-                    cachedClassified = cachedStrategy.classifyAll(cached, productIntent);
+                    cachedClassified = classifyAllForRegion(domestic, cachedStrategy, cached, productIntent);
                 } else {
                     cachedClassified = cached.stream()
                             .map(p -> new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(
@@ -331,8 +380,9 @@ public class SearchOrchestrator {
                 }
                 SearchCandidatePool cachedPool = new SearchCandidatePool(
                         request.sessionId(), searchRunToken, searchIdentity,
-                        productIntent, cachedStrategy.getClass().getSimpleName(),
-                        filter, cachedClassified, cached.size(), cached, filter, filter.sortBy(), page);
+                        productIntent, classificationPathName(domestic, cachedStrategy),
+                        filter, cachedClassified, cached.size(), cached, filter, filter.sortBy(), page,
+                        domestic);
                 sessionCache.saveClassifiedPool(request.sessionId(), cachedPool);
             }
             List<SuggestionCard> cards = mergeInsightCards(request.sessionId(), searchRunToken, request.clientType(), cached, attributes, filter,
@@ -354,6 +404,7 @@ public class SearchOrchestrator {
                     return cfg.isEnabled() && matchesRegionStrategy(cfg, domestic);
                 })
                 .toList();
+        logRegionDecision(request, regionDecision, domestic, eligible);
         String sessionId = request.sessionId();
 
         // Submit all platform searches in parallel via CompletionService (completion-order collection)
@@ -385,7 +436,7 @@ public class SearchOrchestrator {
                 // Push partial results to client via WebSocket (staged delivery)
                 if (sessionId != null && !sessionId.isBlank()
                         && isCurrentSearchRun(sessionId, searchRunToken)) {
-                    sendSearchProgress(sessionId, all, request, searchRunToken, productIntent, strategy);
+                    sendSearchProgress(sessionId, all, request, searchRunToken, productIntent, strategy, domestic);
                 }
             }
         }
@@ -396,7 +447,7 @@ public class SearchOrchestrator {
         List<ProductCard> scored = ranker.withSimilarity(all, intent);
         List<ProductCard> deduped = deduplicator.deduplicate(scored);
         List<ProductCard> afterFilter = applyFilter(deduped, filter);
-        List<ProductCard> filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount);
+        List<ProductCard> filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount, domestic);
         if (filtered.size() < targetCount) {
             Map<String, String> supplementalAttributes = supplementalAttributes(attributes);
             if (!supplementalAttributes.equals(attributes)) {
@@ -438,7 +489,7 @@ public class SearchOrchestrator {
                     afterFilter = applyFilter(deduped, filter);
                     // Problem 3 fix: use the ORIGINAL productIntent for filtering (not the supplemental one)
                     // because supplementalAttributes strips brand info — we still want brand-gated filtering
-                    filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount);
+                    filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount, domestic);
                     all = merged;
                     log.info("Supplemental recall: {} products, intentFiltered={}", supplemental.size(), filtered.size());
                 }
@@ -478,13 +529,13 @@ public class SearchOrchestrator {
                 scored = ranker.withSimilarity(merged, intent);
                 deduped = deduplicator.deduplicate(scored);
                 afterFilter = applyFilter(deduped, filter);
-                filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount);
+                filtered = applyIntentFilter(afterFilter, intent, productIntent, filter, targetCount, domestic);
                 all = merged;
                 log.info("Fallback recall: {} products, intentFiltered={}", fallback.size(), filtered.size());
             }
         }
 
-        List<ProductCard> ranked = rankForIntent(filtered, productIntent, strategy, intent, filter);
+        List<ProductCard> ranked = rankForIntent(filtered, productIntent, strategy, intent, filter, domestic);
         log.info("Filter pipeline: {} raw -> {} deduped -> {} afterFilter -> {} intentFiltered -> {} ranked",
                 all.size(), deduped.size(), afterFilter.size(), filtered.size(), ranked.size());
 
@@ -502,8 +553,8 @@ public class SearchOrchestrator {
             List<ProductCard> relaxedScored = ranker.withSimilarity(all, relaxedIntent);
             List<ProductCard> relaxedFiltered = applyIntentFilter(
                     applyFilter(deduplicator.deduplicate(relaxedScored), filter),
-                    relaxedIntent, relaxedProductIntent, filter, targetCount);
-            ranked = rankForIntent(relaxedFiltered, relaxedProductIntent, strategy, relaxedIntent, filter);
+                    relaxedIntent, relaxedProductIntent, filter, targetCount, domestic);
+            ranked = rankForIntent(relaxedFiltered, relaxedProductIntent, strategy, relaxedIntent, filter, domestic);
             relaxed = !ranked.isEmpty();
             if (relaxed) {
                 // 品牌降级成功：重建 classifiedPool 使用放宽后的 intent
@@ -548,7 +599,7 @@ public class SearchOrchestrator {
             List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> classifiedPool;
             if (hasProductIntent) {
                 // 有垂直意图：用策略的 classify 做精细分类
-                classifiedPool = resolvedStrategy.classifyAll(afterFilter, productIntent);
+                classifiedPool = classifyAllForRegion(domestic, resolvedStrategy, afterFilter, productIntent);
             } else {
                 // 无垂直意图：所有商品统一归为 EXACT_MAIN（保持排序即可）
                 classifiedPool = afterFilter.stream()
@@ -558,13 +609,14 @@ public class SearchOrchestrator {
             }
             SearchCandidatePool pool = new SearchCandidatePool(
                     sessionId, searchRunToken, searchIdentity,
-                    productIntent, resolvedStrategy.getClass().getSimpleName(),
-                    filter, classifiedPool, all.size(), all, filter, filter.sortBy(), rawPage);
+                    productIntent, classificationPathName(domestic, resolvedStrategy),
+                    filter, classifiedPool, all.size(), all, filter, filter.sortBy(), rawPage,
+                    domestic);
             sessionCache.saveClassifiedPool(sessionId, pool);
             classifiedPoolSize = classifiedPool.size();
             log.info("Saved classifiedPool: {} products (from {} afterFilter), hasIntent={}, strategy={}",
                     classifiedPoolSize, afterFilter.size(), hasProductIntent,
-                    resolvedStrategy.getClass().getSimpleName());
+                    classificationPathName(domestic, resolvedStrategy));
 
             // Send final WebSocket message with staging=false to indicate search completion
             // totalCount 使用 classifiedPool.size() 而非 displayPage.size()
@@ -591,8 +643,8 @@ public class SearchOrchestrator {
         }
 
         telemetry.put("relaxed", relaxed)
-                .put("tierCounts", tierCounts(ranked, productIntent, strategy))
-                .put("top20", top20TierShare(ranked, productIntent, strategy))
+                .put("tierCounts", tierCounts(ranked, productIntent, strategy, domestic))
+                .put("top20", top20TierShare(ranked, productIntent, strategy, domestic))
                 .recordLatency(Duration.ofNanos(System.nanoTime() - telemetryStartNanos));
         log.info("SearchTelemetry {}", telemetry.fields());
 
@@ -628,12 +680,13 @@ public class SearchOrchestrator {
 
         // 2. tier-aware 排序（每个 tier 内按用户排序）
         List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> sorted =
-                intentAwareSorter.sortClassified(filteredPool, newFilter);
+                sortClassifiedForRegion(pool.isDomestic(), filteredPool, newFilter, pool.productIntent());
 
         // 3. mix 生成 displayPage
         com.visioncart.service.search.strategy.VerticalSearchStrategy strategy =
                 strategyRegistry.resolve(pool.productIntent());
-        List<ProductCard> displayPage = strategy.mix(pool.productIntent(), sorted, pageSize);
+        List<ProductCard> displayPage = mixForRegion(
+                pool.isDomestic(), strategy, pool.productIntent(), sorted, pageSize);
 
         // 4. 口碑标注 + 平台多样化（仅在 displayPage 上）
         displayPage = enrichRatingLabels(displayPage, newFilter);
@@ -914,7 +967,7 @@ public class SearchOrchestrator {
             return PlatformSearchOutcome.skipped(ps.platform(), "disabled");
         }
 
-        // Region strategy filtering (replaces simple domesticOnly() check)
+        // Region strategy filtering is the single source of truth for platform routing.
         if (!matchesRegionStrategy(platformConfig, domestic)) {
             log.info("Platform {} regionStrategy={} not suitable for {} request, skipping",
                     ps.platform(), platformConfig.getRegionStrategy(), domestic ? "domestic" : "international");
@@ -1000,7 +1053,8 @@ public class SearchOrchestrator {
 
     private void sendSearchProgress(String sessionId, List<ProductCard> products, SearchRequest request,
                                      String searchRunToken, ProductIntent productIntent,
-                                     com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
+                                     com.visioncart.service.search.strategy.VerticalSearchStrategy strategy,
+                                     boolean domestic) {
         try {
             if (!isCurrentSearchRun(sessionId, searchRunToken)) {
                 return;
@@ -1018,7 +1072,7 @@ public class SearchOrchestrator {
             if (productIntent != null && !productIntent.canonicalProduct().isBlank() && strategy != null) {
                 valid = valid.stream()
                         .filter(p -> {
-                            IntentGate.IntentTier tier = strategy.classify(productIntent, p);
+                            IntentGate.IntentTier tier = classifyForRegion(domestic, strategy, productIntent, p);
                             return tier != IntentGate.IntentTier.REJECT;
                         })
                         .toList();
@@ -1432,14 +1486,19 @@ public class SearchOrchestrator {
     }
 
     private List<ProductCard> applyIntentFilter(List<ProductCard> products, SearchIntent intent,
-                                                 ProductIntent productIntent, SearchFilter filter, int targetCount) {
+                                                 ProductIntent productIntent, SearchFilter filter,
+                                                 int targetCount, boolean domestic) {
         if (!intent.hasSpecificSignals()) {
             return products;
         }
 
         // 有 ProductIntent 时使用垂直策略分层过滤
         if (productIntent != null && !productIntent.canonicalProduct().isBlank()) {
-            return strategyFilter(products, productIntent, intent, filter, targetCount);
+            return strategyFilter(products, productIntent, intent, filter, targetCount, domestic);
+        }
+
+        if (!domestic) {
+            return products;
         }
 
         // 降级：使用 RelevanceRanker 的 tier 过滤
@@ -1476,7 +1535,8 @@ public class SearchOrchestrator {
      * 而是用放宽的策略重新分类（去掉品牌硬约束）。
      */
     private List<ProductCard> strategyFilter(List<ProductCard> products, ProductIntent productIntent,
-                                              SearchIntent intent, SearchFilter filter, int targetCount) {
+                                              SearchIntent intent, SearchFilter filter, int targetCount,
+                                              boolean domestic) {
         com.visioncart.service.search.strategy.VerticalSearchStrategy strategy =
                 strategyRegistry.resolve(productIntent);
 
@@ -1484,7 +1544,7 @@ public class SearchOrchestrator {
         List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> classified =
                 products.stream()
                         .map(p -> new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(
-                                p, strategy.classify(productIntent, p)))
+                                p, classifyForRegion(domestic, strategy, productIntent, p)))
                         .toList();
 
         // 统计分类结果
@@ -1497,9 +1557,9 @@ public class SearchOrchestrator {
 
         // 使用策略的 mix 方法混合结果
         List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> sortedClassified =
-                intentAwareSorter.sortClassified(classified, filter);
+                sortClassifiedForRegion(domestic, classified, filter, productIntent);
         int mixTargetCount = displayCandidateWindow(productIntent, targetCount, sortedClassified.size());
-        List<ProductCard> result = strategy.mix(productIntent, sortedClassified, mixTargetCount);
+        List<ProductCard> result = mixForRegion(domestic, strategy, productIntent, sortedClassified, mixTargetCount);
 
         // P0-1 fix: 策略返回空时，先尝试策略自身的放宽（去掉品牌约束）。
         // 仍为空时，用 ranker REJECTED 兜底（保留非 REJECT 商品），但不再绕开策略。
@@ -1508,12 +1568,14 @@ public class SearchOrchestrator {
             List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> relaxedClassified =
                     products.stream()
                             .map(p -> new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(
-                                    p, strategy.classify(relaxedIntent, p)))
+                                    p, classifyForRegion(domestic, strategy, relaxedIntent, p)))
                             .toList();
             int relaxedMixTargetCount = displayCandidateWindow(
                     relaxedIntent, targetCount, relaxedClassified.size());
-            List<ProductCard> relaxedResult = strategy.mix(
-                    relaxedIntent, intentAwareSorter.sortClassified(relaxedClassified, filter), relaxedMixTargetCount);
+            List<ProductCard> relaxedResult = mixForRegion(
+                    domestic, strategy, relaxedIntent,
+                    sortClassifiedForRegion(domestic, relaxedClassified, filter, relaxedIntent),
+                    relaxedMixTargetCount);
             if (!relaxedResult.isEmpty()) {
                 log.info("Strategy relaxed (no brand): {} products", relaxedResult.size());
                 return relaxedResult;
@@ -1531,22 +1593,6 @@ public class SearchOrchestrator {
      * Problem 1 fix: 按 IntentTier 排序，确保 EXACT_MAIN 排在 RELATED_ACCESSORY 前面。
      * 解决 RELATED_ACCESSORY 靠低价/高销量/口碑排序压过 EXACT_MAIN 的问题。
      */
-    private List<ProductCard> applyTierSort(List<ProductCard> products,
-                                             ProductIntent productIntent,
-                                             com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
-        if (productIntent == null || productIntent.canonicalProduct().isBlank() || products.size() <= 1) {
-            return products;
-        }
-        Map<String, IntentGate.IntentTier> tierMap = new LinkedHashMap<>();
-        for (ProductCard p : products) {
-            tierMap.put(p.id(), strategy.classify(productIntent, p));
-        }
-        return products.stream()
-                .sorted(Comparator.comparingInt(
-                        (ProductCard p) -> tierOrdinal(tierMap.getOrDefault(p.id(), IntentGate.IntentTier.REJECT))))
-                .toList();
-    }
-
     private int tierOrdinal(IntentGate.IntentTier tier) {
         return switch (tier) {
             case EXACT_MAIN -> 0;
@@ -1562,12 +1608,23 @@ public class SearchOrchestrator {
                                              ProductIntent productIntent,
                                              com.visioncart.service.search.strategy.VerticalSearchStrategy strategy,
                                              SearchIntent intent,
-                                             SearchFilter filter) {
+                                             SearchFilter filter,
+                                             boolean domestic) {
         if (products == null || products.isEmpty()) {
             return List.of();
         }
         if (productIntent != null && !productIntent.canonicalProduct().isBlank() && strategy != null) {
-            return intentAwareSorter.sortProducts(products, productIntent, strategy, filter);
+            if (domestic) {
+                return intentAwareSorter.sortProducts(products, productIntent, strategy, filter);
+            }
+            return sortClassifiedForRegion(false,
+                    classifyAllForRegion(false, strategy, products, productIntent),
+                    filter, productIntent).stream()
+                    .map(com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct::product)
+                    .toList();
+        }
+        if (!domestic) {
+            return applySort(products, filter);
         }
         return applySort(ranker.rank(products, intent), filter);
     }
@@ -1587,31 +1644,109 @@ public class SearchOrchestrator {
         return productSortService.applySort(products, filter);
     }
 
+    private IntentGate.IntentTier classifyForRegion(
+            boolean domestic,
+            com.visioncart.service.search.strategy.VerticalSearchStrategy strategy,
+            ProductIntent productIntent,
+            ProductCard product) {
+        if (domestic) {
+            return strategy.classify(productIntent, product);
+        }
+        return overseasEnglishIntentMatcher.classify(productIntent, product);
+    }
+
+    private List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> classifyAllForRegion(
+            boolean domestic,
+            com.visioncart.service.search.strategy.VerticalSearchStrategy strategy,
+            List<ProductCard> products,
+            ProductIntent productIntent) {
+        if (products == null || products.isEmpty()) {
+            return List.of();
+        }
+        if (domestic) {
+            return strategy.classifyAll(products, productIntent);
+        }
+        return products.stream()
+                .map(product -> new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(
+                        product, classifyForRegion(false, strategy, productIntent, product)))
+                .filter(classified -> classified.tier() != IntentGate.IntentTier.REJECT)
+                .toList();
+    }
+
+    private List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> sortClassifiedForRegion(
+            boolean domestic,
+            List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> classified,
+            SearchFilter filter,
+            ProductIntent productIntent) {
+        if (domestic) {
+            return intentAwareSorter.sortClassified(classified, filter, productIntent);
+        }
+        if (classified == null || classified.size() <= 1) {
+            return classified == null ? List.of() : classified;
+        }
+        List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> sorted = new ArrayList<>();
+        for (IntentGate.IntentTier tier : java.util.Arrays.stream(IntentGate.IntentTier.values())
+                .sorted(Comparator.comparingInt(this::tierOrdinal))
+                .toList()) {
+            List<ProductCard> tierProducts = classified.stream()
+                    .filter(item -> item.tier() == tier)
+                    .map(com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct::product)
+                    .toList();
+            for (ProductCard product : overseasEnglishIntentMatcher.sortWithinTier(
+                    productIntent, productSortService.applySort(tierProducts, filter))) {
+                sorted.add(new com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct(product, tier));
+            }
+        }
+        return sorted;
+    }
+
+    private List<ProductCard> mixForRegion(
+            boolean domestic,
+            com.visioncart.service.search.strategy.VerticalSearchStrategy strategy,
+            ProductIntent productIntent,
+            List<com.visioncart.service.search.strategy.VerticalSearchStrategy.ClassifiedProduct> classified,
+            int pageSize) {
+        if (domestic) {
+            return strategy.mix(productIntent, classified, pageSize);
+        }
+        return com.visioncart.service.search.strategy.ResultMixer.mix(
+                classified, strategy.policy(productIntent), pageSize);
+    }
+
+    private String classificationPathName(
+            boolean domestic,
+            com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
+        String base = strategy == null ? "UnknownStrategy" : strategy.getClass().getSimpleName();
+        return domestic ? base : "OverseasEnglishIntentMatcher(" + base + ")";
+    }
+
     private Map<IntentGate.IntentTier, Long> tierCounts(List<ProductCard> products,
                                                          ProductIntent productIntent,
-                                                         com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
+                                                         com.visioncart.service.search.strategy.VerticalSearchStrategy strategy,
+                                                         boolean domestic) {
         if (productIntent == null || strategy == null || products == null) {
             return Map.of();
         }
         return products.stream()
-                .collect(Collectors.groupingBy(product -> strategy.classify(productIntent, product),
+                .collect(Collectors.groupingBy(product -> classifyForRegion(domestic, strategy, productIntent, product),
                         java.util.LinkedHashMap::new,
                         Collectors.counting()));
     }
 
     private Map<String, Long> top20TierShare(List<ProductCard> products,
                                              ProductIntent productIntent,
-                                             com.visioncart.service.search.strategy.VerticalSearchStrategy strategy) {
+                                             com.visioncart.service.search.strategy.VerticalSearchStrategy strategy,
+                                             boolean domestic) {
         if (productIntent == null || strategy == null || products == null) {
             return Map.of();
         }
         Map<String, Long> result = new LinkedHashMap<>();
         List<ProductCard> top20 = products.stream().limit(20).toList();
         long exact = top20.stream()
-                .filter(product -> strategy.classify(productIntent, product) == IntentGate.IntentTier.EXACT_MAIN)
+                .filter(product -> classifyForRegion(domestic, strategy, productIntent, product) == IntentGate.IntentTier.EXACT_MAIN)
                 .count();
         long related = top20.stream()
-                .filter(product -> strategy.classify(productIntent, product) == IntentGate.IntentTier.RELATED_ACCESSORY)
+                .filter(product -> classifyForRegion(domestic, strategy, productIntent, product) == IntentGate.IntentTier.RELATED_ACCESSORY)
                 .count();
         result.put("exactMain", exact);
         result.put("relatedAccessory", related);

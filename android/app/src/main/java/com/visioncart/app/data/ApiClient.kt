@@ -69,7 +69,8 @@ data class SuggestionExecuteResult(
 )
 
 data class ProductSelectionRequest(
-    val candidate_id: String
+    val candidate_id: String,
+    val region_mode: String = "auto"
 )
 
 data class FavoriteRequest(
@@ -203,7 +204,8 @@ interface VisionCartApi {
     @POST("/api/v1/recognition/analyze")
     suspend fun analyzeImage(
         @Part image: MultipartBody.Part,
-        @Part("region") region: okhttp3.RequestBody? = null
+        @Part("region") region: okhttp3.RequestBody? = null,
+        @Part("region_mode") regionMode: okhttp3.RequestBody? = null
     ): ApiResponse<AsyncRecognitionResponse>
 
     @GET("/api/v1/recognition/status/{sessionId}")

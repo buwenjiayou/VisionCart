@@ -162,6 +162,78 @@ class ActionUndoControllerTest {
         verify(sessionHistoryService).archiveDisplayedProducts("sess-nlp-undo", firstProducts);
     }
 
+    @Test
+    void suggestionUndoKeepsCurrentNlpTagsWithoutPoppingNlpState() {
+        NlpUndoService undoService = mock(NlpUndoService.class);
+        NlpConversationManager conversationManager = mock(NlpConversationManager.class);
+        CandidateSessionCache sessionCache = mock(CandidateSessionCache.class);
+        CandidateFilterService filterService = mock(CandidateFilterService.class);
+        AsyncRecognitionTaskManager taskManager = mock(AsyncRecognitionTaskManager.class);
+        RecognitionHistoryRepository historyRepository = mock(RecognitionHistoryRepository.class);
+        SessionHistoryService sessionHistoryService = mock(SessionHistoryService.class);
+        ActionExecutionService actionExecutionService = mock(ActionExecutionService.class);
+        SearchRunService searchRunService = mock(SearchRunService.class);
+        NlpStateStackService nlpStateStackService = mock(NlpStateStackService.class);
+
+        ActionUndoController controller = new ActionUndoController(
+                undoService,
+                conversationManager,
+                sessionCache,
+                filterService,
+                taskManager,
+                historyRepository,
+                sessionHistoryService,
+                actionExecutionService,
+                new ObjectMapper(),
+                searchRunService,
+                nlpStateStackService);
+
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new JwtAuthenticationFilter.AuthPrincipal(7L, "u@example.com"), null, List.of()));
+
+        SearchFilter restoredFilter = new SearchFilter(
+                null, List.of(), null, List.of(), List.of("Apple"), null,
+                null, "desc", null, Map.of(), List.of(), Map.of());
+        List<ProductCard> restoredProducts = List.of(product("after-nlp-2"));
+        List<FilterTag> currentNlpTags = List.of(
+                FilterTag.ofField("brand Apple", "brands.Apple"),
+                FilterTag.ofField("under 100", "price_range.max"));
+
+        when(taskManager.belongsToUser("sess-suggestion-undo", 7L)).thenReturn(true);
+        when(undoService.canUndo("sess-suggestion-undo")).thenReturn(true, true);
+        when(undoService.undo("sess-suggestion-undo")).thenReturn(new NlpUndoService.UndoResult(
+                restoredFilter,
+                restoredProducts,
+                "best value",
+                "suggestion",
+                null,
+                null, null, null));
+        when(nlpStateStackService.peek("sess-suggestion-undo")).thenReturn(Optional.of(
+                new NlpStateStackService.NlpState(
+                        "nlp-2",
+                        "under 100",
+                        SearchFilter.empty(),
+                        currentNlpTags,
+                        List.of(product("nlp-state-product")),
+                        "2026-06-09T00:00:00Z")));
+        when(sessionCache.getBestCandidates("sess-suggestion-undo")).thenReturn(List.of(product("candidate")));
+
+        ResponseEntity<ApiResponse<ActionResult>> response = controller.undo("sess-suggestion-undo");
+
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().code()).isEqualTo(200);
+        ActionResult result = response.getBody().data();
+        assertThat(result.actionSource()).isEqualTo("undo:suggestion");
+        assertThat(result.products()).extracting(ProductCard::id).containsExactly("after-nlp-2");
+        assertThat(result.filterTags()).extracting(FilterTag::label)
+                .containsExactly("brand Apple", "under 100");
+
+        verify(nlpStateStackService, never()).pop("sess-suggestion-undo");
+        verify(nlpStateStackService).peek("sess-suggestion-undo");
+        verify(actionExecutionService, never()).generateStructuredTags(any());
+        verify(conversationManager).setFilterState("sess-suggestion-undo", restoredFilter);
+    }
+
     private ProductCard product(String id) {
         return new ProductCard(
                 id,

@@ -4,8 +4,10 @@ import com.visioncart.api.dto.PlatformPriceStat;
 import com.visioncart.api.dto.ProductCard;
 import com.visioncart.api.dto.SearchFilter;
 import com.visioncart.api.dto.SearchResult;
+import com.visioncart.service.search.strategy.ResultMixer;
 import com.visioncart.service.search.strategy.VerticalSearchStrategy;
 import com.visioncart.service.search.strategy.VerticalStrategyRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -28,19 +30,34 @@ public class SearchRunService {
     private final CandidateSessionCache sessionCache;
     private final CandidateFilterService filterService;
     private final ProductReputationService reputationService;
+    private final ProductSortService productSortService;
     private final IntentAwareSorter intentAwareSorter;
     private final VerticalStrategyRegistry strategyRegistry;
+    private final OverseasEnglishIntentMatcher overseasEnglishIntentMatcher;
 
+    @Autowired
     public SearchRunService(CandidateSessionCache sessionCache,
                             CandidateFilterService filterService,
                             ProductReputationService reputationService,
                             ProductSortService productSortService,
-                            VerticalStrategyRegistry strategyRegistry) {
+                            VerticalStrategyRegistry strategyRegistry,
+                            OverseasEnglishIntentMatcher overseasEnglishIntentMatcher) {
         this.sessionCache = sessionCache;
         this.filterService = filterService;
         this.reputationService = reputationService;
+        this.productSortService = productSortService;
         this.intentAwareSorter = new IntentAwareSorter(productSortService);
         this.strategyRegistry = strategyRegistry;
+        this.overseasEnglishIntentMatcher = overseasEnglishIntentMatcher;
+    }
+
+    SearchRunService(CandidateSessionCache sessionCache,
+                     CandidateFilterService filterService,
+                     ProductReputationService reputationService,
+                     ProductSortService productSortService,
+                     VerticalStrategyRegistry strategyRegistry) {
+        this(sessionCache, filterService, reputationService, productSortService, strategyRegistry,
+                new OverseasEnglishIntentMatcher());
     }
 
     public Optional<SearchResult> recomputeDisplayPage(String sessionId, SearchFilter filter, int pageSize) {
@@ -56,9 +73,10 @@ public class SearchRunService {
         List<VerticalSearchStrategy.ClassifiedProduct> filteredPool =
                 applyFilterToClassifiedPool(pool.classifiedPool(), effectiveFilter);
         List<VerticalSearchStrategy.ClassifiedProduct> sorted =
-                intentAwareSorter.sortClassified(filteredPool, effectiveFilter);
+                sortClassifiedForRegion(pool.isDomestic(), filteredPool, effectiveFilter, pool.productIntent());
         VerticalSearchStrategy strategy = strategyRegistry.resolve(pool.productIntent());
-        List<ProductCard> displayPage = strategy.mix(pool.productIntent(), sorted, safePageSize);
+        List<ProductCard> displayPage = mixForRegion(
+                pool.isDomestic(), strategy, pool.productIntent(), sorted, safePageSize);
         displayPage = enrichRatingLabels(displayPage, effectiveFilter);
         displayPage = diversifyPlatforms(displayPage, safePageSize);
         logReputationRerankSummary(effectiveFilter, filteredPool, displayPage);
@@ -105,6 +123,43 @@ public class SearchRunService {
                 .toList();
     }
 
+    private List<VerticalSearchStrategy.ClassifiedProduct> sortClassifiedForRegion(
+            boolean domestic,
+            List<VerticalSearchStrategy.ClassifiedProduct> classified,
+            SearchFilter filter,
+            ProductIntent intent) {
+        if (domestic) {
+            return intentAwareSorter.sortClassified(classified, filter, intent);
+        }
+        if (classified == null || classified.size() <= 1) {
+            return classified == null ? List.of() : classified;
+        }
+        List<VerticalSearchStrategy.ClassifiedProduct> sorted = new ArrayList<>();
+        for (IntentGate.IntentTier tier : tierOrder()) {
+            List<ProductCard> tierProducts = classified.stream()
+                    .filter(item -> item.tier() == tier)
+                    .map(VerticalSearchStrategy.ClassifiedProduct::product)
+                    .toList();
+            List<ProductCard> userSorted = productSortService.applySort(tierProducts, filter);
+            for (ProductCard product : overseasEnglishIntentMatcher.sortWithinTier(intent, userSorted)) {
+                sorted.add(new VerticalSearchStrategy.ClassifiedProduct(product, tier));
+            }
+        }
+        return sorted;
+    }
+
+    private List<ProductCard> mixForRegion(
+            boolean domestic,
+            VerticalSearchStrategy strategy,
+            ProductIntent intent,
+            List<VerticalSearchStrategy.ClassifiedProduct> classified,
+            int pageSize) {
+        if (domestic) {
+            return strategy.mix(intent, classified, pageSize);
+        }
+        return ResultMixer.mix(classified, strategy.policy(intent), pageSize);
+    }
+
     private List<ProductCard> enrichRatingLabels(List<ProductCard> products, SearchFilter filter) {
         return reputationService.attachReputation(products);
     }
@@ -137,6 +192,23 @@ public class SearchRunService {
                 .limit(Math.max(0, pageSize - page.size()))
                 .forEach(page::add);
         return page;
+    }
+
+    private List<IntentGate.IntentTier> tierOrder() {
+        return java.util.Arrays.stream(IntentGate.IntentTier.values())
+                .sorted(Comparator.comparingInt(this::tierOrdinal))
+                .toList();
+    }
+
+    private int tierOrdinal(IntentGate.IntentTier tier) {
+        return switch (tier) {
+            case EXACT_MAIN -> 0;
+            case COMPATIBLE_MAIN -> 1;
+            case SAME_FAMILY -> 2;
+            case RELATED_ACCESSORY -> 3;
+            case SUBSTITUTE -> 4;
+            case REJECT -> 5;
+        };
     }
 
     private void logReputationRerankSummary(SearchFilter filter,

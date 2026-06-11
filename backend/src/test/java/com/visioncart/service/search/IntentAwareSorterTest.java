@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -51,6 +52,33 @@ class IntentAwareSorterTest {
         assertThat(mixed).hasSize(50);
         assertThat(mixed).extracting(ProductCard::platform)
                 .contains("\u6dd8\u5b9d", "\u62fc\u591a\u591a");
+    }
+
+    @Test
+    void photoRelevanceSortPromotesPowerBankMatchingPhotoSignalsWithinSameTier() {
+        ProductIntent intent = new ProductIntent(
+                "powerbank", "充电宝", "power_bank",
+                ProductIntent.ProductRole.MAIN_PRODUCT,
+                "", "", "",
+                false,
+                Map.of("规格", "20Ah", "类目", "充电宝"),
+                Map.of("款式", "透明外壳露电路板款"),
+                List.of("黄色LED指示灯充电宝"),
+                List.of(),
+                List.of(), 0.9, "test"
+        );
+        ProductCard generic = product("generic", "普通20000mAh充电宝", 4.9, 10_000);
+        ProductCard photoLike = product("photo", "20Ah透明外壳露电路板黄色LED指示灯充电宝", 4.0, 100);
+        ProductCard component = product("component", "20Ah移动电源模块主板露电路板维修套件", 5.0, 20_000);
+
+        List<VerticalSearchStrategy.ClassifiedProduct> sorted = sorter.sortClassified(List.of(
+                new VerticalSearchStrategy.ClassifiedProduct(generic, IntentGate.IntentTier.EXACT_MAIN),
+                new VerticalSearchStrategy.ClassifiedProduct(component, IntentGate.IntentTier.EXACT_MAIN),
+                new VerticalSearchStrategy.ClassifiedProduct(photoLike, IntentGate.IntentTier.EXACT_MAIN)
+        ), null, intent);
+
+        assertThat(sorted).extracting(item -> item.product().id())
+                .containsExactly("photo", "generic", "component");
     }
 
     private ProductCard product(String id, String title, double rating, long sales) {

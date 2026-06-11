@@ -89,6 +89,10 @@ public class RecognitionOrchestrator {
     }
 
     public AsyncRecognitionResponse submitAsync(MultipartFile image, String region, Long userId) {
+        return submitAsync(image, region, userId, null);
+    }
+
+    public AsyncRecognitionResponse submitAsync(MultipartFile image, String region, Long userId, String regionMode) {
         String sessionId = UUID.randomUUID().toString();
 
         byte[] imageBytes;
@@ -104,7 +108,11 @@ public class RecognitionOrchestrator {
         long imageSize = image.getSize();
         String imageHash = HashUtils.sha256Hex(imageBytes);
         taskManager.createTask(sessionId, originalFilename, imageSize, userId, imageHash);
-        boolean domestic = regionResolver.isDomestic();
+        RegionResolver.RegionDecision regionDecision = regionResolver.resolve(regionMode);
+        boolean domestic = regionDecision.domestic();
+        log.info("Recognition region decision: sessionId={}, requestedMode={}, effectiveMode={}, source={}, domestic={}, clientIp={}, remoteAddr={}, country={}",
+                sessionId, regionDecision.requestedMode(), regionDecision.effectiveMode(), regionDecision.source(),
+                domestic, regionDecision.clientIp(), regionDecision.remoteAddr(), regionDecision.countryCode());
 
         try {
             long timeoutMs = properties.getRecognition().getTimeoutMs() * (properties.getRecognition().getRetryCount() + 1) + 10000;
@@ -159,7 +167,12 @@ public class RecognitionOrchestrator {
                     .orElse(null);
         }
         taskManager.markProcessing(sessionId);
-        boolean domestic = regionResolver.isDomestic();
+        RegionResolver.RegionDecision regionDecision = regionResolver.resolve(request.regionMode());
+        boolean domestic = regionDecision.domestic();
+        log.info("Recognition selected-product region decision: sessionId={}, candidateId={}, requestedMode={}, effectiveMode={}, source={}, domestic={}, clientIp={}, remoteAddr={}, country={}",
+                sessionId, request.candidateId(), regionDecision.requestedMode(), regionDecision.effectiveMode(),
+                regionDecision.source(), domestic, regionDecision.clientIp(), regionDecision.remoteAddr(),
+                regionDecision.countryCode());
         String originalFilename = taskManager.getOriginalFilename(sessionId);
         long imageSize = taskManager.getImageSize(sessionId);
         String imageHash = taskManager.getImageHash(sessionId);
@@ -273,9 +286,12 @@ public class RecognitionOrchestrator {
             completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic, processed);
             return false;
         }
-        log.info("Session {} detection: raw={} candidates, minConfidence={}", sessionId,
-                detected != null ? detected.size() : 0, properties.getRecognition().getMinDetectionConfidence());
-        metricsService.recordRecognitionDetectedCandidates(detected != null ? detected.size() : 0);
+        int rawCandidateCount = detected != null ? detected.size() : 0;
+        int threshold = Math.max(2, properties.getRecognition().getMultiProductThreshold());
+        double minConfidence = properties.getRecognition().getMinDetectionConfidence();
+        log.info("Session {} detection: rawCandidates={}, minConfidence={}, multiProductThreshold={}",
+                sessionId, rawCandidateCount, minConfidence, threshold);
+        metricsService.recordRecognitionDetectedCandidates(rawCandidateCount);
         if (detected != null) {
             for (RecognitionCandidate c : detected) {
                 log.info("  detected: category={}, brand={}, confidence={}", c.category(), c.brand(), c.confidence());
@@ -291,8 +307,10 @@ public class RecognitionOrchestrator {
         }
 
         List<CandidateWork> candidates = prepareCandidates(processed, detected, sessionId);
-        log.info("Session {} after filtering: {} candidates passed threshold", sessionId, candidates.size());
+        log.info("Session {} detection decision input: rawCandidates={}, selectedCandidates={}, threshold={}, minConfidence={}",
+                sessionId, rawCandidateCount, candidates.size(), threshold, minConfidence);
         if (candidates.isEmpty()) {
+            log.info("Session {} detection decision: decision=SINGLE_STAGE_FALLBACK reason=no_candidates_after_filter", sessionId);
             log.warn("No candidates passed confidence threshold for session {}, falling back to single-stage", sessionId);
             metricsService.recordRecognitionSingleStageFallback("no_candidates_after_filter");
             RecognitionResult result;
@@ -306,7 +324,6 @@ public class RecognitionOrchestrator {
             return false;
         }
 
-        int threshold = Math.max(2, properties.getRecognition().getMultiProductThreshold());
         if (candidates.size() >= threshold) {
             // Only show candidates whose crop was saved successfully
             List<RecognitionCandidate> visibleCandidates = new ArrayList<>();
@@ -325,6 +342,8 @@ public class RecognitionOrchestrator {
                 }
             }
             if (visibleCandidates.isEmpty()) {
+                log.info("Session {} detection decision: decision=SINGLE_STAGE_FALLBACK reason=crop_save_failed rawCandidates={} selectedCandidates={} threshold={} visibleCandidates=0",
+                        sessionId, rawCandidateCount, candidates.size(), threshold);
                 log.warn("All candidate crops failed to save for session {}, falling back to single-stage", sessionId);
                 metricsService.recordRecognitionSingleStageFallback("crop_save_failed");
                 RecognitionResult result;
@@ -337,6 +356,8 @@ public class RecognitionOrchestrator {
                 completeRecognition(sessionId, result, originalFilename, imageSize, imageHash, userId, domestic, processed);
                 return false;
             }
+            log.info("Session {} detection decision: decision=MULTI_PRODUCT_PENDING rawCandidates={} selectedCandidates={} threshold={} visibleCandidates={}",
+                    sessionId, rawCandidateCount, candidates.size(), threshold, visibleCandidates.size());
             metricsService.recordRecognitionSelectedCandidates(visibleCandidates.size());
             metricsService.recordRecognitionMultiProductPending();
             taskManager.markMultiProductPending(sessionId, visibleCandidates, cropFilePaths);
@@ -346,6 +367,8 @@ public class RecognitionOrchestrator {
             return true;
         }
 
+        log.info("Session {} detection decision: decision=AUTO_SELECT_SINGLE rawCandidates={} selectedCandidates={} threshold={}",
+                sessionId, rawCandidateCount, candidates.size(), threshold);
         CandidateWork selected = candidates.get(0);
         sendProgress(sessionId, "正在提取颜色/品牌/材质");
         RecognitionResult result = extractAttributesWithFallback(sessionId, selected.cropBytes(), contentType, selected.candidate());

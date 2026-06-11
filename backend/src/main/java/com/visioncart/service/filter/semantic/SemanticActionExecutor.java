@@ -791,6 +791,13 @@ public class SemanticActionExecutor {
         if (filter.ratingMin() != null) {
             tags.add(FilterTag.ofField("≥" + filter.ratingMin(), "rating_min"));
         }
+        if (filter.attributes() != null) {
+            filter.attributes().forEach((key, value) -> {
+                if (key != null && !key.isBlank() && value != null && !value.isBlank()) {
+                    tags.add(FilterTag.ofField(value, "attributes." + key));
+                }
+            });
+        }
         return tags;
     }
 
@@ -915,6 +922,7 @@ public class SemanticActionExecutor {
         List<String> platforms = base.platforms() != null ? new ArrayList<>(base.platforms()) : new ArrayList<>();
         List<String> colors = base.colors() != null ? new ArrayList<>(base.colors()) : new ArrayList<>();
         List<String> brands = base.brands() != null ? new ArrayList<>(base.brands()) : new ArrayList<>();
+        Map<String, String> attributes = base.attributes() != null ? new LinkedHashMap<>(base.attributes()) : new LinkedHashMap<>();
         Boolean selfOperated = base.selfOperated();
         Double ratingMin = base.ratingMin();
         String sortBy = base.sortBy();
@@ -924,6 +932,15 @@ public class SemanticActionExecutor {
             String field = hf.field();
             String op = hf.operator() == null ? "equals" : hf.operator();
             if (field == null) continue;
+
+            String attributeName = attributeName(field);
+            if (attributeName != null) {
+                List<String> vals = toStringList(hf.value());
+                if (!vals.isEmpty()) {
+                    attributes.put(attributeName, vals.get(0));
+                }
+                continue;
+            }
 
             switch (field) {
                 case "price" -> {
@@ -959,8 +976,26 @@ public class SemanticActionExecutor {
 
         return new SearchFilter(priceRange, platforms.isEmpty() ? null : platforms,
                 selfOperated, colors.isEmpty() ? null : colors, brands.isEmpty() ? null : brands,
-                ratingMin, sortBy, sortOrder, base.keyword(), base.attributes(),
+                ratingMin, sortBy, sortOrder, base.keyword(), attributes.isEmpty() ? null : attributes,
                 base.excludeRoles(), base.capabilities());
+    }
+
+    private String attributeName(String field) {
+        if (field == null) {
+            return null;
+        }
+        String trimmed = field.trim();
+        if (!trimmed.toLowerCase(Locale.ROOT).startsWith("attribute:")) {
+            return null;
+        }
+        String name = trimmed.substring("attribute:".length()).trim();
+        if (name.isBlank() || name.length() > 30) {
+            return null;
+        }
+        if (!name.matches("[\\p{IsHan}A-Za-z0-9_\\-]+")) {
+            return null;
+        }
+        return name;
     }
 
     /**
@@ -996,6 +1031,13 @@ public class SemanticActionExecutor {
 
     private List<FilterTag> generateFilterTags(SearchFilter filter, SemanticActionPlan plan) {
         List<FilterTag> tags = new ArrayList<>();
+        if (filter.attributes() != null) {
+            filter.attributes().forEach((key, value) -> {
+                if (key != null && !key.isBlank() && value != null && !value.isBlank()) {
+                    tags.add(FilterTag.ofField(value, "attributes." + key));
+                }
+            });
+        }
         if (filter.priceRange() != null) {
             if (filter.priceRange().max() != null) tags.add(FilterTag.ofField("≤¥" + filter.priceRange().max(), "price_range.max"));
             if (filter.priceRange().min() != null) tags.add(FilterTag.ofField("≥¥" + filter.priceRange().min(), "price_range.min"));

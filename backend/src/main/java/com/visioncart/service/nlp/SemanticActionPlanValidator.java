@@ -99,11 +99,11 @@ public final class SemanticActionPlanValidator {
             if (filter == null) {
                 continue;
             }
-            String field = cleanLower(filter.field());
-            if (!ALLOWED_HARD_FIELDS.contains(field)) {
+            String field = normalizeHardField(filter.field());
+            if (field == null) {
                 continue;
             }
-            String operator = clean(filter.operator());
+            String operator = cleanLower(filter.operator());
             if (operator == null || operator.isBlank()) {
                 operator = "equals";
             }
@@ -117,6 +117,19 @@ public final class SemanticActionPlanValidator {
             result.add(new SemanticActionPlan.HardFilter(field, operator, value));
         }
         return result;
+    }
+
+    private static String normalizeHardField(String field) {
+        String text = clean(field);
+        if (text == null) {
+            return null;
+        }
+        String attributeField = sanitizeAttributeField(text);
+        if (attributeField != null) {
+            return attributeField;
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        return ALLOWED_HARD_FIELDS.contains(lower) ? lower : null;
     }
 
     private static List<SemanticActionPlan.SemanticFilter> validateSemanticFilters(
@@ -421,7 +434,54 @@ public final class SemanticActionPlanValidator {
             Double number = toDouble(value);
             return number != null && number >= 0 && number <= 5;
         }
+        if (sanitizeAttributeField(field) != null) {
+            return isSafeAttributeValue(value);
+        }
         return true;
+    }
+
+    private static String sanitizeAttributeField(String field) {
+        String text = clean(field);
+        if (text == null || !text.toLowerCase(Locale.ROOT).startsWith("attribute:")) {
+            return null;
+        }
+        String name = text.substring("attribute:".length()).trim();
+        if (name.isBlank() || name.length() > 30) {
+            return null;
+        }
+        if (!name.matches("[\\p{IsHan}A-Za-z0-9_\\-]+")) {
+            return null;
+        }
+        return "attribute:" + name;
+    }
+
+    private static boolean isSafeAttributeValue(Object value) {
+        if (value == null || value instanceof Boolean) {
+            return false;
+        }
+        if (value instanceof List<?> list) {
+            return !list.isEmpty() && list.stream().allMatch(SemanticActionPlanValidator::isSafeAttributeScalar);
+        }
+        return isSafeAttributeScalar(value);
+    }
+
+    private static boolean isSafeAttributeScalar(Object value) {
+        if (value == null || value instanceof Boolean) {
+            return false;
+        }
+        String text = clean(String.valueOf(value));
+        if (text == null) {
+            return false;
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        return !text.contains("<")
+                && !text.contains(">")
+                && !lower.contains("script")
+                && !lower.contains("javascript:")
+                && !lower.contains("onerror=")
+                && !lower.contains("onload=")
+                && !"true".equals(lower)
+                && !"false".equals(lower);
     }
 
     private static List<String> validateSignalFields(List<String> fields) {

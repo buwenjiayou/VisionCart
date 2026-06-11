@@ -68,6 +68,17 @@ class RecognitionOrchestratorTest {
         searchOrchestrator = mock(SearchOrchestrator.class);
         regionResolver = mock(RegionResolver.class);
         when(regionResolver.isDomestic()).thenReturn(true);
+        when(regionResolver.resolve(any())).thenReturn(new RegionResolver.RegionDecision(
+                "auto",
+                "domestic",
+                true,
+                "127.0.0.1",
+                "127.0.0.1",
+                "",
+                "",
+                "LOCAL",
+                "test"
+        ));
 
         com.visioncart.service.metrics.PerformanceMetricsService metricsService =
                 mock(com.visioncart.service.metrics.PerformanceMetricsService.class);
@@ -149,6 +160,7 @@ class RecognitionOrchestratorTest {
                 .extracting(RecognitionCandidate::category)
                 .containsExactly("电动剃须刀", "充电宝");
         verify(imageStorage, timeout(5000).times(2)).saveCandidateCrop(eq(response.sessionId()), anyString(), any());
+        verify(taskManager, after(500).never()).markCompleted(eq(response.sessionId()), any(RecognitionResult.class));
     }
 
     @Test
@@ -177,6 +189,7 @@ class RecognitionOrchestratorTest {
                 .extracting(RecognitionCandidate::category)
                 .containsExactlyInAnyOrder("shaver", "charger");
         verify(imageStorage, timeout(5000).times(2)).saveCandidateCrop(eq(response.sessionId()), anyString(), any());
+        verify(taskManager, after(500).never()).markCompleted(eq(response.sessionId()), any(RecognitionResult.class));
     }
 
     @Test

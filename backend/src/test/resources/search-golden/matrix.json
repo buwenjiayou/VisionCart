@@ -75,5 +75,53 @@
     "forbiddenQueries": ["杯套"],
     "maxRelatedTop20": 2,
     "maxRelatedTotal": 5
+  },
+  {
+    "name": "power_bank_rejects_lamp_dominant_titles",
+    "attributes": {
+      "类目": "数码配件 / 移动电源 / 充电宝",
+      "__keywords": "黄色LED指示灯充电宝,20Ah 透明电路板充电宝",
+      "规格": "20Ah",
+      "款式": "透明外壳露电路板款"
+    },
+    "expectedFamily": "power_bank",
+    "mainTitle": "20Ah透明外壳露电路板黄色LED指示灯充电宝",
+    "relatedTitle": "USB小夜灯充电宝随身灯节能插电护眼台灯学生led灯",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["LED灯", "透明", "黄色", "指示灯"],
+    "maxRelatedTop20": 0,
+    "maxRelatedTotal": 0
+  },
+  {
+    "name": "power_bank_rejects_component_dominant_titles",
+    "attributes": {
+      "类目": "数码配件 / 移动电源 / 充电宝",
+      "__keywords": "黄色LED指示灯充电宝,20Ah 透明电路板充电宝",
+      "规格": "20Ah",
+      "款式": "透明外壳露电路板款"
+    },
+    "expectedFamily": "power_bank",
+    "mainTitle": "20Ah透明外壳露电路板黄色LED指示灯充电宝",
+    "relatedTitle": "22W移动电源模块主板充电宝快充电路板",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["露电路板 充电宝", "电路板 充电宝", "透明外壳露电路板款 充电宝"],
+    "maxRelatedTop20": 0,
+    "maxRelatedTotal": 0
+  },
+  {
+    "name": "power_bank_rejects_raw_battery_and_phone_film_titles",
+    "attributes": {
+      "类目": "数码配件 / 移动电源 / 充电宝",
+      "__keywords": "黄色LED指示灯充电宝,20Ah 透明电路板充电宝",
+      "规格": "20Ah",
+      "款式": "透明外壳露电路板款"
+    },
+    "expectedFamily": "power_bank",
+    "mainTitle": "充大容量20000毫安手机通用充电宝",
+    "relatedTitle": "3.7v20ah聚合物电池20000毫安LED灯5锂电池30000mA",
+    "relatedTier": "REJECT",
+    "forbiddenQueries": ["锂电池", "电芯", "电池", "LED灯", "外壳"],
+    "maxRelatedTop20": 0,
+    "maxRelatedTotal": 0
   }
 ]

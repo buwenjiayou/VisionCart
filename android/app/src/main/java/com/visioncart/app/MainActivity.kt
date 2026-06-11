@@ -679,7 +679,9 @@ private fun HomeScreen(
             HomeDashboardHeader(
                 recognizedCount = uiState.products.size,
                 favoriteCount = favorites.size,
-                isRecognizing = uiState.recognitionState is UiState.Loading || uiState.productsLoading
+                isRecognizing = uiState.recognitionState is UiState.Loading || uiState.productsLoading,
+                regionMode = uiState.regionMode,
+                onOverseasModeChange = { viewModel.setOverseasMode(it) }
             )
         }
 
@@ -934,7 +936,9 @@ private fun HomeScreen(
 private fun HomeDashboardHeader(
     recognizedCount: Int,
     favoriteCount: Int,
-    isRecognizing: Boolean
+    isRecognizing: Boolean,
+    regionMode: String,
+    onOverseasModeChange: (Boolean) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -987,6 +991,11 @@ private fun HomeDashboardHeader(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                    Spacer(Modifier.width(8.dp))
+                    RegionModeToggle(
+                        overseas = regionMode == "international",
+                        onChange = onOverseasModeChange
+                    )
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -999,6 +1008,63 @@ private fun HomeDashboardHeader(
                     HomeMetricChip(label = "模式", value = "悬浮可用", modifier = Modifier.weight(1f))
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun RegionModeToggle(
+    overseas: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    Surface(
+        color = Color.White.copy(alpha = 0.14f),
+        shape = RoundedCornerShape(999.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(3.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RegionModeSegment(
+                text = "自动",
+                selected = !overseas,
+                onClick = { onChange(false) }
+            )
+            RegionModeSegment(
+                text = "海外",
+                selected = overseas,
+                onClick = { onChange(true) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun RegionModeSegment(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = if (selected) Color.White else Color.Transparent,
+        shape = RoundedCornerShape(999.dp),
+        modifier = Modifier
+            .height(30.dp)
+            .widthIn(min = 44.dp)
+            .clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text,
+                color = if (selected) Color(0xFF0A7C66) else Color(0xFFE6F4F0),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

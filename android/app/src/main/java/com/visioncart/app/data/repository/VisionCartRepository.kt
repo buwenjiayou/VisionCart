@@ -49,23 +49,33 @@ class VisionCartRepository(private val context: Context) {
         val imageUrl: String? = null
     ) : Exception("请选择要识别的商品")
 
-    suspend fun analyzeImage(imageUri: Uri, onProgress: ((String) -> Unit)? = null): Result<RecognitionResult> {
+    suspend fun analyzeImage(
+        imageUri: Uri,
+        onProgress: ((String) -> Unit)? = null,
+        regionMode: String = "auto"
+    ): Result<RecognitionResult> {
         return try {
             val file = uriToFile(imageUri)
-            analyzeImageFile(file, imageUri.toString(), onProgress)
+            analyzeImageFile(file, imageUri.toString(), onProgress, regionMode)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to prepare image for recognition: $imageUri", e)
             Result.failure(e)
         }
     }
 
-    suspend fun analyzeImageFile(file: File, imageUrl: String? = null, onProgress: ((String) -> Unit)? = null): Result<RecognitionResult> {
+    suspend fun analyzeImageFile(
+        file: File,
+        imageUrl: String? = null,
+        onProgress: ((String) -> Unit)? = null,
+        regionMode: String = "auto"
+    ): Result<RecognitionResult> {
         return try {
             Log.i(TAG, "Uploading image for recognition: name=${file.name}, size=${file.length()}")
             val requestFile = file.asRequestBody("image/jpeg".toMediaTypeOrNull())
             val body = MultipartBody.Part.createFormData("image", file.name, requestFile)
             val regionBody = "CN".toRequestBody("text/plain".toMediaTypeOrNull())
-            val response = api.analyzeImage(body, regionBody)
+            val regionModeBody = regionMode.toRequestBody("text/plain".toMediaTypeOrNull())
+            val response = api.analyzeImage(body, regionBody, regionModeBody)
             if (response.code != 200 || response.data == null) {
                 Log.w(TAG, "Recognition upload rejected: code=${response.code}, message=${response.message}")
                 return Result.failure(Exception(response.message))
@@ -181,10 +191,11 @@ class VisionCartRepository(private val context: Context) {
     suspend fun selectProductForRecognition(
         sessionId: String,
         candidateId: String,
-        imageUrl: String? = null
+        imageUrl: String? = null,
+        regionMode: String = "auto"
     ): Result<RecognitionResult> {
         return try {
-            val response = api.selectRecognitionProduct(sessionId, ProductSelectionRequest(candidateId))
+            val response = api.selectRecognitionProduct(sessionId, ProductSelectionRequest(candidateId, regionMode))
             if (response.code != 200 || response.data == null) {
                 return Result.failure(Exception(response.message))
             }
@@ -393,7 +404,8 @@ class VisionCartRepository(private val context: Context) {
         sessionId: String,
         action: String,
         currentProducts: List<ProductCard>? = null,
-        currentFilter: SearchFilter? = null
+        currentFilter: SearchFilter? = null,
+        regionMode: String = "auto"
     ): Result<ActionResult> {
         return executeUserAction(
             UserActionRequest(
@@ -401,7 +413,8 @@ class VisionCartRepository(private val context: Context) {
                 source = "suggestion",
                 sessionId = sessionId,
                 rawText = action,
-                payload = UserActionPayload(action = action)
+                payload = UserActionPayload(action = action),
+                regionMode = regionMode
             )
         )
     }

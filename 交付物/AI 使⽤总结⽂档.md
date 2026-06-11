@@ -1,6 +1,6 @@
-# VisionCart 两人团队 AI Coding 心得复盘
+# 团队AI Coding 心得
 
-## 1. 写在前面
+## 1. 前言
 
 VisionCart 是我们两个人一起完成的 AI 智能比价购物助手，项目里同时有 Android 客户端、Spring Boot 后端、视觉模型识别、自然语言筛选、多平台商品搜索、收藏历史和价格提醒。刚开始我们对 AI Coding 的期待比较直接：让 AI 帮我们快点写代码。真正做下来以后才发现，AI 最有价值的地方不是“替我们写完整项目”，而是帮助我们更快拆需求、读代码、补样板、排查错误和整理文档。
 
@@ -131,7 +131,7 @@ Android/后端联调是最容易暴露 AI 生成问题的地方。比如后端�
 
 后来我们联调时会固定给 AI 三类信息：请求定义、后端返回、Android 解析模型。这样它才能判断是 JWT、Base URL、字段命名，还是后端业务逻辑的问题。
 
-## 7. AI 编码调优实践
+## 7. AI 调优实践
 
 我们最后沉淀了几个比较实用的调优习惯。
 
@@ -152,13 +152,3 @@ Android/后端联调是最容易暴露 AI 生成问题的地方。比如后端�
 两人团队里，AI 最有价值的用法不是让每个人各自生成一堆代码，而是帮助我们更快对齐：先把需求拆清楚，把边界写清楚，把验收标准写清楚，再由另一个人复核 AI 输出。最后真正保证项目质量的，还是编译、测试、接口联调、日志和人工判断。
 
 如果后续继续优化，我们会重点做三件事：整理常用 Prompt 模板，记录项目里出现过的幻觉案例，补一份 AI 生成代码验收清单。这样 AI Coding 才不是一次性的提效工具，而是可以持续复用的团队开发方法。
-
-## 9. 参考资料
-
-这些资料主要用于校验方法，不是照搬内容：
-
-- GitHub Copilot Best Practices: <https://docs.github.com/en/copilot/get-started/best-practices>
-- Claude Code Memory: <https://docs.anthropic.com/en/docs/claude-code/memory>
-- Claude Code Hooks: <https://docs.anthropic.com/en/docs/claude-code/hooks>
-- OpenAI Codex Best Practices: <https://help.openai.com/en/articles/11369540-codex-best-practices>
-- 公开 AI Coding 实践文章：主要参考任务拆分、完成标准前置、reviewer 模式、事实/推断分离、测试驱动纠偏等通用经验。

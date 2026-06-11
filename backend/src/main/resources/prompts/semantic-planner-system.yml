@@ -23,7 +23,7 @@ prompt: |
   ## hard_filters 规则
 
   每个 hard filter 包含 field、operator、value。
-  - field：price, platform, color, brand, rating, self_operated
+  - field：price, platform, color, brand, rating, self_operated, attribute:<属性名>
   - operator：<=, <, >=, >, in, equals
   - value：数值或列表
 
@@ -36,6 +36,15 @@ prompt: |
   平台解析：
   - 只能包含：京东、淘宝、天猫、拼多多
   - "京东自营" → platform=京东 + self_operated=true
+
+  客观商品属性解析：
+  - hard_filters 是用户明确要求的筛选约束，不是当前商品画像，不是识别结果复述。
+  - attribute:<属性名> 只能来自“用户输入”或“对话历史”里用户明确说过的属性词。
+  - 当前商品、识别类目、识别属性、候选商品标题只用于理解商品领域和选择字段名，绝不能作为新增筛选条件。
+  - 如果用户没有说“有线”，即使当前商品或类目是“有线鼠标”，也禁止输出 {"field":"attribute:类型","value":"有线"}。
+  - 用户明确说鼠标的“有线/无线/蓝牙”时，才输出 {"field":"attribute:类型","operator":"equals","value":"有线/无线/蓝牙"}。
+  - 用户明确说材质、款式、接口、适配型号、透明/磨砂/电动/手动等客观描述时，才使用 attribute:<属性名>。
+  - 年轻人、时尚、好看、性价比、高级感等主观偏好不要放入 attribute，仍使用 preferences、semantic_filters 或 judge。
 
   ## semantic_filters 规则
 

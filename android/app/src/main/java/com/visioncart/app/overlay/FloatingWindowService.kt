@@ -1265,6 +1265,11 @@ private fun OverlayPanel(
 
     fun applyActionResult(result: ActionResult, updateFilterTags: Boolean = true) {
         val displayMessage = actionMessage(result)
+        val shouldUpdateFilterTags = updateFilterTags &&
+                result.actionSource != "suggestion" &&
+                result.actionSource != "sort" &&
+                result.actionSource != "undo:suggestion" &&
+                result.actionSource != "undo:sort"
         if (!result.filterApplied) {
             displayMessage?.let {
                 resultMessage = it
@@ -1274,7 +1279,7 @@ private fun OverlayPanel(
         }
         products = result.allDisplayProducts.take(50)
         currentFilter = result.appliedFilter ?: currentFilter
-        if (updateFilterTags) {
+        if (shouldUpdateFilterTags) {
             filterTags = result.filterTags
         }
         suggestionCards = result.suggestionCards ?: suggestionCards

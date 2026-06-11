@@ -3,6 +3,7 @@ package com.visioncart.service.search;
 import com.visioncart.api.dto.ProductCard;
 import com.visioncart.api.dto.SearchFilter;
 import com.visioncart.api.dto.SearchResult;
+import com.visioncart.service.search.strategy.MixPolicy;
 import com.visioncart.service.search.strategy.VerticalSearchStrategy;
 import com.visioncart.service.search.strategy.VerticalStrategyRegistry;
 import org.junit.jupiter.api.Test;
@@ -16,8 +17,12 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -167,6 +172,90 @@ class SearchRunServiceTest {
         assertThat(top20).extracting(ProductCard::platform).contains("eBay");
         assertThat(top20.stream().filter(product -> "taobao".equals(product.platform())).count())
                 .isLessThan(20);
+    }
+
+    @Test
+    void overseasPoolRecomputeUsesOverseasMatcherInsteadOfDomesticStrategyMix() {
+        CandidateSessionCache sessionCache = mock(CandidateSessionCache.class);
+        CandidateFilterService filterService = mock(CandidateFilterService.class);
+        ProductReputationService reputationService = new ProductReputationService();
+        ProductSortService sortService = new ProductSortService(reputationService);
+        VerticalStrategyRegistry strategyRegistry = mock(VerticalStrategyRegistry.class);
+        VerticalSearchStrategy strategy = mock(VerticalSearchStrategy.class);
+        OverseasEnglishIntentMatcher matcher = spy(new OverseasEnglishIntentMatcher());
+
+        ProductIntent intent = new ProductIntent(
+                "sess-overseas", "mouse", "mouse",
+                ProductIntent.ProductRole.MAIN_PRODUCT,
+                "", "", "",
+                false,
+                Map.of(),
+                Map.of(),
+                List.of("wireless"),
+                List.of(),
+                List.of(),
+                1.0,
+                "test"
+        );
+        ProductCard generic = product("generic", "Computer mouse", "eBay");
+        ProductCard close = product("close", "Logitech wireless gaming mouse", "eBay");
+        List<ProductCard> products = List.of(generic, close);
+        List<VerticalSearchStrategy.ClassifiedProduct> classified = List.of(
+                new VerticalSearchStrategy.ClassifiedProduct(generic, IntentGate.IntentTier.EXACT_MAIN),
+                new VerticalSearchStrategy.ClassifiedProduct(close, IntentGate.IntentTier.EXACT_MAIN)
+        );
+        SearchCandidatePool pool = new SearchCandidatePool(
+                "sess-overseas", "run-1", "identity-1",
+                intent, "OverseasEnglishIntentMatcher(TestStrategy)",
+                SearchFilter.empty(), classified, products.size(), products,
+                SearchFilter.empty(), null, products, false);
+
+        when(filterService.applyFilter(any(), any())).thenReturn(products);
+        when(strategyRegistry.resolve(intent)).thenReturn(strategy);
+        when(strategy.policy(intent)).thenReturn(MixPolicy.defaults());
+
+        SearchRunService service = new SearchRunService(
+                sessionCache, filterService, reputationService, sortService, strategyRegistry, matcher);
+
+        SearchResult result = service.recomputeDisplayPage(pool, SearchFilter.empty(), 50, false);
+
+        assertThat(result.products()).extracting(ProductCard::id)
+                .containsExactly("close", "generic");
+        verify(matcher, atLeastOnce()).sortWithinTier(eq(intent), any());
+        verify(strategy, never()).mix(eq(intent), any(), anyInt());
+    }
+
+    @Test
+    void domesticPoolRecomputeDoesNotUseOverseasMatcher() {
+        CandidateSessionCache sessionCache = mock(CandidateSessionCache.class);
+        CandidateFilterService filterService = mock(CandidateFilterService.class);
+        ProductReputationService reputationService = new ProductReputationService();
+        ProductSortService sortService = new ProductSortService(reputationService);
+        VerticalStrategyRegistry strategyRegistry = mock(VerticalStrategyRegistry.class);
+        VerticalSearchStrategy strategy = mock(VerticalSearchStrategy.class);
+        OverseasEnglishIntentMatcher matcher = spy(new OverseasEnglishIntentMatcher());
+
+        ProductIntent intent = productIntent();
+        ProductCard product = product("tb-1", "Phone case", "taobao");
+        List<ProductCard> products = List.of(product);
+        List<VerticalSearchStrategy.ClassifiedProduct> classified = List.of(
+                new VerticalSearchStrategy.ClassifiedProduct(product, IntentGate.IntentTier.EXACT_MAIN));
+        SearchCandidatePool pool = new SearchCandidatePool(
+                "sess-domestic", "run-1", "identity-1",
+                intent, "TestStrategy", SearchFilter.empty(), classified, products.size(), products,
+                SearchFilter.empty(), null, products, true);
+
+        when(filterService.applyFilter(any(), any())).thenReturn(products);
+        when(strategyRegistry.resolve(intent)).thenReturn(strategy);
+        when(strategy.mix(eq(intent), any(), eq(50))).thenReturn(products);
+
+        SearchRunService service = new SearchRunService(
+                sessionCache, filterService, reputationService, sortService, strategyRegistry, matcher);
+
+        SearchResult result = service.recomputeDisplayPage(pool, SearchFilter.empty(), 50, false);
+
+        assertThat(result.products()).extracting(ProductCard::id).containsExactly("tb-1");
+        verify(matcher, never()).sortWithinTier(any(), any());
     }
 
     private static ProductCard product(String id, String title, String platform) {

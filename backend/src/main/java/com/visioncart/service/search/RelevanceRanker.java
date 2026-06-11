@@ -135,6 +135,15 @@ public class RelevanceRanker {
         if (product == null || product.title() == null || product.title().isBlank()) {
             return RelevanceTier.REJECTED;
         }
+        if (PowerBankSearchRules.isPowerBank(intent)) {
+            PowerBankProductClassifier.Type powerBankType = PowerBankProductClassifier.classify(product.title());
+            if (powerBankType == PowerBankProductClassifier.Type.NON_TARGET) {
+                return RelevanceTier.REJECTED;
+            }
+            if (powerBankType == PowerBankProductClassifier.Type.RELATED_BUT_NOT_TARGET) {
+                return RelevanceTier.SAFE_FILL;
+            }
+        }
         if (!intent.hasSpecificSignals()) {
             return RelevanceTier.SAFE_FILL;
         }
