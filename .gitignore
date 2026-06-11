@@ -66,6 +66,9 @@ backend/test-api.sh
 backend/test-apis.http
 scripts/check-i18n.sh
 scripts/setup-ssl.sh
+start-backend.bat
+start-backend.ps1
+start-backend.sh
 
 # CodeGraph local index
 .codegraph/

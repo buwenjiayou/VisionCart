@@ -83,7 +83,7 @@ cp .env.example .env
 | `VISIONCART_ALLOWED_ORIGINS` | Web/CORS 允许来源，Android 原生请求不受 CORS 限制 |
 | `VISIONCART_MONITOR_TOKEN` | 监控接口访问令牌，配合 Prometheus 使用 |
 
-注意：后端不会自动读取 `.env` 文件。直接运行 jar 前，需要先把 `.env` 加载为进程环境变量。仓库内的 `run-backend.ps1`、`start-backend.ps1`、`start-backend.bat`、`start-backend.sh` 已包含加载逻辑。
+注意：后端不会自动读取 `.env` 文件。直接运行 jar 前，需要先把 `.env` 加载为进程环境变量。Windows 本地联调可以使用仓库内的 `run-backend.ps1`。
 
 ### 2. MySQL 和 Redis
 
@@ -182,17 +182,14 @@ Compose 后端使用 `SPRING_PROFILES_ACTIVE=prod`，生产 profile 会关闭 Sw
 .\run-backend.ps1
 ```
 
-也可以使用：
-
-```powershell
-.\start-backend.ps1
-```
-
 macOS / Linux：
 
 ```bash
 ./gradlew :backend:bootJar --no-daemon
-./start-backend.sh
+set -a
+source .env
+set +a
+java -jar backend/build/libs/backend-0.1.0.jar
 ```
 
 启动后检查：
