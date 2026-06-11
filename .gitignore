@@ -57,6 +57,16 @@ docs/*.md
 docs/*.txt
 !docs/grafana-dashboard.json
 
+# Unused local-only deployment/debug helpers
+Dockerfile.prod
+deploy/RAILWAY.md
+deploy/railway.json
+deploy/prometheus.yml
+backend/test-api.sh
+backend/test-apis.http
+scripts/check-i18n.sh
+scripts/setup-ssl.sh
+
 # CodeGraph local index
 .codegraph/
 
