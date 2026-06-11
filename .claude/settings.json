@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(./gradlew :backend:bootJar :android:app:assembleDebug --no-daemon)"
-    ]
-  }
-}
