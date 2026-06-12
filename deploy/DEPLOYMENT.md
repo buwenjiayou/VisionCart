@@ -29,7 +29,7 @@ vim .env
 生产建议至少修改：
 
 ```text
-PUBLIC_BASE_URL=http://47.94.4.31:8080
+PUBLIC_BASE_URL=https://your-domain.example.com
 JWT_SECRET=<至少32位随机字符串>
 MYSQL_PASSWORD=<强密码>
 MYSQL_ROOT_PASSWORD=<强密码>
@@ -40,7 +40,7 @@ PDD_PID=<真实值>
 TAOBAO_APP_KEY=<真实值>
 TAOBAO_APP_SECRET=<真实值>
 TAOBAO_ADZONE_ID=<真实值>
-VISIONCART_ALLOWED_ORIGINS=http://47.94.4.31:8080
+VISIONCART_ALLOWED_ORIGINS=https://your-domain.example.com
 VISIONCART_ADMIN_USER_IDS=<可访问 metrics/prometheus 的用户 ID，多个用逗号分隔>
 VISIONCART_WS_QUERY_TOKEN_ENABLED=false
 ```
@@ -62,7 +62,7 @@ docker compose --env-file ../.env logs -f backend
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/health
-curl http://47.94.4.31:8080/api/v1/health
+curl https://your-domain.example.com/api/v1/health
 curl -H "Authorization: Bearer <admin-jwt>" http://127.0.0.1:8080/actuator/prometheus
 ```
 
@@ -90,7 +90,7 @@ MySQL 和 Redis 在 compose 中只绑定 `127.0.0.1`，不对公网开放。
 本地 `local.properties`：
 
 ```properties
-VISIONCART_API_BASE_URL=http://47.94.4.31:8080/
+VISIONCART_API_BASE_URL=https://your-domain.example.com/
 ```
 
 Debug 构建允许本地 HTTP 地址。Release 构建必须配置 HTTPS，且不能是 localhost、`10.0.2.2` 或局域网 IP，否则 Gradle 会在 `preReleaseBuild` 阶段失败。
@@ -113,7 +113,8 @@ cp deploy/nginx-visioncart.conf /etc/nginx/sites-available/visioncart
 sed -i 's/visioncart.example.com/你的域名/g' /etc/nginx/sites-available/visioncart
 ln -sf /etc/nginx/sites-available/visioncart /etc/nginx/sites-enabled/visioncart
 nginx -t && systemctl reload nginx
-sudo bash scripts/setup-ssl.sh 你的域名
+apt install -y certbot python3-certbot-nginx
+certbot --nginx -d 你的域名
 ```
 
 HTTPS 启用后，把 `.env` 中：

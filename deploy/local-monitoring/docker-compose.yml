@@ -11,6 +11,8 @@ services:
         exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus --web.enable-lifecycle
     env_file:
       - ./.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "9090:9090"
     volumes:

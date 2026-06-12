@@ -74,17 +74,26 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:v2.55.1
     container_name: visioncart-prometheus
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        sed "s|__VISIONCART_MONITOR_TOKEN__|$${VISIONCART_MONITOR_TOKEN}|g" /etc/prometheus/prometheus.yml.tpl > /tmp/prometheus.yml
+        exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus --web.enable-lifecycle
+    env_file:
+      - ../.env
     ports:
       - "127.0.0.1:9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml.tpl:ro
       - prometheus-data:/prometheus
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:11.4.0
     container_name: visioncart-grafana
     ports:
       - "127.0.0.1:3000:3000"

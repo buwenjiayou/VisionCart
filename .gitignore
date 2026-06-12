@@ -61,7 +61,6 @@ docs/*.txt
 Dockerfile.prod
 deploy/RAILWAY.md
 deploy/railway.json
-deploy/prometheus.yml
 backend/test-api.sh
 backend/test-apis.http
 scripts/check-i18n.sh
