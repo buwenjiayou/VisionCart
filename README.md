@@ -12,6 +12,12 @@ VisionCart 是一个面向移动端的 AI 智能比价购物助手。用户拍�
 - Spring Boot 后端，内置鉴权、限流、监控指标、Flyway 数据库迁移
 - Docker Compose 一键启动后端、MySQL、Redis、Prometheus 和 Grafana
 
+## 演示视频
+
+项目核心流程演示请查看：[VisionCart 演示视频](docs/demo/demo.mp4)。
+
+视频覆盖拍照/截图识别、商品搜索比价、自然语言筛选、收藏、历史记录和价格提醒等主要功能。
+
 ## 技术栈
 
 | 模块 | 技术 |
