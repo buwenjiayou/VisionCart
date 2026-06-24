@@ -14,11 +14,11 @@ VisionCart 是一个面向移动端的 AI 智能比价购物助手。用户拍�
 
 ## 演示视频
 
-<video src="https://raw.githubusercontent.com/buwenjiayou/VisionCart/main/docs/demo/demo.mp4" controls width="720">
+<video src="https://github.com/buwenjiayou/VisionCart/releases/download/demo-video/demo.mp4" controls width="720">
   当前页面不支持直接播放视频，请点击下方链接查看演示视频。
 </video>
 
-如果上方播放器未显示，请点击：[在线播放 / 下载演示视频](https://raw.githubusercontent.com/buwenjiayou/VisionCart/main/docs/demo/demo.mp4)。
+如果上方播放器未显示，请点击：[在线播放 / 下载演示视频](https://github.com/buwenjiayou/VisionCart/releases/download/demo-video/demo.mp4)。
 
 视频覆盖拍照/截图识别、商品搜索比价、自然语言筛选、收藏、历史记录和价格提醒等主要功能。
 
